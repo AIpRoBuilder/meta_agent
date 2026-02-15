@@ -105,7 +105,7 @@ class Coder:
         user_prompt: str,
         *,
         temperature: float = 0.2,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ) -> str:
         """Call the LLM and return the generated code as plain text."""
 
@@ -159,7 +159,7 @@ class Coder:
         *,
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ) -> Path:
         """Generate code from the prompt and persist it to `file_path`."""
 

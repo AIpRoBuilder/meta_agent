@@ -1,26 +1,20 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Set
 
-from llm_client.coder import Coder
-
-
-@dataclass
-class RuleViolation:
-    class_name: str
-    rule: str
-    detail: str
-    lineno: int
+from auditor.data import RuleViolation
+from auditor.base_auditor import BaseAuditor
 
 
-class CodeAuditor(Coder):
+class NodeAuditor(BaseAuditor):
     """Audit node classes for required methods without calling an LLM."""
 
     def __post_init__(self) -> None:  # pragma: no cover - deterministic setup
         # Skip the base class client bootstrapping; audits are local and deterministic.
+        default_white_list = {"createGParam", "getGParam"}
+        self.white_list: Set[str] = set(default_white_list)
         return
 
     def audit_node_file(self, file_path: str) -> tuple[bool, List[RuleViolation]]:
@@ -57,10 +51,14 @@ class CodeAuditor(Coder):
         for cls in class_defs:
             self._check_clone(cls, violations)
             self._check_run(cls, violations)
+            self._check_self_calls(cls, violations)
 
         return len(violations) == 0, violations
 
     def _check_clone(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+        if not self._is_registered_class(cls):
+            return
+
         method = self._get_method(cls, "clone")
         if method is None:
             violations.append(
@@ -98,6 +96,9 @@ class CodeAuditor(Coder):
             )
 
     def _check_run(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+        if not self._is_registered_class(cls):
+            return
+
         method = self._get_method(cls, "run")
         if method is None:
             violations.append(
@@ -145,4 +146,16 @@ class CodeAuditor(Coder):
             return True
         if isinstance(annotation, ast.Attribute) and annotation.attr == "CStatus":
             return True
+        return False
+
+    def _is_registered_class(self, cls: ast.ClassDef) -> bool:
+        for decorator in cls.decorator_list:
+            target = decorator
+            if isinstance(decorator, ast.Call):
+                target = decorator.func
+
+            if isinstance(target, ast.Name) and target.id == "register_class":
+                return True
+            if isinstance(target, ast.Attribute) and target.attr == "register_class":
+                return True
         return False

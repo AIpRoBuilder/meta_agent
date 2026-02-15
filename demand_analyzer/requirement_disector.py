@@ -30,7 +30,7 @@ class RequirementDisector(Coder):
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 4096,
+		max_tokens: int = 8192,
 	) -> Path:
 		"""Call the LLM and persist the requirements analysis as markdown."""
 

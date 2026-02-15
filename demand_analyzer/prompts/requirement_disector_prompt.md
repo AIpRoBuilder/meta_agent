@@ -1,5 +1,5 @@
 # Requirements Dissection Prompt
-
+作为一个产品经理专家
 目标：将用户输入的需求/想法拆解为结构化的《需求分析》Markdown，仅输出Markdown内容。
 
 ## 输出格式（必须严格包含以下章节）

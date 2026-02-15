@@ -1,21 +1,21 @@
-@register_class
-class MyNode(GNode):
-    signature = "MyNode"
+from architect.entity_relationship_diagram_planner import ERDiagramPlanner
+from architect.data_flow_planner import DataFlowPlanner
+from worker.context_writer import PromptContextParamCoder
 
-    def run(self) -> CStatus:
-        print("MyNode running from factory-created instance")
-        return CStatus()
-    def clone(self):
-        """Create a copy of this node"""
-        return self
 
-@register_class
-class OtherNode(GNode):
-    signature = "OtherNode"
+# erd_planner = ERDiagramPlanner(
+#     api_key="sk-8b72ab4e941b46eb9631b9d5c8af5b0a", 
+#                         model="deepseek-chat",provider="deepseek"
+# )
+# erd_planner.diagram_from_file("requirement_analysis.md", "er_diagram.json")
 
-    def run(self) -> CStatus:
-        print("OtherNode running from factory-created instance")
-        return CStatus()
-    def clone(self):
-        """Create a copy of this node"""
-        return self
+dataflow_planner = DataFlowPlanner(
+    api_key="sk-8b72ab4e941b46eb9631b9d5c8af5b0a", 
+                        model="deepseek-chat",provider="deepseek"
+)
+
+dataflow_planner.diagram_from_file("requirement_analysis.md", "data_flow.json",temperature=0.0)
+
+param_coder = PromptContextParamCoder(api_key="sk-8b72ab4e941b46eb9631b9d5c8af5b0a", 
+                        model="deepseek-chat",provider="deepseek")
+param_coder.write_context_param_from_data_flow("data_flow.json", "LawParam", "law_param.py",graph_plan_path="graph_plan.json", temperature=0.0)

@@ -1,5 +1,5 @@
 # Graph Planner Prompt
-
+作为一个软件架构师专家
 目标：根据输入的《需求分析》Markdown，生成一个用于编排的 JSON 图计划，仅输出 JSON 内容。
 
 ## 输出要求
@@ -11,7 +11,7 @@
 - 每个节点包含字段：
   - name: 字符串，唯一、可读。
   - type: 字符串，对应节点类型（如 "MyNode"）。
-  - desc: 字符串，对应节点的功能描述。
+  - desc: 字符串，对应节点的功能描述（中文）。
   - enable: 布尔值。
   - loop: 整数，默认 1；若未提及循环可省略。
   - depends: 数组，依赖节点名称；无依赖时可省略。
@@ -21,26 +21,26 @@
 {
   "nodes": [
     {
-      "name": "B",
+      "name": "OtherNode",
       "type": "OtherNode",
       "desc": "calculate the result of 2+2",
       "enable": true
     },
     {
-      "name": "C",
+      "name": "MyNode",
       "type": "MyNode",
       "desc": "calculate the result of 1+2",
       "enable": true,
       "loop": 2,
-      "depends": ["B"]
+      "depends": ["OtherNode"]
     },
     {
-      "name": "A",
+      "name": "NewNode",
       "type": "NewNode",
       "desc": "calculate the result of 1+1",
       "enable": true,
       "loop": 1,
-      "depends": ["B", "C"]
+      "depends": ["OtherNode", "MyNode"]
     }
   ]
 }

@@ -3,18 +3,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from tools.graph_tools import graph_to_nodes
+
 # Ensure repository root is on sys.path when run as a script
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from llm_client.coder import Coder
+from context_builder.context import Context, GraphContextBuilder
 
 @dataclass
 class PromptNodeFileCoder(Coder):
     """Coder that preloads a system prompt from a markdown file."""
 
     prompt_path: str = "worker/prompts/pydaograph_node_prompt.md"
+    root_dir_path: str = ""
 
     def __post_init__(self) -> None:
         prompt_file = ROOT_DIR / self.prompt_path
@@ -27,16 +31,18 @@ class PromptNodeFileCoder(Coder):
     def write_node_from_requirement(
         self,
         node_name: str,
-        node_spec: Mapping[str, Any],
+        param_name: str,
+        graph_plan_path: str,
         requirement_md_path: str,
         output_path: str,
         *,
         language: str = "python",
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ) -> Path:
         """Generate a node file using requirement context and node metadata."""
+        node_spec = graph_to_nodes(graph_plan_path)
 
         requirement_path = Path(requirement_md_path)
         if not requirement_path.exists():
@@ -84,8 +90,29 @@ class PromptNodeFileCoder(Coder):
             f"Target language: {language_clean}\n\n"
             "Requirement analysis that this node should satisfy:\n"
             f"{requirement_text}\n\n"
-            f"Return only runnable {language_clean} code for this node."
         )
+
+        # Build context from graph_plan.json dependencies
+        context_builder = GraphContextBuilder(root_path=self.root_dir_path, language=language_clean)
+        context_builder.search(current_node_name=node_name, graph_plan_path=graph_plan_path)
+        # Add the built context to the user prompt
+        # context_path = self.root_dir_path + f"/{param_name}{target_ext}"
+        # context_builder.add_context(Context(
+        #     current_file_location=str(self.root_dir_path + f"/{node_name}{target_ext}"),
+        #     current_file_name=f"{node_name}{target_ext}",
+        #     context_file_location=context_path,
+        #     context_file_name=param_name,
+        #     context_file_description=f"{param_name} context class to store data across node executions and have to be imported to current node files if needed.",
+        #     context_file_text=Path(context_path).read_text(encoding="utf-8") if Path(context_path).exists() else "",
+        #     relevance=1.0,
+        # ))
+        context_text = context_builder.build(limit=5)
+        if context_text:
+            user_prompt += f"\n\nContext from dependencies:\n{context_text}"
+        
+        
+        if user_prompt.strip():
+            user_prompt += f"\n\nReturn only runnable {language_clean} code for this node."
 
         target_path = Path(output_path)
         if target_path.suffix.lower() != target_ext:
@@ -107,7 +134,7 @@ class PromptNodeFileCoder(Coder):
         language: str = "python",
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ) -> Path:
         """Amend existing code using feedback and write the updated code to disk."""
 

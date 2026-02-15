@@ -10,10 +10,10 @@ from llm_client.coder import Coder
 
 
 @dataclass
-class GraphPlanner(Coder):
-	"""Generate a JSON graph plan from a requirements analysis markdown."""
+class DataFlowPlanner(Coder):
+	"""Generate a data-flow diagram JSON from a requirements analysis."""
 
-	prompt_path: str = "architect/prompts/graph_planner_prompt.md"
+	prompt_path: str = "architect/prompts/data_flow_diagram_planner_prompt.md"
 
 	def __post_init__(self) -> None:
 		prompt_file = ROOT_DIR / self.prompt_path
@@ -23,7 +23,7 @@ class GraphPlanner(Coder):
 		self.system_prompt = prompt_file.read_text(encoding="utf-8")
 		super().__post_init__()
 
-	def plan_from_file(
+	def diagram_from_file(
 		self,
 		requirement_md_path: str,
 		output_path: str,
@@ -32,14 +32,14 @@ class GraphPlanner(Coder):
 		temperature: float = 0.2,
 		max_tokens: int = 8192,
 	) -> Path:
-		"""Read requirement_analysis.md and write a JSON graph plan."""
+		"""Read requirement_analysis.md and write a data-flow diagram JSON."""
 
 		requirement_path = Path(requirement_md_path)
 		if not requirement_path.exists():
 			raise FileNotFoundError(f"Requirement file not found: {requirement_path}")
 
 		requirement_text = requirement_path.read_text(encoding="utf-8")
-		return self.plan(
+		return self.diagram(
 			requirement_text,
 			output_path,
 			overwrite=overwrite,
@@ -47,7 +47,7 @@ class GraphPlanner(Coder):
 			max_tokens=max_tokens,
 		)
 
-	def plan(
+	def diagram(
 		self,
 		requirement_text: str,
 		output_path: str,
@@ -56,7 +56,7 @@ class GraphPlanner(Coder):
 		temperature: float = 0.2,
 		max_tokens: int = 8192,
 	) -> Path:
-		"""Call the LLM and persist the graph plan as JSON."""
+		"""Call the LLM and persist the data-flow diagram as JSON."""
 
 		target_path = Path(output_path)
 		if target_path.suffix.lower() != ".json":
@@ -64,44 +64,6 @@ class GraphPlanner(Coder):
 
 		return self.code_to_file(
 			requirement_text,
-			str(target_path),
-			overwrite=overwrite,
-			temperature=temperature,
-			max_tokens=max_tokens,
-		)
-
-	def amend_file_with_feedback(
-		self,
-		graph_json_path: str,
-		amendment: str,
-		*,
-		overwrite: bool = True,
-		temperature: float = 0.2,
-		max_tokens: int = 8192,
-	) -> Path:
-		"""Amend an existing graph JSON plan using feedback."""
-
-		target_path = Path(graph_json_path)
-		if target_path.suffix.lower() != ".json":
-			target_path = target_path.with_suffix(".json")
-
-		if not target_path.exists():
-			raise FileNotFoundError(f"Graph JSON file not found: {target_path}")
-
-		current_plan = target_path.read_text(encoding="utf-8")
-
-		user_prompt = (
-			"Update the existing graph plan JSON using the amendment provided.\n"
-			"Preserve the graph schema (top-level nodes list with name, type, desc, depends).\n"
-			"Return only valid JSON without code fences or commentary.\n\n"
-			"Existing graph plan:\n"
-			f"{current_plan}\n\n"
-			"Amendment / feedback to apply:\n"
-			f"{amendment}\n"
-		)
-
-		return self.code_to_file(
-			user_prompt,
 			str(target_path),
 			overwrite=overwrite,
 			temperature=temperature,
