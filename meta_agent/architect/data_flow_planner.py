@@ -4,8 +4,9 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
-	sys.path.insert(0, str(ROOT_DIR))
+    sys.path.insert(0, str(ROOT_DIR))
 
+from context_builder.context import BaseContextBuilder, Context
 from llm_client.coder import Coder
 
 
@@ -27,6 +28,7 @@ class DataFlowPlanner(Coder):
 		self,
 		requirement_md_path: str,
 		output_path: str,
+  		graph_plan_path: str,
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
@@ -42,6 +44,7 @@ class DataFlowPlanner(Coder):
 		return self.diagram(
 			requirement_text,
 			output_path,
+			graph_plan_path=graph_plan_path,
 			overwrite=overwrite,
 			temperature=temperature,
 			max_tokens=max_tokens,
@@ -51,6 +54,7 @@ class DataFlowPlanner(Coder):
 		self,
 		requirement_text: str,
 		output_path: str,
+		graph_plan_path: str,
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
@@ -62,8 +66,28 @@ class DataFlowPlanner(Coder):
 		if target_path.suffix.lower() != ".json":
 			target_path = target_path.with_suffix(".json")
 
+		user_prompt = (
+            "You are generating a data flow diagram.\n"
+            "Requirement analysis that this node should satisfy:\n"
+            f"{requirement_text}\n\n"
+        )
+
+		context_builder = BaseContextBuilder()
+		context_builder.add_context(Context(
+			current_file_location=graph_plan_path,
+			current_file_name=output_path.split("/")[-1].split(".")[0],
+			context_file_location=output_path,
+			context_file_name="graph_plan",
+			context_file_description=f"graph_plan is the JSON file that contains the planned graph structure with nodes and their dependencies. It can be used as context to generate the data flow diagram JSON.",
+			context_file_text=Path(graph_plan_path).read_text(encoding="utf-8") if Path(graph_plan_path).exists() else "",
+			relevance=1.0,
+		))
+		context_text = context_builder.build(limit=5)
+		if context_text:
+			user_prompt += f"\n\nContext from dependencies:\n{context_text}"
+
 		return self.code_to_file(
-			requirement_text,
+			user_prompt,
 			str(target_path),
 			overwrite=overwrite,
 			temperature=temperature,

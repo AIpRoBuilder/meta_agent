@@ -16,7 +16,10 @@ class Context:
 	context_file_name: str
 	context_file_description: str
 	context_file_text: str
-	relevance: float
+	importance: Optional[float] = None
+	helpfulness: Optional[float] = None
+	harmfulness: Optional[float] = None
+	relevance: Optional[float] = None
 
 
 class BaseContextBuilder:

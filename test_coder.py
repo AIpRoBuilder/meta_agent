@@ -38,7 +38,7 @@ while True:
 print("Graph planning completed.")
 
 dataflow_planner = DataFlowPlanner(api_key=api_key, model=model,provider=provider)
-dataflow_planner.diagram_from_file("requirement_analysis.md", f"{root_dir}/data_flow.json",temperature=0.0)
+dataflow_planner.diagram_from_file("requirement_analysis.md", f"{root_dir}/data_flow.json", f"{root_dir}/graph_plan.json", temperature=0.0)
 
 print("DataFlow Diagram completed.")
 param_coder = PromptContextParamCoder(api_key=api_key, model=model,provider=provider)

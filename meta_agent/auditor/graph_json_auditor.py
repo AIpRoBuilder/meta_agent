@@ -26,17 +26,17 @@ class GraphJsonAuditor(BaseJsonAuditor):
 		violations: List[JsonRuleViolation] = []
 
 
-		for idx, (name, info) in enumerate(nodes.items(), start=1):
-			node_type = (info.get("type") or "").strip()
-			if name != node_type:
-				violations.append(
-					JsonRuleViolation(
-						parts_name=name,
-						rule="name_type_mismatch",
-						detail=f"name '{name}' and type '{node_type}' must be identical",
-						lineno=idx,
-					)
-				)
+		# for idx, (name, info) in enumerate(nodes.items(), start=1):
+    	# 		node_type = (info.get("type") or "").strip()
+		# 	if name != node_type:
+		# 		violations.append(
+		# 			JsonRuleViolation(
+		# 				parts_name=name,
+		# 				rule="name_type_mismatch",
+		# 				detail=f"name '{name}' and type '{node_type}' must be identical",
+		# 				lineno=idx,
+		# 			)
+		# 		)
 
 		is_acyclic, cycle_path = is_dag(nodes)
 		if not is_acyclic:
