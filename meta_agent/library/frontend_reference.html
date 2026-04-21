@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>AG-UI Workflow Demo</title>
+		<style>
+			:root {
+				color-scheme: light;
+				--bg: #f3f6fb;
+				--card: #ffffff;
+				--text: #162136;
+				--muted: #5f6b82;
+				--line: #d9e2ef;
+				--line-strong: #c7d5e8;
+				--accent: #2d6cff;
+				--accent-2: #6f47ff;
+				--ok: #15803d;
+				--warn: #b45309;
+				--err: #b91c1c;
+				--shadow-soft: 0 6px 24px rgba(34, 61, 105, 0.08);
+				--shadow-card: 0 8px 28px rgba(38, 74, 132, 0.1);
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				background: radial-gradient(circle at top left, #f8fbff 0%, var(--bg) 45%, #eef3fb 100%);
+				color: var(--text);
+				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+			}
+
+			.page {
+				max-width: 1100px;
+				margin: 0 auto;
+				padding: 20px;
+				display: grid;
+				gap: 16px;
+			}
+
+			.topbar {
+				background: var(--card);
+				border: 1px solid var(--line);
+				border-radius: 14px;
+				padding: 14px;
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+				flex-wrap: wrap;
+				box-shadow: var(--shadow-soft);
+			}
+
+			.title {
+				font-size: 18px;
+				font-weight: 700;
+			}
+
+			.session {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+
+			.badge {
+				border: 1px solid var(--line-strong);
+				border-radius: 999px;
+				padding: 5px 10px;
+				font-size: 12px;
+				color: var(--muted);
+				background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+			}
+
+			button {
+				border: 1px solid var(--line);
+				background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
+				border-radius: 8px;
+				padding: 8px 12px;
+				font-size: 13px;
+				cursor: pointer;
+				transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+			}
+
+			button:hover:not(:disabled) {
+				border-color: var(--line-strong);
+				box-shadow: 0 4px 12px rgba(38, 74, 132, 0.12);
+				transform: translateY(-1px);
+			}
+
+			button.primary {
+				border-color: transparent;
+				background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+				color: #fff;
+			}
+
+			button:disabled {
+				cursor: not-allowed;
+				opacity: 0.55;
+			}
+
+			.layout {
+				display: grid;
+				grid-template-columns: 1.2fr 1fr;
+				gap: 16px;
+			}
+
+			.panel {
+				background: var(--card);
+				border: 1px solid var(--line);
+				border-radius: 14px;
+				padding: 14px;
+				box-shadow: var(--shadow-soft);
+			}
+
+			.panel h2 {
+				margin: 0 0 12px;
+				font-size: 15px;
+			}
+
+			.chat {
+				max-height: 420px;
+				overflow: auto;
+				display: grid;
+				gap: 8px;
+			}
+
+			.msg {
+				border-radius: 10px;
+				padding: 8px 10px;
+				font-size: 13px;
+				line-height: 1.4;
+			}
+
+			.msg.system {
+				background: #eff6ff;
+				border: 1px solid #dbeafe;
+			}
+
+			.msg.assistant {
+				background: #f8fafc;
+				border: 1px solid #e2e8f0;
+			}
+
+			.msg.error {
+				background: #fef2f2;
+				border: 1px solid #fecaca;
+				color: var(--err);
+			}
+
+			.steps {
+				display: grid;
+				gap: 12px;
+			}
+
+			.step {
+				border: 1px solid var(--line);
+				border-radius: 14px;
+				padding: 14px;
+				background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+				box-shadow: var(--shadow-card);
+				transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+			}
+
+			.step:hover {
+				transform: translateY(-2px);
+				border-color: var(--line-strong);
+				box-shadow: 0 14px 36px rgba(38, 74, 132, 0.14);
+			}
+
+			.step.locked {
+				opacity: 0.75;
+			}
+
+			.step-header {
+				display: flex;
+				justify-content: space-between;
+				align-items: flex-start;
+				gap: 8px;
+				padding-bottom: 10px;
+				border-bottom: 1px dashed var(--line);
+			}
+
+			.step-title {
+				font-size: 15px;
+				font-weight: 600;
+				margin: 0;
+				line-height: 1.3;
+			}
+
+			.step-submeta {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 6px;
+				margin-top: 6px;
+			}
+
+			.chip {
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+				padding: 3px 8px;
+				border-radius: 999px;
+				font-size: 11px;
+				color: var(--muted);
+				background: #f5f8ff;
+				border: 1px solid #dce7fb;
+			}
+
+			.meta {
+				font-size: 12px;
+				color: var(--muted);
+				margin-top: 2px;
+			}
+
+			.status {
+				font-size: 11px;
+				border-radius: 999px;
+				padding: 4px 10px;
+				border: 1px solid var(--line);
+				font-weight: 600;
+				letter-spacing: 0.02em;
+			}
+
+			.status.done {
+				color: var(--ok);
+				border-color: #bbf7d0;
+				background: #f0fdf4;
+			}
+
+			.status.open {
+				color: var(--accent);
+				border-color: #bfdbfe;
+				background: #eff6ff;
+			}
+
+			.status.locked {
+				color: var(--warn);
+				border-color: #fde68a;
+				background: #fffbeb;
+			}
+
+			.status.running {
+				color: var(--accent);
+				border-color: #bfdbfe;
+				background: #eff6ff;
+			}
+
+			.status.completed {
+				color: var(--ok);
+				border-color: #bbf7d0;
+				background: #f0fdf4;
+			}
+
+			.status.failed {
+				color: var(--err);
+				border-color: #fecaca;
+				background: #fef2f2;
+			}
+
+			.status.awaiting_input {
+				color: var(--warn);
+				border-color: #fde68a;
+				background: #fffbeb;
+			}
+
+			.prompt {
+				margin: 10px 0;
+				font-size: 13px;
+				color: var(--muted);
+				line-height: 1.5;
+			}
+
+			.input-row {
+				display: grid;
+				grid-template-columns: 1fr auto;
+				gap: 8px;
+				align-items: center;
+			}
+
+			.input-row input {
+				width: 100%;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 8px 10px;
+				font-size: 13px;
+				outline: none;
+				background: #ffffff;
+				transition: border-color 0.2s ease, box-shadow 0.2s ease;
+			}
+
+			.input-row input:focus {
+				border-color: #9fc2ff;
+				box-shadow: 0 0 0 3px rgba(45, 108, 255, 0.14);
+			}
+
+			input[type="file"] {
+				padding: 7px;
+				background: #f8fbff;
+			}
+
+			.file-row {
+				margin-top: 8px;
+			}
+
+			.inline-note {
+				font-size: 12px;
+				color: var(--muted);
+				margin-top: 8px;
+				padding: 8px 10px;
+				border-radius: 8px;
+				border: 1px dashed #d4e0f5;
+				background: #f7faff;
+			}
+
+			.upload-hint {
+				font-size: 12px;
+				color: var(--muted);
+				margin-top: 8px;
+			}
+
+			.summary {
+				margin-top: 12px;
+				font-size: 13px;
+				line-height: 1.5;
+			}
+
+			.rows {
+				margin-top: 8px;
+				border-top: 1px dashed var(--line-strong);
+				padding-top: 8px;
+				display: grid;
+				gap: 6px;
+			}
+
+			.actions {
+				margin-top: 8px;
+				border-top: 1px dashed var(--line-strong);
+				padding-top: 8px;
+				display: flex;
+				flex-wrap: wrap;
+				gap: 6px;
+			}
+
+			.action-item {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				padding: 4px 8px;
+				font-size: 12px;
+				border: 1px solid var(--line);
+				border-radius: 999px;
+				background: #f5f8ff;
+				transition: border-color 0.2s ease, transform 0.2s ease;
+			}
+
+			.action-item:hover {
+				border-color: var(--line-strong);
+				transform: translateY(-1px);
+			}
+
+			.action-item .k {
+				color: var(--muted);
+			}
+
+			.row {
+				display: flex;
+				justify-content: space-between;
+				gap: 10px;
+				font-size: 12px;
+				padding: 5px 8px;
+				border-radius: 8px;
+				background: #f8fbff;
+				border: 1px solid #e4edf9;
+			}
+
+			.row .k {
+				color: var(--muted);
+			}
+
+			.final {
+				margin-top: 8px;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: #f8fbff;
+				padding: 8px;
+				font-size: 12px;
+				white-space: pre-wrap;
+			}
+
+			.step-running {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				margin-top: 8px;
+				font-size: 12px;
+				color: var(--accent);
+				font-weight: 600;
+			}
+
+			.step-running-dot {
+				width: 10px;
+				height: 10px;
+				border-radius: 999px;
+				border: 2px solid #bdd3ff;
+				border-top-color: var(--accent);
+				animation: spin 0.8s linear infinite;
+			}
+
+			@keyframes spin {
+				to {
+					transform: rotate(360deg);
+				}
+			}
+
+			@media (max-width: 900px) {
+				.layout {
+					grid-template-columns: 1fr;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<main class="page">
+			<section class="topbar">
+				<div>
+					<div class="title">AG-UI Financial Planning Workflow</div>
+					<div class="meta">Streams AG-UI lifecycle events from <code>/api/run-step</code></div>
+				</div>
+				<div class="session">
+					<span class="badge" id="sessionBadge"></span>
+					<button id="newSessionBtn">New Session</button>
+					<button id="resetSessionBtn">Reset Session</button>
+				</div>
+			</section>
+
+			<section class="layout">
+				<section class="panel">
+					<h2>Workflow Steps</h2>
+					<div id="steps" class="steps"></div>
+				</section>
+
+				<section class="panel">
+					<h2>AG-UI Event Chat</h2>
+					<div id="chat" class="chat"></div>
+					<div id="finalResult" class="final" hidden></div>
+				</section>
+			</section>
+		</main>
+
+		<script>
+			const RUN_STEP_ENDPOINT = "/api/run-step";
+			const RESET_SESSION_ENDPOINT = "/api/reset-session";
+			const SESSION_KEY = "sessionId";
+
+			const STEP_META = [
+				{
+					id: "step_navigation",
+					title: "Step Navigation",
+					prompt: "Select step to view or modify",
+					dependencies: []
+				},
+				{
+					id: "income",
+					title: "Step 1 · Income",
+					prompt: "Enter your monthly total income (must be a number greater than 0)",
+					dependencies: ["step_navigation"]
+				},
+				{
+					id: "expense_input",
+					title: "Step 2 · 月度支出",
+					prompt: "请输入各项月度固定支出（元），留空表示0",
+					dependencies: ["income"]
+				},
+				{
+					id: "savings_calculation",
+					title: "Step 3 · 储蓄计划",
+					prompt: "系统将基于您的收入和支出自动计算建议储蓄预算",
+					dependencies: ["income", "expense_input"]
+				},
+				{
+					id: "goal_input",
+					title: "Step 4 · Goal",
+					prompt: "Enter your savings goal amount",
+					dependencies: ["savings_calculation"]
+				},
+				{
+					id: "goal_estimation",
+					title: "Step 4 · Goal Estimation",
+					prompt: "Enter your savings goal amount",
+					dependencies: ["savings_calculation", "goal_input"]
+				},
+				{
+					id: "summary_display",
+					title: "最终汇总",
+					prompt: "查看完整的财务规划摘要",
+					dependencies: ["income", "expense_input", "savings_calculation", "goal_input", "goal_estimation"]
+				}
+			];
+
+			const state = {
+				sessionId: loadOrCreateSessionId(),
+				completedSteps: new Set(),
+				cards: new Map(),
+				inFlightStepId: null,
+				autoQueuedSteps: new Set(),
+				assistantByMessageId: new Map()
+			};
+
+			const els = {
+				sessionBadge: document.getElementById("sessionBadge"),
+				newSessionBtn: document.getElementById("newSessionBtn"),
+				resetSessionBtn: document.getElementById("resetSessionBtn"),
+				steps: document.getElementById("steps"),
+				chat: document.getElementById("chat"),
+				finalResult: document.getElementById("finalResult")
+			};
+
+			function loadOrCreateSessionId() {
+				const existing = localStorage.getItem(SESSION_KEY);
+				if (existing) return existing;
+				const created = `session_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+				localStorage.setItem(SESSION_KEY, created);
+				return created;
+			}
+
+			function setSessionId(sessionId) {
+				state.sessionId = sessionId;
+				localStorage.setItem(SESSION_KEY, sessionId);
+				els.sessionBadge.textContent = `sessionId: ${sessionId}`;
+			}
+
+			function isStepUnlocked(stepId) {
+				const step = STEP_META.find((item) => item.id === stepId);
+				if (!step) return false;
+				return step.dependencies.every((dep) => state.completedSteps.has(dep));
+			}
+
+			function shouldShowStep(stepIndex) {
+				if (stepIndex <= 0) return true;
+				const firstStep = STEP_META[0];
+				if (!firstStep) return false;
+				if (!state.completedSteps.has(firstStep.id)) return false;
+				const prevStep = STEP_META[stepIndex - 1];
+				if (!prevStep) return true;
+				return state.completedSteps.has(prevStep.id);
+			}
+
+			function stepStatus(stepId) {
+				if (state.completedSteps.has(stepId)) return "done";
+				return isStepUnlocked(stepId) ? "open" : "locked";
+			}
+
+			function runtimeState(stepId) {
+				const cardEvent = state.cards.get(stepId);
+				const raw = String(cardEvent?.state || "").trim().toLowerCase();
+				if (!raw) return "";
+				return raw;
+			}
+
+			function appendMessage(kind, text) {
+				const div = document.createElement("div");
+				div.className = `msg ${kind}`;
+				div.textContent = text;
+				els.chat.appendChild(div);
+				els.chat.scrollTop = els.chat.scrollHeight;
+				return div;
+			}
+
+			function ensureAssistantMessage(messageId) {
+				if (!state.assistantByMessageId.has(messageId)) {
+					const container = appendMessage("assistant", "");
+					state.assistantByMessageId.set(messageId, container);
+				}
+				return state.assistantByMessageId.get(messageId);
+			}
+
+			function upsertAssistantDelta(messageId, delta) {
+				const target = ensureAssistantMessage(messageId);
+				target.textContent += delta;
+			}
+
+			function clearWorkflowState() {
+				state.completedSteps = new Set();
+				state.cards = new Map();
+				state.inFlightStepId = null;
+				state.autoQueuedSteps = new Set();
+				state.assistantByMessageId = new Map();
+				els.chat.innerHTML = "";
+				els.finalResult.hidden = true;
+				els.finalResult.textContent = "";
+				renderSteps();
+			}
+
+			async function callResetSession(sessionId) {
+				const res = await fetch(RESET_SESSION_ENDPOINT, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ sessionId })
+				});
+				if (!res.ok) {
+					throw new Error(`reset-session failed: ${res.status}`);
+				}
+				return await res.json();
+			}
+
+			function renderRows(card) {
+				const rows = [];
+
+				if (Array.isArray(card?.rows)) {
+					rows.push(...card.rows.map((row) => ({ key: row.name ?? row.label ?? "", value: row.value ?? "" })));
+				}
+
+				if (Array.isArray(card?.categories)) {
+					rows.push(...card.categories.map((row) => ({ key: row.name ?? row.label ?? "", value: row.value ?? "" })));
+				}
+
+				if (Array.isArray(card?.sections)) {
+					for (const section of card.sections) {
+						if (Array.isArray(section?.rows)) {
+							rows.push(...section.rows.map((row) => ({ key: row.label ?? row.name ?? "", value: row.value ?? "" })));
+						}
+					}
+				}
+
+				return rows;
+			}
+
+			function renderActions(card) {
+				if (!Array.isArray(card?.actions)) {
+					return [];
+				}
+
+				return card.actions
+					.map((action) => {
+						if (action == null) return null;
+						if (typeof action === "string") {
+							const label = action.trim();
+							return label ? { name: "action", value: label } : null;
+						}
+
+						const name = String(action.name ?? action.label ?? action.type ?? "action").trim() || "action";
+						const valueRaw = action.value ?? action.text ?? action.description ?? action.desc ?? action.payload ?? "";
+						const value = typeof valueRaw === "string" ? valueRaw.trim() : JSON.stringify(valueRaw);
+						return { name, value: value || "(no value)" };
+					})
+					.filter(Boolean);
+			}
+
+			function renderSteps() {
+				els.steps.innerHTML = "";
+				const autoRunQueue = [];
+				for (let index = 0; index < STEP_META.length; index += 1) {
+					const step = STEP_META[index];
+					if (!shouldShowStep(index)) {
+						continue;
+					}
+					const status = stepStatus(step.id);
+					const cardEvent = state.cards.get(step.id);
+					const runtime = runtimeState(step.id);
+					const displayStatus = runtime || status;
+					const extType = String(step.extData?.type || step.ext_data?.type || "").trim().toLowerCase();
+					const nodeKind = String(step.nodeKind || "").trim().toLowerCase();
+					const isImageStep = extType === "image" || nodeKind === "image";
+					const isFileStep = extType === "user_file_input" || nodeKind === "file";
+					const isOperationStep = step.inputRequired === false || nodeKind === "operation";
+					const inputRequired = !isOperationStep && !isImageStep;
+					const running = state.inFlightStepId === step.id || displayStatus === "running";
+					const summary = cardEvent?.summary || "";
+					const rows = renderRows(cardEvent?.card || {});
+					const actions = renderActions(cardEvent?.card || {});
+					const disabled = state.inFlightStepId !== null || status !== "open";
+					const statusLabel = String(displayStatus || "unknown").replaceAll("_", " ").toUpperCase();
+					const kindLabel = isImageStep ? "image" : isFileStep ? "file" : nodeKind || "input";
+
+					let inputBlock = "";
+					if (isImageStep) {
+						inputBlock = `
+							<div class="input-row">
+								<input id="input_${step.id}" value="Dependency-driven image analysis" disabled />
+							</div>
+							<div class="inline-note">This image step auto-runs when unlocked using upstream dependency results.</div>
+						`;
+					} else if (isOperationStep) {
+						inputBlock = `
+							<div class="input-row">
+								<input id="input_${step.id}" value="Auto-runs when unlocked" disabled />
+							</div>
+						`;
+					} else if (isFileStep) {
+						inputBlock = `
+							<div class="input-row">
+								<input id="input_${step.id}" placeholder="Optional request/context for uploaded files" ${disabled ? "disabled" : ""} />
+								<button class="primary" data-step-id="${step.id}" ${disabled ? "disabled" : ""}>Upload & Submit</button>
+							</div>
+							<div class="upload-hint">Select one or more files. Payload is sent as input.files = [{fileName, fileBytes}, ...].</div>
+							<div class="file-row input-row"><input type="file" id="file_${step.id}" multiple ${disabled ? "disabled" : ""} /></div>
+						`;
+					} else {
+						inputBlock = `
+							<div class="input-row">
+								<input id="input_${step.id}" placeholder="Enter input for ${step.id}" ${disabled ? "disabled" : ""} />
+								<button class="primary" data-step-id="${step.id}" ${disabled ? "disabled" : ""}>Submit</button>
+							</div>
+						`;
+					}
+
+					const container = document.createElement("article");
+					container.className = `step ${status === "locked" ? "locked" : ""}`;
+					container.innerHTML = `
+						<div class="step-header">
+							<div>
+								<h3 class="step-title">${escapeHtml(step.title)}</h3>
+								<div class="step-submeta">
+									<span class="chip">id: ${escapeHtml(step.id)}</span>
+									<span class="chip">kind: ${escapeHtml(kindLabel)}</span>
+									<span class="chip">deps: ${escapeHtml(step.dependencies.join(", ") || "none")}</span>
+									<span class="chip">runtime: ${escapeHtml(runtime || "n/a")}</span>
+								</div>
+								${running ? '<div class="step-running"><span class="step-running-dot"></span><span>Running...</span></div>' : ""}
+							</div>
+							<span class="status ${displayStatus}">${statusLabel}</span>
+						</div>
+						<p class="prompt">${escapeHtml(step.prompt || "")}</p>
+						${inputBlock}
+						<div class="summary">${summary ? `<strong>Summary:</strong> ${escapeHtml(summary)}` : ""}</div>
+						<div class="rows">
+							${rows.map((r) => `<div class="row"><span class="k">${escapeHtml(String(r.key))}</span><span>${escapeHtml(String(r.value))}</span></div>`).join("")}
+						</div>
+						${actions.length ? `<div class="actions">${actions.map((a) => `<span class="action-item"><span class="k">${escapeHtml(String(a.name))}</span><span>${escapeHtml(String(a.value))}</span></span>`).join("")}</div>` : ""}
+					`;
+
+					const button = container.querySelector("button");
+					const input = container.querySelector(`#input_${step.id}`);
+					const fileInput = isFileStep ? container.querySelector(`#file_${step.id}`) : null;
+					if (button) {
+						button.addEventListener("click", () => submitStep(step, inputRequired ? input?.value || "" : "", Array.from(fileInput?.files || [])));
+					}
+					if (inputRequired && input && !input.disabled) {
+						input.addEventListener("keydown", (event) => {
+							if (event.key === "Enter") {
+								submitStep(step, input.value, Array.from(fileInput?.files || []));
+							}
+						});
+					}
+
+					els.steps.appendChild(container);
+
+					const shouldAutoRun =
+						!isFileStep &&
+						!inputRequired &&
+						status === "open" &&
+						state.inFlightStepId === null &&
+						!state.completedSteps.has(step.id) &&
+						!state.autoQueuedSteps.has(step.id);
+					if (shouldAutoRun) {
+						autoRunQueue.push(step);
+						state.autoQueuedSteps.add(step.id);
+					}
+				}
+
+				if (autoRunQueue.length > 0 && state.inFlightStepId === null) {
+					const nextStep = autoRunQueue[0];
+					setTimeout(() => submitStep(nextStep, "", []), 0);
+				}
+			}
+
+			function arrayBufferToBase64(buffer) {
+				let binary = "";
+				const bytes = new Uint8Array(buffer);
+				const chunkSize = 0x8000;
+				for (let i = 0; i < bytes.length; i += chunkSize) {
+					const chunk = bytes.subarray(i, i + chunkSize);
+					binary += String.fromCharCode(...chunk);
+				}
+				return btoa(binary);
+			}
+
+			function fileToDataUrl(file, base64Payload) {
+				const mimeType = String(file?.type || "").trim() || "application/octet-stream";
+				return `data:${mimeType};base64,${base64Payload}`;
+			}
+
+			async function submitStep(step, inputValue, inputFiles) {
+				const stepId = step.id;
+				const extType = String(step.extData?.type || step.ext_data?.type || "").trim().toLowerCase();
+				const nodeKind = String(step.nodeKind || "").trim().toLowerCase();
+				const isImageStep = extType === "image" || nodeKind === "image";
+				const isFileStep = extType === "user_file_input" || nodeKind === "file";
+				const isOperationStep = step.inputRequired === false || nodeKind === "operation";
+
+				if (!isStepUnlocked(stepId) || state.inFlightStepId !== null) {
+					return;
+				}
+				if (isFileStep && (!Array.isArray(inputFiles) || inputFiles.length === 0)) {
+					appendMessage("error", "Please upload at least one file before submitting this file step.");
+					return;
+				}
+				state.inFlightStepId = stepId;
+				renderSteps();
+
+				appendMessage("system", `Submitting step: ${stepId}`);
+
+				try {
+					const normalizedRequest = String(inputValue || "").trim();
+					const requestBody = { sessionId: state.sessionId, stepId };
+
+					if (isFileStep) {
+						const filesPayload = [];
+						for (const file of inputFiles) {
+							const fileBuffer = await file.arrayBuffer();
+							const base64Payload = arrayBufferToBase64(fileBuffer);
+							filesPayload.push({
+								fileName: file.name,
+								fileBytes: fileToDataUrl(file, base64Payload)
+							});
+						}
+						requestBody.input = {
+							files: filesPayload,
+							request: normalizedRequest
+						};
+						appendMessage("system", `Uploaded ${filesPayload.length} file(s) sent as encoded byte strings.`);
+					} else if (isImageStep || isOperationStep) {
+						// dependency-driven / operation node: no direct input payload
+					} else {
+						requestBody.input = inputValue || "";
+					}
+
+					const response = await fetch(RUN_STEP_ENDPOINT, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(requestBody)
+					});
+
+					if (!response.ok || !response.body) {
+						throw new Error(`run-step failed: ${response.status}`);
+					}
+
+					await consumeSSE(response.body);
+				} catch (error) {
+					appendMessage("error", `Error: ${error.message || String(error)}`);
+				} finally {
+					if (!state.completedSteps.has(stepId)) {
+						state.autoQueuedSteps.delete(stepId);
+					}
+					state.inFlightStepId = null;
+					renderSteps();
+				}
+			}
+
+			async function consumeSSE(stream) {
+				const reader = stream.getReader();
+				const decoder = new TextDecoder("utf-8");
+				let buffer = "";
+
+				function processPacket(packet) {
+					const dataLines = packet
+						.split(/\r?\n/)
+						.filter((line) => line.startsWith("data:"))
+						.map((line) => line.slice(5).trim())
+						.join("\n");
+
+					if (!dataLines) return;
+
+					try {
+						const event = JSON.parse(dataLines);
+						handleEvent(event);
+					} catch (error) {
+						appendMessage("error", `Malformed SSE event: ${error.message || String(error)}`);
+					}
+				}
+
+				while (true) {
+					const { value, done } = await reader.read();
+					if (done) {
+						buffer += decoder.decode();
+						break;
+					}
+
+					buffer += decoder.decode(value, { stream: true });
+					const packets = buffer.split(/\r?\n\r?\n/);
+					buffer = packets.pop() || "";
+
+					for (const packet of packets) {
+						processPacket(packet);
+					}
+				}
+
+				if (buffer.trim()) {
+					processPacket(buffer);
+				}
+			}
+
+			function normalizeType(typeValue) {
+				return String(typeValue || "").trim().toUpperCase();
+			}
+
+			function normalizeStepName(event) {
+				const candidate = event?.stepName ?? event?.step_name ?? event?.stepId ?? event?.step_id ?? "";
+				return String(candidate).trim();
+			}
+
+			function handleEvent(event) {
+				const type = normalizeType(event.type);
+
+				switch (type) {
+					case "RUN_STARTED": {
+						appendMessage("system", `Run started: ${event.runId || "(unknown run)"}`);
+						break;
+					}
+					case "STEP_STARTED": {
+						appendMessage("system", `STEP_STARTED: ${normalizeStepName(event)}`);
+						break;
+					}
+						case "TEXT_MESSAGE_START": {
+							ensureAssistantMessage(event.messageId || "_default");
+							break;
+						}
+					case "TEXT_MESSAGE_CONTENT": {
+						upsertAssistantDelta(event.messageId || "_default", String(event.delta || ""));
+						break;
+					}
+					case "TEXT_MESSAGE_END": {
+						state.assistantByMessageId.delete(event.messageId || "_default");
+						break;
+					}
+					case "CUSTOM": {
+						if (event.name === "step_card" && event.value && event.value.stepId) {
+							const stepId = String(event.value.stepId || event.value.step_id || "").trim();
+							state.cards.set(stepId, event.value);
+							const cardState = String(event.value.state || "").trim().toLowerCase();
+							if (["completed", "done", "finished", "success", "succeeded"].includes(cardState)) {
+								state.completedSteps.add(stepId);
+							}
+							if (event.value.unlocked === true) {
+								// keep unlocked state computed by dependency model and completion set
+							}
+							renderSteps();
+						}
+						break;
+					}
+					case "STEP_FINISHED": {
+						const stepName = normalizeStepName(event) || String(state.inFlightStepId || "");
+						if (stepName) {
+							state.completedSteps.add(stepName);
+							appendMessage("system", `STEP_FINISHED: ${stepName}`);
+							renderSteps();
+						}
+						break;
+					}
+					case "RUN_ERROR": {
+						appendMessage("error", `RUN_ERROR: ${event.message || "Unknown error"}`);
+						break;
+					}
+					case "RUN_FINISHED": {
+						appendMessage("system", "RUN_FINISHED");
+						const result = event.result;
+						if (result && result.final) {
+							els.finalResult.hidden = false;
+							els.finalResult.textContent = JSON.stringify(result.final, null, 2);
+						}
+						break;
+					}
+					default:
+						break;
+				}
+			}
+
+			function escapeHtml(value) {
+				return String(value)
+					.replaceAll("&", "&amp;")
+					.replaceAll("<", "&lt;")
+					.replaceAll(">", "&gt;")
+					.replaceAll('"', "&quot;")
+					.replaceAll("'", "&#39;");
+			}
+
+			async function onNewSession() {
+				const newId = `session_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+				try {
+					const payload = await callResetSession(newId);
+					setSessionId(payload.sessionId || newId);
+					clearWorkflowState();
+					appendMessage("system", `New session ready: ${state.sessionId}`);
+				} catch (error) {
+					appendMessage("error", `New session failed: ${error.message || String(error)}`);
+				}
+			}
+
+			async function onResetSession() {
+				try {
+					const payload = await callResetSession(state.sessionId);
+					setSessionId(payload.sessionId || state.sessionId);
+					clearWorkflowState();
+					appendMessage("system", `Session reset: ${state.sessionId}`);
+				} catch (error) {
+					appendMessage("error", `Reset failed: ${error.message || String(error)}`);
+				}
+			}
+
+			function init() {
+				setSessionId(state.sessionId);
+				els.newSessionBtn.addEventListener("click", onNewSession);
+				els.resetSessionBtn.addEventListener("click", onResetSession);
+				renderSteps();
+				appendMessage("system", "Ready. Submit an unlocked step to start streaming events.");
+			}
+
+			init();
+		</script>
+	</body>
+</html>

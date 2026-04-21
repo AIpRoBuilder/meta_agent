@@ -1,89 +1,77 @@
-from architect.data_flow_planner import DataFlowPlanner
-from auditor.graph_json_auditor import GraphJsonAuditor
-from auditor.node_auditor import NodeAuditor
-from auditor.main_entrypoint_auditor import MainEntryPointAuditor
-from worker.main_writer import PromptMainFileCoder
-from worker.node_writer import PromptNodeFileCoder
-from worker.context_writer import PromptContextParamCoder
-from demand_analyzer.requirement_disector import RequirementDisector
-from architect.graph_planner import GraphPlanner
-from tools.graph_tools import graph_to_nodes
+import os
 
-# coder.code_to_file("Write a node that find prime numbers", "generated_node.py")
-api_key="sk-8b72ab4e941b46eb9631b9d5c8af5b0a"
-model = "deepseek-chat"
-provider="deepseek"
-root_dir = "./example"
+from meta_agent.agent_builder import AgentBuilder
 
 
+def main() -> None:
 
-analyzer = RequirementDisector(api_key=api_key, 
-                        model=model,provider=provider)
-analyzer.code_to_file("Analyze the requirements to create an app for law contract audit and compare two different contracts.", 
-                      "requirement_analysis.md")
-print("Requirement analysis completed.")
+	requirement_text = """
+我是中国电信负责AI业务条线FDE团队组建的项目经理，帮我构建一个生成一张工作模式的流程图的工作流，具体功能是
+初始输入FDE流程架构图片和三个工具（智聚、数聚、云聚）的介绍图并根据提供的图片解析，帮我梳理在新形势下如何从传统项目售前、售中、售后模式，转化成FDE团队工作模式的具体落地方式，并形成一张完整的流程图。
+输出流程图要求：
+1、帮我细化出每个步骤所需的角色、分工、所需工具、输入及输出。
+2、流程图需要清晰展示出每个步骤和组件之间的关系和依赖。
+3、流程图需要符合中国电信的企业文化和工作方式，包含三个工具（智聚、数聚、云聚）的介绍
+4、整体流程不依赖人工编辑，需要使用图片大模型解析输入的图片内容并自动生成流程图。
+5、流程图需要以mmd或者json图格式解析成的png图片形式输出，并且可以下载。
+6、需要输入两张图片进行解析
+""".strip()
+	requirement_text = """
+ 帮我构建一个工作流
+ 工作流程(5步闭环)
+1.热点关键词拆解模块
+输入:课程内容文档、目标用户画像、教学大纲
+处理:
+分析课程核心价值点
+提取3-5个核心关键词
+结合教育热点话题扩展关键词库
+输出:关键词列表(如:自主学习、数学提分、高效学习法、暑假计划)
+2.爆款内容搜索模块
+输入:关键词列表、目标平台(视频号/抖音/小红书)
+处理:
+多平台爆款内容检索
+内容形式识别(口播/剧情/图文)
+互动数据分析(点赞/评论/转发)
+输出:爆款内容列表(含标题、文案、形式、互动数据)
+3.仿写脚本生成模块
+输入:爆款内容原文+课程核心亮点
+处理:
+结构分析与模仿
+风格迁移(保持爆款节奏)
+内容替换(融入教育元素)
+输出:适配后的视频脚本/图文文案,引导购买或者加微
+4.多媒体内容制作模块
+输入:脚本/文案、内容形式要求
+处理:
+口播类:调用数字人API生成视频
+剧情类:调用文生视频API生成短视频
+图文类:自动排版设计
+输出:成品视频/图文素材
+5.分发物料生成模块
+输入:核心内容、目标平台特性
+处理:
+平台适配标题生成
+封面图自动设计
+分发文案撰写
+输出:完整的分发物料包
+ """
+ 
+	requirement_text = """
+ 帮我构建一个工作流，用户输入搜索词，工作流自动在小红书搜索相关内容，分析内容信息（如评价），并生成一个包含推荐理由的内容列表，最后将结果以表格形式输出。"""
 
-graph_json_auditor = GraphJsonAuditor()
-graph_planner = GraphPlanner(api_key=api_key, 
-                        model=model,provider=provider)
-graph_planner.plan_from_file("requirement_analysis.md", f"{root_dir}/graph_plan.json")
-while True:
-    ok, violations = graph_json_auditor.audit_graph_json(f"{root_dir}/graph_plan.json")
-    if ok:
-        print("Graph JSON passed the audit!")
-        break
-    amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-    print(f"Graph JSON failed the audit with violations:\n{amendment}")
-    graph_planner.amend_file_with_feedback(f"{root_dir}/graph_plan.json", amendment, temperature=0.2)
-print("Graph planning completed.")
+	builder = AgentBuilder(
+		api_key="sk-7b750ecf940b45be82019e430be390b0",
+		provider="deepseek",
+		model="deepseek-reasoner",
+		root_dir="./example_agent",
+	)
 
-dataflow_planner = DataFlowPlanner(api_key=api_key, model=model,provider=provider)
-dataflow_planner.diagram_from_file("requirement_analysis.md", f"{root_dir}/data_flow.json", f"{root_dir}/graph_plan.json", temperature=0.0)
+	builder.run_full_pipeline(
+		requirement_text=requirement_text,
+		test_after_generation=True,
+	)
 
-print("DataFlow Diagram completed.")
-param_coder = PromptContextParamCoder(api_key=api_key, model=model,provider=provider)
-param_coder.write_context_param_from_data_flow(f"{root_dir}/data_flow.json", 
-                                               "LawParam", 
-                                               f"{root_dir}/LawParam.py",
-                                               graph_plan_path=f"{root_dir}/graph_plan.json", 
-                                               temperature=0.0)
 
-coder = PromptNodeFileCoder(api_key=api_key,
-                        model=model,provider=provider)
-print("Starting node generation and audit...")
-nodes = graph_to_nodes(f"{root_dir}/graph_plan.json")
-for name, info in nodes.items():
-    file_path = coder.write_node_from_requirement(name,
-                                                  "LawParam", 
-                                                  f"{root_dir}/graph_plan.json",
-                                                  "requirement_analysis.md", 
-                                                  f"{root_dir}/{name}", 
-                                                  language="python",temperature=0.0)
-    while True:
-        ok, violations = NodeAuditor().audit_node_file(file_path)
-        if ok:
-            print(f"{name} passed the audit!")
-            break
-        amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-        print(f"{name} failed the audit with violations:\n{amendment}")
-        coder.amend_code_with_feedback(f"{root_dir}/{name}", amendment, language="python",temperature=0.2)
-print("All nodes generated and audited successfully.")
-print("Generating main entrypoint...")
-main_writer = PromptMainFileCoder(api_key=api_key, 
-                        model=model,provider=provider)
-main_writer.write_main_entrypoint(
-    pipeline_json=f"{root_dir}/graph_plan.json",
-    output_path=f"{root_dir}/main_entrypoint.py",
-    fastapi_host="0.0.0.0",
-    temperature=0.0
-)
-while True:
-    ok, violations = MainEntryPointAuditor().audit_main_entrypoint_file(f"{root_dir}/main_entrypoint.py")
-    if ok:
-        print("main_writer passed the audit!")
-        break
-    amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-    print(f"main_writer failed the audit with violations:\n{amendment}")
-    main_writer.amend_code_with_feedback(f"{root_dir}/main_entrypoint.py", amendment, language="python",temperature=0.2)
-    
-    
+if __name__ == "__main__":
+	main()
+

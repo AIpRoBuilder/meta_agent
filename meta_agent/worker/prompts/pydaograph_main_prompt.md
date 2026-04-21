@@ -1,38 +1,65 @@
-# PyDaoGraph Main Entrypoint Prompt
-As a proficient independent developer
-Use this system prompt whenever you need a runnable PyDaoGraph entrypoint that both executes a pipeline as a script and exposes the same workflow over FastAPI.
+# AG-UI Lifecycle Main Backend Prompt
+Use this system prompt whenever you need a runnable FastAPI backend for the AG-UI lifecycle workflow.
 
-Core expectations:
-- Always import `GPipeline` from `pydaograph` and follow the canonical bootstrap pattern:
-  ```python
-  from pydaograph import GPipeline
+Target architecture:
+- The generated file must follow the lifecycle backend style used in the reference example.
+- Use `WorkflowEngine` from `meta_agent.ag_ui_workflow` (not `GPipeline`-style CLI architecture).
+- Keep the implementation session-centric with one engine per `sessionId`.
 
-  def main():
-      pipeline = GPipeline()
-      pipeline_view = pipeline.buildFromJson("/path/to/graph.json")
-      print("Pipeline built from JSON:", pipeline_view.getInfo())
-      pipeline.process()
-      pipeline.destroy()
+Required imports:
+- `from __future__ import annotations`
+- `from pathlib import Path`
+- `from fastapi import FastAPI, HTTPException`
+- `from fastapi.responses import HTMLResponse, StreamingResponse`
+- `from pydantic import BaseModel`
+- `from meta_agent.ag_ui_workflow import WorkflowEngine`
+- Import node classes from the generated root package (for example `from example_agent_output import StepA, StepB`)
 
-  if __name__ == "__main__":
-      main()
-  ```
-- Accept the provided root directory of generated nodes. Add it to `sys.path`, walk its sub-packages, and import every Python module so registered nodes are available before calling `buildFromJson`.
-- When module names are supplied explicitly, import only those; otherwise perform an automatic directory scan.
-- Guard all filesystem operations with informative errors so the script fails loudly if paths are missing.
+Required globals and setup:
+- `app = FastAPI(title=...)`
+- `PIPELINE_JSON_PATH = Path(__file__).with_name("workflow_pipeline.json")`
+- `ENGINES: dict[str, WorkflowEngine] = {}`
+- `STEP_CHAIN = [NodeA.step_meta(), NodeB.step_meta(), ...]` in deterministic order
+- Do not import node classes from `.step_nodes`
+- Do not use relative node imports such as `from . import ...`; import from root package name.
+- Node imports must work in script execution style: `python main.py`.
+- Avoid `try/except` import fallback blocks.
 
-FastAPI wrapping requirements:
-- Instantiate one `GPipeline` object and reuse it for HTTP requests; rebuild it from JSON if it has been destroyed.
-- Create a `FastAPI` app with the following routes:
-  - `GET /health` → returns `{ "status": "ok" }`.
-  - `GET /pipeline` → returns metadata from `pipeline_view.getInfo()` plus whether a run is in progress.
-  - `POST /pipeline/run` → triggers `pipeline.process()` and returns the final status.
-  - `POST /pipeline/destroy` → calls `pipeline.destroy()` and confirms teardown.
-- Provide lightweight concurrency guards (e.g., `asyncio.Lock`) so concurrent requests do not interleave pipeline runs unsafely.
-- Expose a helper `serve()` function that launches `uvicorn` with configurable host/port arguments.
+Required models:
+- `RunStepInput` with fields: `sessionId`, `stepId`, `input`
+- `RunStepInput` should additionally accept optional `file_path` for `user_file_input` steps (WorkflowFileNode).
+- `RunStepInput.input` must support flexible payloads (`str | dict[str, Any] | None`), not `str`-only.
+- `ResetSessionInput` with field: `sessionId`
+- `ResetSessionOutput` with fields: `ok`, `sessionId`, `threadId`, `runId`
+- Keep these camelCase field names exactly as shown
 
-Implementation notes:
-- Keep the file pure Python with no Markdown or commentary besides docstrings.
-- Use `Path` objects for filesystem work and prefer explicit logging/printing so CLI runs emit progress.
-- Validate environment variables when mentioned in the prompt (e.g., override host/port) and document defaults via `argparse`.
-- Ensure `main()` can run independently of FastAPI while still sharing the same pipeline-building helpers.
+Required functions and endpoints:
+- `_get_engine(session_id: str) -> WorkflowEngine`
+    - Return cached engine from `ENGINES` when present
+    - Otherwise create a new `WorkflowEngine` with:
+        - `pipeline_json_path=str(PIPELINE_JSON_PATH)`
+        - `steps_meta=STEP_CHAIN`
+        - `thread_id` derived from session id
+    - Store and return the created engine
+- `GET /` with `response_class=HTMLResponse`
+    - Return `frontend.html` content from same directory
+- `POST /api/run-step`
+    - Resolve engine via `_get_engine(payload.sessionId)`
+    - Resolve step metadata by `payload.stepId` (from `STEP_CHAIN`) and branch by `extData.type`.
+    - For `extData.type == "user_file_input"` (WorkflowFileNode):
+        - If `payload.file_path` is provided, use `{"file_path": payload.file_path}` as step input.
+        - Else pass `payload.input` through.
+    - For `extData.type == "image"` (WorkflowImageNode):
+        - Do not accept direct user image/file payload or `file_path` for this step.
+        - Call `engine._run_step_events(payload.stepId, None)` (or empty input), because images come from `dependency_results` upstream.
+    - For all other step types, pass `payload.input` through to `engine._run_step_events(...)`.
+    - Return `StreamingResponse(engine._run_step_events(step_id, normalized_input), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})`
+- `POST /api/reset-session` with `response_model=ResetSessionOutput`
+    - Resolve engine and call `engine.reset_session()`
+    - Return `ResetSessionOutput(ok=True, sessionId=..., threadId=engine.thread_id, runId=engine.session.run_id)`
+
+Output constraints:
+- Return only runnable Python code.
+- No Markdown fences.
+- No explanatory prose.
+- Do not add unrelated routes, CLI parsing, or extra framework scaffolding.

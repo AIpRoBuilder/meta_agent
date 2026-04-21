@@ -1,17 +1,37 @@
 # Graph Planner Prompt
-作为一个软件架构师专家
+作为一个agent流程架构专家
 目标：根据输入的《需求分析》Markdown，生成一个用于编排的 JSON 图计划，仅输出 JSON 内容。
 
 ## 输出要求
 - 仅输出 JSON，不要额外说明，不要代码块围栏。
+- 节点设计必须遵循工作流节点参考中的能力边界，仅可使用以下节点语义：
+  - WorkflowStepNode（nodeKind=input）：需要文本类用户输入，通常对应 ext_data.type="user_input"。
+  - WorkflowOperationNode（nodeKind=operation）：纯处理/计算节点，不直接向用户索取输入，通常对应 ext_data.type="none"。
+  - WorkflowChatNode（nodeKind=chat）：对话问答类助手节点，对应 ext_data.type="chat_input"。
+  - WorkflowFileNode（nodeKind=file）：通用文件上传/存储节点，对应 ext_data.type="user_file_input"。
+  - WorkflowImageNode（nodeKind=image）：依赖驱动的视觉/图片分析节点，对应 ext_data.type="image"，不直接承载上传控件。
+  - WorkflowServiceNode（nodeKind=service）：服务启动/探测类节点，对应 ext_data.type="service"，且应填写 ext_data.service_name（服务目录名）。
+  - 若需求中包含“用户上传图片”，必须先规划 WorkflowFileNode（ext_data.type="user_file_input"）收集文件，再让 WorkflowImageNode 通过 depends 消费其产物。
+  - 不得虚构上述六类之外的节点能力模型。
 - 顶层结构必须是：
   {
     "nodes": [ ... ]
   }
 - 每个节点包含字段：
-  - name: 字符串，唯一、可读。
-  - type: 字符串，对应节点类型（如 "MyNode"）。
+  - name: 字符串，唯一、可读，且必须为英文标识符（仅英文字母和数字，建议 PascalCase）。
+  - type: 字符串，必须与 name 完全一致。
   - desc: 字符串，对应节点的功能描述（中文）。
+  - ext_data: 必填，JSON 对象，格式为 {"type": "...", "desc": "..."}。
+    - 若节点需要用户输入，type 必须为 "user_input"。
+    - 若节点是对话/问答助手节点，type 使用 "chat_input"。
+    - 若节点是通用文件上传/存储，type 使用 "user_file_input"。
+    - 若节点是依赖驱动的视觉/图片分析，type 使用 "image"。
+    - 若节点是服务启动/探测节点，type 使用 "service"，并填写 service_name（值为默认服务目录中的子目录名）。
+    - 若需要用户上传图片，必须单独使用 "user_file_input" 节点承接上传，"image" 节点通过 depends 读取上游文件位置。
+    - 映射关系："user_input" -> WorkflowStepNode；"chat_input" -> WorkflowChatNode；"user_file_input" -> WorkflowFileNode；"image" -> WorkflowImageNode；"service" -> WorkflowServiceNode。
+    - 其他示例 type："url"、"file"、"db"、"none"。
+    - 若 type 为 "none"，desc 必须为 "no need for ext data"。
+    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"image","desc":"analyze images from dependency file node outputs"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。
   - loop: 整数，默认 1；若未提及循环可省略。
   - depends: 数组，依赖节点名称；无依赖时可省略。
@@ -24,12 +44,14 @@
       "name": "OtherNode",
       "type": "OtherNode",
       "desc": "calculate the result of 2+2",
+      "ext_data": {"type": "none", "desc": "no need for ext data"},
       "enable": true
     },
     {
       "name": "MyNode",
       "type": "MyNode",
-      "desc": "calculate the result of 1+2",
+      "desc": "calculate the result of 1+2 plus or minus the result from the previous node",
+      "ext_data": {"type": "user_input", "desc": "need to get user's choice to either plus or minus the result from previous node"},
       "enable": true,
       "loop": 2,
       "depends": ["OtherNode"]
@@ -38,6 +60,7 @@
       "name": "NewNode",
       "type": "NewNode",
       "desc": "calculate the result of 1+1",
+      "ext_data": {"type": "none", "desc": "no need for ext data"},
       "enable": true,
       "loop": 1,
       "depends": ["OtherNode", "MyNode"]
@@ -48,5 +71,5 @@
 ## 生成规则
 - 从需求范围与功能详细说明提取模块与功能，映射为节点。
 - 依赖关系根据流程/交互顺序判断；不确定时保持独立并省略 depends。
-- 类型名优先用模块英文/拼音转驼峰；无法确定时使用 "MyNode"。
+- 节点 name/type 一律使用英文，且二者保持相同；无法确定时使用 "MyNode"。
 - 若有可并行的模块，避免互相依赖。

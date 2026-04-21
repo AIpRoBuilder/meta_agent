@@ -57,6 +57,7 @@ def graph_to_nodes(graph_json: Any) -> Dict[str, Dict[str, Any]]:
             "type": node.get("type", ""),
             "desc": node.get("desc", ""),
             "depends": depends,
+            "ext_data": node.get("ext_data", ""),
         }
 
     return result

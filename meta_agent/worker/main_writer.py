@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 # Ensure repository root is importable so we can reach llm_client.coder when executed
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -21,9 +22,27 @@ def _stringify_modules(module_names: Optional[Sequence[str]]) -> str:
     return "Explicit node modules to import in order: " + ", ".join(module_names)
 
 
+def _extract_enabled_node_class_names(graph_plan: Mapping[str, Any]) -> list[str]:
+    nodes = graph_plan.get("nodes", []) if isinstance(graph_plan, Mapping) else []
+    if not isinstance(nodes, list):
+        return []
+
+    node_class_names: list[str] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        if node.get("enable", True) is False:
+            continue
+
+        class_name = str(node.get("name", "")).strip()
+        if class_name:
+            node_class_names.append(class_name)
+    return node_class_names
+
+
 @dataclass
 class PromptMainFileCoder(Coder):
-    """Coder that emits a FastAPI-wrapped PyDaoGraph entrypoint."""
+    """Coder that emits an AG-UI lifecycle FastAPI backend entrypoint."""
 
     prompt_path: str = "worker/prompts/pydaograph_main_prompt.md"
 
@@ -38,30 +57,102 @@ class PromptMainFileCoder(Coder):
     def _build_user_prompt(
         self,
         *,
-        pipeline_json: Path,
+        project_root_path: Path,
+        graph_plan_json_path: Path,
+        node_class_names: Sequence[str],
+        nodes_package_name: str,
         fastapi_host: str,
         fastapi_port: int,
         uvicorn_reload: bool,
     ) -> str:
+        class_chain = ", ".join(node_class_names) if node_class_names else "none"
         template_lines: Iterable[str] = (
-            "Generate a single Python file that bootstraps a PyDaoGraph pipeline.",
-            f"Graph definition JSON path: {pipeline_json}",
+            "Generate a single Python backend file that matches the AG-UI lifecycle workflow backend pattern.",
+            f"Project root path: {project_root_path}",
+            f"Workflow pipeline JSON path: {graph_plan_json_path}",
+            f"Node classes in graph-plan order: {class_chain}",
+            f"Node package root name: {nodes_package_name}",
             "The file must:",
-            "- Add nodes_root to sys.path and import the required node classes before building the pipeline.",
-            "- Follow the canonical GPipeline build snippet shown in the system prompt.",
-            "- Provide a CLI-friendly main() that prints build info and runs the pipeline.",
-            "- Create a FastAPI app exposing /health, /pipeline, /pipeline/run, and /pipeline/destroy routes.",
-            "- Reuse one GPipeline instance for both CLI and HTTP uses, guarding concurrent runs with an asyncio.Lock.",
-            f"- Expose a serve(host=\"{fastapi_host}\", port={fastapi_port}, reload={uvicorn_reload}) helper that calls uvicorn.run.",
-            "- Include an argparse entry so users can pick CLI vs server mode and override host/port at runtime.",
+            "- Use imports and module layout aligned with the lifecycle example: FastAPI, HTMLResponse, StreamingResponse, BaseModel, WorkflowEngine, and node imports from the root package.",
+            "- Import all node classes from the package root named above (for example `from example_agent_output import StepA, StepB`) and do NOT import from `.step_nodes`.",
+            "- Do not use relative node imports such as `from . import ...`; use `from <root_package_name> import ...` directly.",
+            "- Ensure node imports work when executed as script (`python main.py`) and avoid try/except import blocks.",
+            "- Define app-level constants for pipeline json path, engine cache map, and ordered STEP_CHAIN built from each node's step_meta().",
+            "- Implement RunStepInput, ResetSessionInput, and ResetSessionOutput pydantic models with camelCase fields.",
+            "- In RunStepInput include: sessionId, stepId, input, and optional file_path.",
+            "- Type RunStepInput.input as flexible payload (e.g. str | dict[str, Any] | None), not str-only.",
+            "- Add a small helper (for example `_meta_field(meta, key, default=None)`) that reads step metadata from either dict-like or object-like shapes.",
+            "- Implement _get_engine(session_id) that lazily creates WorkflowEngine per session and caches it in ENGINES.",
+            "- Provide GET / returning frontend.html from the same directory.",
+            "- Provide POST /api/run-step returning StreamingResponse(engine._run_step_events(...)) with SSE headers.",
+			"- In /api/run-step, resolve step metadata by payload.stepId and branch by extData.type using dict-safe access from STEP_CHAIN step_meta() (no direct attribute access like `s.id` or `step_meta.extData`).",
+			"- Use metadata lookup shape equivalent to: `next((s for s in STEP_CHAIN if _meta_field(s, \"id\") == payload.stepId), None)`.",
+			"- Read ext type via mapping-safe logic equivalent to: `ext_data = _meta_field(step_meta, \"extData\"); ext_type = ext_data.get(\"type\") if isinstance(ext_data, Mapping) else None`.",
+			"- Only for extData.type == 'user_file_input', if payload.file_path is provided pass {'file_path': payload.file_path}; otherwise pass payload.input.",
+			"- For extData.type == 'image', do not pass direct file_path/user image payload; pass None or empty input and rely on upstream dependencies.",
+            "- Provide POST /api/reset-session returning ResetSessionOutput with ok/sessionId/threadId/runId.",
+            "- Keep naming and endpoint shapes consistent with the lifecycle example and avoid adding unrelated routes.",
+            f"- If adding a local server launcher helper, default host to {fastapi_host} and port to {fastapi_port}; reload default is {uvicorn_reload}.",
             "- Only output runnable Python code; no Markdown fences or commentary.",
         )
         return "\n".join(template_lines)
 
+    def write_nodes_package_init(
+        self,
+        *,
+        graph_plan_json_path: str,
+        package_dir_path: str,
+        output_path: Optional[str] = None,
+        overwrite: bool = True,
+    ) -> Path:
+        graph_plan_path = Path(graph_plan_json_path).expanduser().resolve()
+        if not graph_plan_path.exists():
+            raise FileNotFoundError(f"graph_plan_json_path does not exist: {graph_plan_path}")
+
+        package_dir = Path(package_dir_path).expanduser().resolve()
+        if not package_dir.exists() or not package_dir.is_dir():
+            raise FileNotFoundError(f"package_dir_path does not exist or is not a directory: {package_dir}")
+
+        graph_plan = json.loads(graph_plan_path.read_text(encoding="utf-8"))
+        node_class_names = _extract_enabled_node_class_names(graph_plan)
+        if not node_class_names:
+            raise ValueError(f"No enabled nodes found in graph plan: {graph_plan_path}")
+
+        missing_node_files = [name for name in node_class_names if not (package_dir / f"{name}.py").exists()]
+        if missing_node_files:
+            missing_preview = ", ".join(missing_node_files)
+            raise FileNotFoundError(f"Node files missing under package directory {package_dir}: {missing_preview}")
+
+        init_path = Path(output_path).expanduser() if output_path else package_dir / "__init__.py"
+        if init_path.exists() and not overwrite:
+            raise FileExistsError(f"Output file already exists and overwrite=False: {init_path}")
+
+        lines: list[str] = [
+            '"""Node package exports generated from graph_plan.json."""',
+            "",
+        ]
+        for class_name in node_class_names:
+            lines.append(f"from .{class_name} import {class_name}")
+
+        lines.extend(
+            [
+                "",
+                "__all__ = [",
+                *[f'    "{class_name}",' for class_name in node_class_names],
+                "]",
+                "",
+            ]
+        )
+
+        init_path.parent.mkdir(parents=True, exist_ok=True)
+        init_path.write_text("\n".join(lines), encoding="utf-8")
+        return init_path
+
     def write_main_entrypoint(
         self,
         *,
-        pipeline_json: str,
+        project_root_path: str,
+        graph_plan_json_path: str,
         output_path: str,
         fastapi_host: str = "0.0.0.0",
         fastapi_port: int = 8000,
@@ -70,15 +161,34 @@ class PromptMainFileCoder(Coder):
         temperature: float = 0.2,
         max_tokens: int = 8192,
     ) -> Path:
-        pipeline_json_path = Path(pipeline_json).expanduser().resolve()
-        if not pipeline_json_path.exists():
-            raise FileNotFoundError(f"pipeline_json does not exist: {pipeline_json_path}")
+        project_root = Path(project_root_path).expanduser().resolve()
+        if not project_root.exists() or not project_root.is_dir():
+            raise FileNotFoundError(f"project_root_path does not exist or is not a directory: {project_root}")
+
+        graph_plan_path = Path(graph_plan_json_path).expanduser().resolve()
+        if not graph_plan_path.exists():
+            raise FileNotFoundError(f"graph_plan_json_path does not exist: {graph_plan_path}")
+
+        graph_plan = json.loads(graph_plan_path.read_text(encoding="utf-8"))
+        node_class_names = _extract_enabled_node_class_names(graph_plan)
+        if not node_class_names:
+            raise ValueError(f"No enabled nodes found in graph plan: {graph_plan_path}")
 
         target_path = Path(output_path).expanduser()
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        nodes_package_name = target_path.parent.name
+
+        self.write_nodes_package_init(
+            graph_plan_json_path=str(graph_plan_path),
+            package_dir_path=str(target_path.parent),
+            overwrite=overwrite,
+        )
 
         user_prompt = self._build_user_prompt(
-            pipeline_json=pipeline_json_path,
+            project_root_path=project_root,
+            graph_plan_json_path=graph_plan_path,
+            node_class_names=node_class_names,
+            nodes_package_name=nodes_package_name,
             fastapi_host=fastapi_host,
             fastapi_port=fastapi_port,
             uvicorn_reload=uvicorn_reload,
@@ -118,10 +228,8 @@ class PromptMainFileCoder(Coder):
             "csharp": ".cs",
             "c#": ".cs",
         }
-        target_ext = ext_map.get(language_clean, f".{language_clean}" if language_clean else source_path.suffix)
-
-
         target_path = Path(code_path)
+        target_ext = ext_map.get(language_clean, f".{language_clean}" if language_clean else (target_path.suffix or ".txt"))
         if target_path.suffix.lower() != target_ext:
             target_path = target_path.with_suffix(target_ext)
         

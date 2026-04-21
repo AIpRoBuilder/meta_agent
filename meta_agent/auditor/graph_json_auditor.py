@@ -1,16 +1,56 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Set
 
+from architect.graph import Graph
 from auditor.base_json_auditor import BaseJsonAuditor
 from auditor.data import JsonRuleViolation
-from tools.graph_tools import graph_to_nodes, is_dag, is_weakly_connected
 
 
 class GraphJsonAuditor(BaseJsonAuditor):
 	"""Audit graph JSON definitions for name/type consistency."""
 
-	def audit_graph_json(self, source: Any) -> tuple[bool, List[JsonRuleViolation]]:
+	EN_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+
+	def _extract_ext_type(self, node: Dict[str, Any]) -> str:
+		ext_data = node.get("ext_data")
+		if isinstance(ext_data, dict):
+			return str(ext_data.get("type", "")).strip().lower()
+		if isinstance(ext_data, str):
+			return ext_data.strip().lower()
+		return ""
+
+	def _collect_transitive_dependencies(
+		self,
+		node_name: str,
+		node_by_name: Dict[str, Dict[str, Any]],
+	) -> Set[str]:
+		"""Collect all upstream dependency node names (multi-hop) for a node."""
+
+		visited: Set[str] = set()
+		stack: List[str] = [node_name]
+
+		while stack:
+			current = stack.pop()
+			current_node = node_by_name.get(current)
+			if not isinstance(current_node, dict):
+				continue
+
+			depends = current_node.get("depends") or []
+			if not isinstance(depends, list):
+				continue
+
+			for dep in depends:
+				dep_name = str(dep).strip()
+				if not dep_name or dep_name in visited:
+					continue
+				visited.add(dep_name)
+				stack.append(dep_name)
+
+		return visited
+
+	def audit_graph_json(self, source: Graph) -> tuple[bool, List[JsonRuleViolation]]:
 		"""Validate that every node's ``name`` matches its ``type``, check for cycles, and connectivity.
 
 		Args:
@@ -22,23 +62,68 @@ class GraphJsonAuditor(BaseJsonAuditor):
 			detected cycles, or disconnected components as ``JsonRuleViolation`` instances.
 		"""
 
-		nodes: Dict[str, Dict[str, Any]] = graph_to_nodes(source)
+		graph = source  # Already a Graph object
 		violations: List[JsonRuleViolation] = []
+		node_by_name: Dict[str, Dict[str, Any]] = {}
 
+		for node in graph.nodes:
+			if not isinstance(node, dict):
+				continue
+			node_name = str(node.get("name", "")).strip()
+			if node_name:
+				node_by_name[node_name] = node
 
-		# for idx, (name, info) in enumerate(nodes.items(), start=1):
-    	# 		node_type = (info.get("type") or "").strip()
-		# 	if name != node_type:
-		# 		violations.append(
-		# 			JsonRuleViolation(
-		# 				parts_name=name,
-		# 				rule="name_type_mismatch",
-		# 				detail=f"name '{name}' and type '{node_type}' must be identical",
-		# 				lineno=idx,
-		# 			)
-		# 		)
+		for index, node in enumerate(graph.nodes, start=1):
+			if not isinstance(node, dict):
+				continue
 
-		is_acyclic, cycle_path = is_dag(nodes)
+			name = str(node.get("name", "")).strip()
+			node_type = str(node.get("type", "")).strip()
+
+			if name != node_type:
+				violations.append(
+					JsonRuleViolation(
+						parts_name="graph",
+						rule="name_type_mismatch",
+						detail=f"Node '{name or '<empty>'}' must have type identical to name, got '{node_type or '<empty>'}'.",
+						lineno=index,
+					)
+				)
+
+			if not self.EN_IDENTIFIER_PATTERN.match(name):
+				violations.append(
+					JsonRuleViolation(
+						parts_name="graph",
+						rule="name_not_english_identifier",
+						detail=f"Node name '{name or '<empty>'}' must be English-only identifier (letters/digits, starts with letter).",
+						lineno=index,
+					)
+				)
+
+			ext_type = self._extract_ext_type(node)
+			if ext_type == "image":
+				upstream_nodes = self._collect_transitive_dependencies(name, node_by_name)
+				has_user_file_input_source = any(
+					self._extract_ext_type(node_by_name[dep_name]) == "user_file_input"
+					for dep_name in upstream_nodes
+					if dep_name in node_by_name
+				)
+
+				if not has_user_file_input_source:
+					violations.append(
+						JsonRuleViolation(
+							parts_name="graph",
+							rule="image_missing_user_file_input_dependency",
+							detail=(
+								f"Node '{name or '<empty>'}' has ext_data.type='image' but has no upstream dependency "
+								"(including transitive dependencies) with ext_data.type='user_file_input'."
+							),
+							lineno=index,
+						)
+					)
+
+		# Check for cycles
+		is_acyclic, cycle_path = graph.is_dag()
 		if not is_acyclic:
 			cycle_display = " -> ".join(cycle_path) if cycle_path else "cycle detected"
 			violations.append(
@@ -50,16 +135,14 @@ class GraphJsonAuditor(BaseJsonAuditor):
 				)
 			)
 
-		is_connected, components = is_weakly_connected(nodes)
+		# Check for weak connectivity
+		is_connected = graph.is_weakly_connected()
 		if not is_connected:
-			component_text = "; ".join(
-				", ".join(sorted(comp)) if comp else "<empty>" for comp in components
-			)
 			violations.append(
 				JsonRuleViolation(
 					parts_name="graph",
 					rule="disconnected",
-					detail=f"Graph is not fully connected; components: {component_text}",
+					detail="Graph is not fully connected",
 					lineno=1,
 				)
 			)

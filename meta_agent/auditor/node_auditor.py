@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from pathlib import Path
-from typing import List, Set
+from typing import Dict, List, Set, Optional, Tuple
+from pydaograph import GParam
 
 from auditor.data import RuleViolation
 from auditor.base_auditor import BaseAuditor
+from architect.graph import NodeMeta
+from tools.file_tools import compile_node_file_and_get_derived_keys
 
 
 class NodeAuditor(BaseAuditor):
@@ -17,8 +21,13 @@ class NodeAuditor(BaseAuditor):
         self.white_list: Set[str] = set(default_white_list)
         return
 
-    def audit_node_file(self, file_path: str) -> tuple[bool, List[RuleViolation]]:
-        """Audit a Python file and return whether it passes plus violations."""
+    def audit_node_file(self, file_path: str, node_meta: Optional[NodeMeta] = None) -> tuple[bool, List[RuleViolation]]:
+        """Audit a Python file and return whether it passes plus violations.
+        
+        Args:
+            file_path: Path to the Python file to audit.
+            node_meta: Optional NodeMeta object for additional ext_data checks.
+        """
 
         path = Path(file_path)
         if not path.is_file():
@@ -37,6 +46,7 @@ class NodeAuditor(BaseAuditor):
             return False, [violation]
 
         violations: List[RuleViolation] = []
+        self._check_no_todo_markers(source, violations)
         class_defs = [node for node in tree.body if isinstance(node, ast.ClassDef)]
         if not class_defs:
             violations.append(
@@ -48,12 +58,48 @@ class NodeAuditor(BaseAuditor):
                 )
             )
 
+        # collect all local GParam subclasses defined in this module
+        subclass_names: Set[str] = set()
         for cls in class_defs:
+            for base in cls.bases:
+                if isinstance(base, ast.Name) and base.id == "GParam":
+                    subclass_names.add(cls.name)
+                elif isinstance(base, ast.Attribute) and base.attr == "GParam":
+                    subclass_names.add(cls.name)
+
+        for cls in class_defs:
+            self._check_registered_class_name_matches_file_prefix(cls, path, violations)
             self._check_clone(cls, violations)
-            self._check_run(cls, violations)
-            self._check_self_calls(cls, violations)
+            self._check_init(cls, violations)
+            self._check_step_id_matches_class_name(cls, violations)
+            self._check_step_node_dependency_results(cls, path, violations)
+            self._check_chat_node_dependency_results(cls, path, violations)
+            self._check_image_node_dependency_results(cls, path, violations)
+            self._check_operation_node_dependency_results(cls, path, violations)
+            self._check_service_node_dependency_results(cls, path, violations)
+            self._check_skill_node_dependency_results(cls, path, violations)
+            self._check_node_meta_base_class_by_ext_data(cls, violations, node_meta)
+            self._check_dependencies_match_node_meta(cls, violations, node_meta)
+            self._check_self_calls(cls, violations, subclass_names)
+            # self._check_node_meta_ext_data(cls, violations, node_meta)
+            self._check_state_not_gparam(cls, violations, subclass_names)
+            self._check_no_unused_local_variables(cls, violations)
+            # self._check_dataclass_is_gparam(cls, violations, subclass_names)
+            self._check_no_try_imports(tree, violations)  # New check for try imports
 
         return len(violations) == 0, violations
+
+    def _check_no_todo_markers(self, source: str, violations: List[RuleViolation]) -> None:
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if "todo" in line.lower():
+                violations.append(
+                    RuleViolation(
+                        class_name="(file)",
+                        rule="no_todo_markers",
+                        detail="TODO markers are not allowed in node files.",
+                        lineno=lineno,
+                    )
+                )
 
     def _check_clone(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
         if not self._is_registered_class(cls):
@@ -95,47 +141,1051 @@ class NodeAuditor(BaseAuditor):
                 )
             )
 
-    def _check_run(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+    def _check_registered_class_name_matches_file_prefix(
+        self,
+        cls: ast.ClassDef,
+        file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        """Ensure registered class name matches the filename prefix (stem)."""
         if not self._is_registered_class(cls):
             return
 
-        method = self._get_method(cls, "run")
-        if method is None:
+        expected_class_name = file_path.stem
+        if cls.name != expected_class_name:
             violations.append(
                 RuleViolation(
                     class_name=cls.name,
-                    rule="run_missing",
-                    detail="Missing def run(self) -> CStatus.",
+                    rule="class_name_file_prefix_mismatch",
+                    detail=(
+                        f"Registered class name must match file prefix '{expected_class_name}', "
+                        f"got '{cls.name}'."
+                    ),
+                    lineno=cls.lineno,
+                )
+            )
+
+    def _check_init(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+        """Ensure registered classes implement `init(self) -> CStatus`."""
+        if not self._is_registered_class(cls):
+            return
+
+        method = self._get_method(cls, "init")
+        if method is not None:
+            if len(method.args.args) != 1:
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="init_signature",
+                        detail="init must accept only self.",
+                        lineno=method.lineno,
+                    )
+                )
+
+            if not self._has_cstatus_annotation(method):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="init_annotation",
+                        detail="init should be annotated to return CStatus.",
+                        lineno=method.lineno,
+                    )
+                )
+
+    def _check_step_id_matches_class_name(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+        """Ensure registered WorkflowStepNode classes define STEP_ID equal to class name."""
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_step_node_subclass(cls):
+            return
+
+        step_id_value: ast.expr | None = None
+        step_id_lineno = cls.lineno
+        for node in cls.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "STEP_ID":
+                    step_id_value = node.value
+                    step_id_lineno = node.lineno
+                    break
+            if step_id_value is not None:
+                break
+
+        if step_id_value is None:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="step_id_missing",
+                    detail="Missing STEP_ID class attribute.",
                     lineno=cls.lineno,
                 )
             )
             return
 
-        if len(method.args.args) != 1:
+        if not (isinstance(step_id_value, ast.Constant) and isinstance(step_id_value.value, str)):
             violations.append(
                 RuleViolation(
                     class_name=cls.name,
-                    rule="run_signature",
-                    detail="run must accept only self.",
-                    lineno=method.lineno,
+                    rule="step_id_not_string",
+                    detail="STEP_ID must be a string literal equal to the class name.",
+                    lineno=step_id_lineno,
+                )
+            )
+            return
+
+        if step_id_value.value != cls.name:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="step_id_mismatch",
+                    detail=f"STEP_ID must match class name '{cls.name}'.",
+                    lineno=step_id_lineno,
                 )
             )
 
-        if not self._has_cstatus_annotation(method):
-            violations.append(
-                RuleViolation(
-                    class_name=cls.name,
-                    rule="run_annotation",
-                    detail="run should be annotated to return CStatus.",
-                    lineno=method.lineno,
-                )
-            )
+    def _is_workflow_step_node_subclass(self, cls: ast.ClassDef) -> bool:
+        for base in cls.bases:
+            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowImageNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+                return True
+            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowImageNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+                return True
+        return False
+
+    def _is_workflow_skill_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowSkillNode"})
+
+    def _is_workflow_input_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowStepNode"})
+
+    def _is_workflow_operation_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowOperationNode"})
+
+    def _is_workflow_chat_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowChatNode"})
+
+    def _is_workflow_image_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowImageNode"})
+
+    def _is_workflow_file_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowFileNode"})
+
+    def _is_workflow_service_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowServiceNode"})
 
     def _get_method(self, cls: ast.ClassDef, name: str) -> ast.FunctionDef | None:
         for node in cls.body:
             if isinstance(node, ast.FunctionDef) and node.name == name:
                 return node
         return None
+
+    def _collect_target_names(self, target: ast.AST) -> Set[str]:
+        names: Set[str] = set()
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+            return names
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                names.update(self._collect_target_names(elt))
+        return names
+
+    def _check_no_unused_local_variables(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+        if not self._is_workflow_step_node_subclass(cls):
+            return
+
+        for node in cls.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+
+            assigned: Dict[str, int] = {}
+            used: Set[str] = set()
+
+            for stmt in ast.walk(node):
+                if isinstance(stmt, ast.Name) and isinstance(stmt.ctx, ast.Load):
+                    used.add(stmt.id)
+
+                elif isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        for name in self._collect_target_names(target):
+                            assigned.setdefault(name, stmt.lineno)
+
+                elif isinstance(stmt, ast.AnnAssign):
+                    for name in self._collect_target_names(stmt.target):
+                        assigned.setdefault(name, stmt.lineno)
+
+                elif isinstance(stmt, ast.AugAssign):
+                    for name in self._collect_target_names(stmt.target):
+                        assigned.setdefault(name, stmt.lineno)
+                        used.add(name)
+
+                elif isinstance(stmt, ast.NamedExpr):
+                    for name in self._collect_target_names(stmt.target):
+                        assigned.setdefault(name, stmt.lineno)
+
+                elif isinstance(stmt, ast.For):
+                    for name in self._collect_target_names(stmt.target):
+                        assigned.setdefault(name, stmt.lineno)
+
+                elif isinstance(stmt, ast.With):
+                    for item in stmt.items:
+                        if item.optional_vars is not None:
+                            for name in self._collect_target_names(item.optional_vars):
+                                assigned.setdefault(name, stmt.lineno)
+
+                elif isinstance(stmt, ast.ExceptHandler):
+                    if isinstance(stmt.name, str) and stmt.name:
+                        assigned.setdefault(stmt.name, stmt.lineno)
+
+            for name, lineno in assigned.items():
+                if name in {"self", "cls"} or name.startswith("_"):
+                    continue
+                if name not in used:
+                    violations.append(
+                        RuleViolation(
+                            class_name=cls.name,
+                            rule="unused_local_variable",
+                            detail=f"Local variable '{name}' is assigned but never used in method '{node.name}'.",
+                            lineno=lineno,
+                        )
+                    )
+
+    def _check_dependencies_match_node_meta(
+        self,
+        cls: ast.ClassDef,
+        violations: List[RuleViolation],
+        node_meta: Optional[NodeMeta] = None,
+    ) -> None:
+        """Ensure DEPENDENCIES class attribute matches node_meta.depends.
+
+        Rules:
+        - If node_meta is provided and the class is a registered WorkflowStep-family node,
+          a ``DEPENDENCIES`` class attribute must be defined.
+        - Its value must be a list of string literals equal to ``node_meta.depends``
+          (order-sensitive).
+        """
+        if node_meta is None:
+            return
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_step_node_subclass(cls):
+            return
+
+        expected: List[str] = list(node_meta.depends) if node_meta.depends else []
+
+        # Locate DEPENDENCIES assignment in the class body.
+        deps_value: ast.expr | None = None
+        deps_lineno: int = cls.lineno
+        for node in cls.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "DEPENDENCIES":
+                    deps_value = node.value
+                    deps_lineno = node.lineno
+                    break
+            if deps_value is not None:
+                break
+
+        if deps_value is None:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="dependencies_missing",
+                    detail=(
+                        f"Missing DEPENDENCIES class attribute. "
+                        f"Expected: {expected!r} (from node_meta.depends)."
+                    ),
+                    lineno=cls.lineno,
+                )
+            )
+            return
+
+        # deps_value must be a list of string literals.
+        if not isinstance(deps_value, ast.List):
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="dependencies_not_list",
+                    detail="DEPENDENCIES must be a list literal of string names.",
+                    lineno=deps_lineno,
+                )
+            )
+            return
+
+        actual: List[str] = []
+        for elt in deps_value.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                actual.append(elt.value)
+            else:
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="dependencies_non_string_element",
+                        detail="All elements of DEPENDENCIES must be string literals.",
+                        lineno=deps_lineno,
+                    )
+                )
+                return
+
+        if actual != expected:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="dependencies_mismatch",
+                    detail=(
+                        f"DEPENDENCIES {actual!r} does not match node_meta.depends {expected!r}."
+                    ),
+                    lineno=deps_lineno,
+                )
+            )
+
+    def _check_node_meta_ext_data(self, cls: ast.ClassDef, violations: List[RuleViolation], node_meta: Optional[NodeMeta] = None) -> None:
+        """Check if NodeMeta has ext_data, then class must have getExtData method."""
+        if node_meta is None or node_meta.ext_data is None:
+            return
+
+        if not self._is_registered_class(cls):
+            return
+
+        method = self._get_method(cls, "getExtData")
+        if method is None:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="ext_data_getter_missing",
+                    detail="NodeMeta has ext_data, but missing def getExtData(self) method.",
+                    lineno=cls.lineno,
+                )
+            )
+
+    def _check_node_meta_base_class_by_ext_data(
+        self,
+        cls: ast.ClassDef,
+        violations: List[RuleViolation],
+        node_meta: Optional[NodeMeta] = None,
+    ) -> None:
+        """Enforce required workflow base class based on ``node_meta.ext_data.type``.
+
+        Rules:
+        - ext_data.type == "user_input" => class must subclass WorkflowStepNode
+        - ext_data.type == "chat_input" => class must subclass WorkflowChatNode
+        - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
+        - ext_data.type == "image" => class must subclass WorkflowImageNode
+        - ext_data.type == "service" or ext_data.service_name exists => class must subclass WorkflowServiceNode
+        - ext_data.type == "none" => class must subclass WorkflowOperationNode
+        """
+        if node_meta is None:
+            return
+        if not self._is_registered_class(cls):
+            return
+
+        ext_type = ""
+        ext_data = node_meta.ext_data
+        service_name = ""
+        if isinstance(ext_data, Mapping):
+            ext_type = str(ext_data.get("type", "")).strip().lower()
+            service_name = str(ext_data.get("service_name", "")).strip()
+        elif isinstance(ext_data, str):
+            ext_type = ext_data.strip().lower()
+
+        if ext_type == "user_input":
+            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowStepNode"}):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_user_input_requires_step_node",
+                        detail="When ext_data.type is 'user_input', the node class must subclass WorkflowStepNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "chat_input":
+            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowChatNode"}):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_chat_input_requires_chat_node",
+                        detail="When ext_data.type is 'chat_input', the node class must subclass WorkflowChatNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "user_file_input":
+            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowFileNode"}):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_user_file_input_requires_file_node",
+                        detail="When ext_data.type is 'user_file_input', the node class must subclass WorkflowFileNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "image":
+            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowImageNode"}):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_image_requires_image_node",
+                        detail="When ext_data.type is 'image', the node class must subclass WorkflowImageNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "service" or service_name:
+            if not self._is_workflow_service_node_subclass(cls):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_service_requires_service_node",
+                        detail="When ext_data.type is 'service' or service_name is provided, the node class must subclass WorkflowServiceNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "skill":
+            if not self._is_workflow_skill_node_subclass(cls):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_skill_requires_skill_node",
+                        detail="When ext_data.type is 'skill', the node class must subclass WorkflowSkillNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "none":
+            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowOperationNode"}):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_none_requires_operation_node",
+                        detail="When ext_data.type is 'none', the node class must subclass WorkflowOperationNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+
+    def _check_dataclass_is_gparam(
+        self,
+        cls: ast.ClassDef,
+        violations: List[RuleViolation],
+        gparam_subclasses: Set[str],
+    ) -> None:
+        """Check that classes with @dataclass decorator are subclasses of GParam."""
+        # Check if the class has @dataclass decorator
+        has_dataclass = False
+        for decorator in cls.decorator_list:
+            target = decorator
+            if isinstance(decorator, ast.Call):
+                target = decorator.func
+
+            if isinstance(target, ast.Name) and target.id == "dataclass":
+                has_dataclass = True
+                break
+            if isinstance(target, ast.Attribute) and target.attr == "dataclass":
+                has_dataclass = True
+                break
+
+        if not has_dataclass:
+            return
+
+        # Check if this class is a subclass of GParam
+        is_gparam_subclass = False
+        for base in cls.bases:
+            if isinstance(base, ast.Name) and base.id == "GParam":
+                is_gparam_subclass = True
+                break
+            elif isinstance(base, ast.Attribute) and base.attr == "GParam":
+                is_gparam_subclass = True
+                break
+            # Also check if it's a subclass of a local GParam subclass
+            elif isinstance(base, ast.Name) and base.id in gparam_subclasses:
+                is_gparam_subclass = True
+                break
+
+        if not is_gparam_subclass:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="dataclass_not_gparam",
+                    detail="Class with @dataclass decorator must be a subclass of GParam.",
+                    lineno=cls.lineno,
+                )
+            )
+
+    def _check_state_not_gparam(
+        self,
+        cls: ast.ClassDef,
+        violations: List[RuleViolation],
+        gparam_subclasses: Set[str],
+    ) -> None:
+        """Ensure classes whose name contains 'State' are NOT subclasses of GParam.
+
+        This prevents accidentally making state holder classes derive from GParam.
+        """
+        if "State" not in cls.name:
+            return
+
+        # Check if this class is a subclass of GParam or a local GParam subclass
+        is_gparam_subclass = False
+        for base in cls.bases:
+            if isinstance(base, ast.Name) and (base.id == "GParam" or base.id in gparam_subclasses):
+                is_gparam_subclass = True
+                break
+            elif isinstance(base, ast.Attribute) and base.attr == "GParam":
+                is_gparam_subclass = True
+                break
+
+        if is_gparam_subclass:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="state_gparam_subclass",
+                    detail="Classes with 'State' in their name must not subclass GParam.",
+                    lineno=cls.lineno,
+                )
+            )
+
+    def _check_self_calls(
+        self,
+        cls: ast.ClassDef,
+        violations: List[RuleViolation],
+        gparam_subclasses: Set[str],
+    ) -> None:
+        """Examine method bodies for "self" calls and enforce rules.
+
+        Currently this only validates ``self.createGParam`` invocations.  If the
+        call is found we make sure that the first argument is an *instance* of a
+        class that inherits from :class:`pydaograph.GParam` (a subclass defined
+        in the same file) and that the second argument is a string literal.
+        Additional self-call checks can be added here in future.
+        """
+        for node in ast.walk(cls):
+            if not isinstance(node, ast.Call):
+                continue
+
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "self"
+                and func.attr == "createGParam"
+            ):
+                self._validate_create_gparam_call(node, cls.name, violations, gparam_subclasses)
+
+    def _check_no_try_imports(self, tree: ast.AST, violations: List[RuleViolation]) -> None:
+        """Ensure the module does not use `try: import` or `try: from ... import`.
+
+        Scans the AST for `Try` nodes that contain `Import` or `ImportFrom`
+        statements in their body and emits a violation if any are found.
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+
+            for stmt in node.body:
+                if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                    violations.append(
+                        RuleViolation(
+                            class_name="(file)",
+                            rule="try_import_forbidden",
+                            detail="Avoid importing inside try blocks; use regular imports instead.",
+                            lineno=getattr(stmt, "lineno", 0),
+                        )
+                    )
+                    # one violation is enough for the file
+                    return
+
+    def _check_step_node_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_input_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "process_input")
+        if method is None:
+            return
+
+        self._check_dependency_results_usage(
+            cls=cls,
+            node_file_path=node_file_path,
+            method=method,
+            violations=violations,
+            method_name="process_input",
+        )
+
+    def _check_operation_node_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_operation_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "process_operation")
+        if method is None:
+            return
+
+        self._check_dependency_results_usage(
+            cls=cls,
+            node_file_path=node_file_path,
+            method=method,
+            violations=violations,
+            method_name="process_operation",
+        )
+
+    def _check_chat_node_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_chat_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "process_chat")
+        if method is None:
+            return
+
+        self._check_dependency_results_usage(
+            cls=cls,
+            node_file_path=node_file_path,
+            method=method,
+            violations=violations,
+            method_name="process_chat",
+        )
+
+    def _check_image_node_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_image_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "_collect_image_locations_from_dependencies")
+        if method is None:
+            return
+
+        self._check_dependency_results_usage(
+            cls=cls,
+            node_file_path=node_file_path,
+            method=method,
+            violations=violations,
+            method_name="_collect_image_locations_from_dependencies",
+        )
+
+    def _check_service_node_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_service_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "build_step_output")
+        if method is None:
+            return
+
+        self._check_dependency_results_usage(
+            cls=cls,
+            node_file_path=node_file_path,
+            method=method,
+            violations=violations,
+            method_name="build_step_output",
+        )
+
+    def _check_skill_node_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_skill_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "process_operation")
+        if method is None:
+            return
+
+        self._check_dependency_results_usage(
+            cls=cls,
+            node_file_path=node_file_path,
+            method=method,
+            violations=violations,
+            method_name="process_operation",
+        )
+
+    def _check_dependency_results_usage(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        method: ast.FunctionDef,
+        violations: List[RuleViolation],
+        method_name: str,
+    ) -> None:
+        dependencies, dep_lineno = self._get_class_dependencies(cls)
+        if not dependencies:
+            return
+
+        referenced_deps, derived_accesses, references_all_dependencies = self._collect_dependency_results_accesses(method)
+        missing_deps = [] if references_all_dependencies else [dep for dep in dependencies if dep not in referenced_deps]
+        if missing_deps:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="dependency_results_missing_dependency_keys",
+                    detail=(
+                        f"{method_name} must read dependency_results for all DEPENDENCIES. "
+                        f"Missing: {missing_deps}."
+                    ),
+                    lineno=dep_lineno,
+                )
+            )
+
+        if not derived_accesses:
+            return
+
+        dependency_derived_map = self._load_dependency_derived_keys_map(
+            node_file_path=node_file_path,
+            dependency_names=dependencies,
+            violations=violations,
+            class_name=cls.name,
+        )
+
+        for dep_name, derived_name, lineno in derived_accesses:
+            if dep_name == "*":
+                declared_somewhere = any(
+                    isinstance(allowed, set) and derived_name in allowed
+                    for allowed in dependency_derived_map.values()
+                )
+                if not declared_somewhere:
+                    violations.append(
+                        RuleViolation(
+                            class_name=cls.name,
+                            rule="dependency_results_derived_key_invalid",
+                            detail=(
+                                f"{method_name} uses dependency_results[*].derived['{derived_name}'], "
+                                f"but '{derived_name}' is not declared in any dependency derived keys."
+                            ),
+                            lineno=lineno,
+                        )
+                    )
+                continue
+
+            if dep_name not in dependencies:
+                continue
+            allowed_derived = dependency_derived_map.get(dep_name)
+            if allowed_derived is None:
+                continue
+            if derived_name not in allowed_derived:
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="dependency_results_derived_key_invalid",
+                        detail=(
+                            f"{method_name} uses dependency_results['{dep_name}'].derived['{derived_name}'], "
+                            f"but '{derived_name}' is not declared in {dep_name}'s derived keys."
+                        ),
+                        lineno=lineno,
+                    )
+                )
+
+    def _get_class_dependencies(self, cls: ast.ClassDef) -> Tuple[List[str], int]:
+        for node in cls.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "DEPENDENCIES":
+                        values = self._extract_string_list_literal(node.value)
+                        return values, node.lineno
+        return [], cls.lineno
+
+    def _extract_string_list_literal(self, expr: ast.expr) -> List[str]:
+        if not isinstance(expr, (ast.List, ast.Tuple)):
+            return []
+
+        result: List[str] = []
+        for item in expr.elts:
+            if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.strip():
+                result.append(item.value)
+        return result
+
+    def _collect_dependency_results_accesses(
+        self,
+        method: ast.FunctionDef,
+    ) -> Tuple[Set[str], List[Tuple[str, str, int]], bool]:
+        referenced_deps: Set[str] = set()
+        dependency_aliases: Dict[str, str] = {}
+        derived_aliases: Dict[str, str] = {}
+        dependency_value_aliases: Set[str] = set()
+        references_all_dependencies = False
+
+        for node in ast.walk(method):
+            if self._is_dependency_results_reference(node):
+                references_all_dependencies = True
+
+            dep_key = self._extract_dependency_key_expr(node)
+            if dep_key is not None:
+                referenced_deps.add(dep_key)
+
+            if isinstance(node, ast.For):
+                value_aliases = self._extract_dependency_results_value_aliases(node)
+                if value_aliases:
+                    references_all_dependencies = True
+                    dependency_value_aliases.update(value_aliases)
+
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                alias_name = node.targets[0].id
+                alias_dep = self._extract_dependency_key_expr(node.value)
+                if alias_dep is not None:
+                    dependency_aliases[alias_name] = alias_dep
+                    continue
+
+                alias_derived_dep = self._extract_dependency_derived_expr(node.value)
+                if alias_derived_dep is None and isinstance(node.value, ast.Attribute) and node.value.attr == "derived":
+                    dep_expr = node.value.value
+                    if isinstance(dep_expr, ast.Name):
+                        alias_derived_dep = dependency_aliases.get(dep_expr.id)
+                        if alias_derived_dep is None and dep_expr.id in dependency_value_aliases:
+                            alias_derived_dep = "*"
+                if alias_derived_dep is not None:
+                    derived_aliases[alias_name] = alias_derived_dep
+
+        derived_accesses: List[Tuple[str, str, int]] = []
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Subscript):
+                continue
+
+            derived_name = self._extract_string_subscript_key(node)
+            if derived_name is None:
+                continue
+            if not isinstance(node.value, ast.Attribute) or node.value.attr != "derived":
+                continue
+
+            dep_name: Optional[str] = None
+            dep_expr = node.value.value
+            dep_name = self._extract_dependency_key_expr(dep_expr)
+            if dep_name is None and isinstance(dep_expr, ast.Name):
+                dep_name = dependency_aliases.get(dep_expr.id)
+                if dep_name is None:
+                    dep_name = derived_aliases.get(dep_expr.id)
+                if dep_name is None and dep_expr.id in dependency_value_aliases:
+                    dep_name = "*"
+            if dep_name is None:
+                continue
+
+            derived_accesses.append((dep_name, derived_name, node.lineno))
+
+        for node in ast.walk(method):
+            dep_name, derived_name, lineno = self._extract_dependency_derived_get_call(
+                node=node,
+                dependency_aliases=dependency_aliases,
+                derived_aliases=derived_aliases,
+                dependency_value_aliases=dependency_value_aliases,
+            )
+            if dep_name is None or derived_name is None:
+                continue
+            derived_accesses.append((dep_name, derived_name, lineno))
+
+        return referenced_deps, derived_accesses, references_all_dependencies
+
+    def _extract_dependency_derived_expr(self, expr: ast.AST) -> Optional[str]:
+        if not isinstance(expr, ast.Attribute) or expr.attr != "derived":
+            return None
+
+        dep_expr = expr.value
+        dep_name = self._extract_dependency_key_expr(dep_expr)
+        if dep_name is not None:
+            return dep_name
+        return None
+
+    def _extract_dependency_derived_get_call(
+        self,
+        node: ast.AST,
+        dependency_aliases: Dict[str, str],
+        derived_aliases: Dict[str, str],
+        dependency_value_aliases: Set[str],
+    ) -> Tuple[Optional[str], Optional[str], int]:
+        if not isinstance(node, ast.Call):
+            return None, None, 0
+
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and func.attr == "get"
+            and len(node.args) >= 1
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            return None, None, 0
+
+        dep_name = self._extract_dependency_derived_expr(func.value)
+        if dep_name is None and isinstance(func.value, ast.Attribute) and func.value.attr == "derived":
+            dep_expr = func.value.value
+            if isinstance(dep_expr, ast.Name):
+                dep_name = dependency_aliases.get(dep_expr.id)
+                if dep_name is None and dep_expr.id in dependency_value_aliases:
+                    dep_name = "*"
+        if dep_name is None and isinstance(func.value, ast.Name):
+            dep_name = derived_aliases.get(func.value.id)
+        if dep_name is None:
+            return None, None, 0
+
+        return dep_name, node.args[0].value, node.lineno
+
+    def _is_dependency_results_reference(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Name) and node.id == "dependency_results" and isinstance(node.ctx, ast.Load)
+
+    def _extract_dependency_results_value_aliases(self, node: ast.For) -> Set[str]:
+        if not isinstance(node.iter, ast.Call):
+            return set()
+
+        call = node.iter
+        func = call.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "dependency_results"
+            and func.attr in {"values", "items"}
+        ):
+            return set()
+
+        aliases: Set[str] = set()
+        if func.attr == "values" and isinstance(node.target, ast.Name):
+            aliases.add(node.target.id)
+            return aliases
+
+        if func.attr == "items" and isinstance(node.target, ast.Tuple) and len(node.target.elts) >= 2:
+            value_target = node.target.elts[1]
+            if isinstance(value_target, ast.Name):
+                aliases.add(value_target.id)
+
+        return aliases
+
+    def _extract_dependency_key_expr(self, expr: ast.AST) -> Optional[str]:
+        if isinstance(expr, ast.Subscript):
+            if isinstance(expr.value, ast.Name) and expr.value.id == "dependency_results":
+                return self._extract_string_subscript_key(expr)
+            return None
+
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "dependency_results"
+                and func.attr == "get"
+                and len(expr.args) >= 1
+                and isinstance(expr.args[0], ast.Constant)
+                and isinstance(expr.args[0].value, str)
+            ):
+                return expr.args[0].value
+
+        return None
+
+    def _extract_string_subscript_key(self, node: ast.Subscript) -> Optional[str]:
+        key_node = node.slice
+        if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+            return key_node.value
+        return None
+
+    def _load_dependency_derived_keys_map(
+        self,
+        node_file_path: Path,
+        dependency_names: List[str],
+        violations: List[RuleViolation],
+        class_name: str,
+    ) -> Dict[str, Optional[Set[str]]]:
+        result: Dict[str, Optional[Set[str]]] = {}
+        for dep_name in dependency_names:
+            dep_file = self._dependency_file_path(node_file_path=node_file_path, dependency_name=dep_name)
+            if not dep_file.is_file():
+                violations.append(
+                    RuleViolation(
+                        class_name=class_name,
+                        rule="dependency_file_missing",
+                        detail=f"Dependency file not found for '{dep_name}': {dep_file}",
+                        lineno=0,
+                    )
+                )
+                result[dep_name] = None
+                continue
+
+            derived_keys = compile_node_file_and_get_derived_keys(str(dep_file))
+            result[dep_name] = set(derived_keys)
+        return result
+
+    def _dependency_file_path(self, node_file_path: Path, dependency_name: str) -> Path:
+        return node_file_path.parent / f"{dependency_name}.py"
+
+    def _validate_create_gparam_call(
+        self,
+        call_node: ast.Call,
+        class_name: str,
+        violations: List[RuleViolation],
+        gparam_subclasses: Set[str],
+    ) -> None:
+        """Validate arguments passed to ``self.createGParam``.
+
+        ``createGParam`` must be invoked with at least two positional arguments:
+        1. an instance of a subclass of :class:`pydaograph.GParam` defined in the
+           current module
+        2. a string literal used as the parameter name
+        """
+        lineno = call_node.lineno
+        # ensure there are two args
+        if len(call_node.args) < 2:
+            violations.append(
+                RuleViolation(
+                    class_name=class_name,
+                    rule="createGParam_args",
+                    detail="createGParam requires at least two arguments.",
+                    lineno=lineno,
+                )
+            )
+            return
+
+        first_arg, second_arg = call_node.args[0], call_node.args[1]
+
+        # first argument must be a call constructing a known subclass
+        first_ok = False
+        if isinstance(first_arg, ast.Call):
+            callee = first_arg.func
+            if isinstance(callee, ast.Name) and callee.id in gparam_subclasses:
+                first_ok = True
+
+        if not first_ok:
+            violations.append(
+                RuleViolation(
+                    class_name=class_name,
+                    rule="createGParam_first_arg",
+                    detail="First argument to createGParam should be an instance of a GParam subclass.",
+                    lineno=lineno,
+                )
+            )
+
+        # second argument must be a string literal
+        if not (isinstance(second_arg, ast.Constant) and isinstance(second_arg.value, str)):
+            violations.append(
+                RuleViolation(
+                    class_name=class_name,
+                    rule="createGParam_second_arg",
+                    detail="Second argument to createGParam should be a string literal.",
+                    lineno=lineno,
+                )
+            )
 
     def _has_cstatus_annotation(self, method: ast.FunctionDef) -> bool:
         annotation = method.returns
@@ -157,5 +1207,13 @@ class NodeAuditor(BaseAuditor):
             if isinstance(target, ast.Name) and target.id == "register_class":
                 return True
             if isinstance(target, ast.Attribute) and target.attr == "register_class":
+                return True
+        return False
+
+    def _is_direct_or_attr_base_subclass(self, cls: ast.ClassDef, base_names: Set[str]) -> bool:
+        for base in cls.bases:
+            if isinstance(base, ast.Name) and base.id in base_names:
+                return True
+            if isinstance(base, ast.Attribute) and base.attr in base_names:
                 return True
         return False
