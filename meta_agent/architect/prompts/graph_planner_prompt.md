@@ -18,7 +18,7 @@
     "nodes": [ ... ]
   }
 - 每个节点包含字段：
-  - name: 字符串，唯一、可读，且必须为英文标识符（仅英文字母和数字，建议 PascalCase）。
+  - name: 字符串，唯一、可读，且必须为英文标识符（仅英文字母和数字，建议 PascalCase）；必须体现业务语义（如 FileUpload、ImageAnalysis、ReportGeneration）。
   - type: 字符串，必须与 name 完全一致。
   - desc: 字符串，对应节点的功能描述（中文）。
   - ext_data: 必填，JSON 对象，格式为 {"type": "...", "desc": "..."}。
@@ -71,5 +71,6 @@
 ## 生成规则
 - 从需求范围与功能详细说明提取模块与功能，映射为节点。
 - 依赖关系根据流程/交互顺序判断；不确定时保持独立并省略 depends。
-- 节点 name/type 一律使用英文，且二者保持相同；无法确定时使用 "MyNode"。
+- 节点 name/type 一律使用英文，且二者保持相同；禁止使用 MyNode、NewNode、Node1、N1、A 这类无语义占位名。
+- 即使信息不完整，也要基于节点功能写出语义化名称（如 UserInputCollection、ContentSearchExecution、FinalSummaryOutput）。
 - 若有可并行的模块，避免互相依赖。

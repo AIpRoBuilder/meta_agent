@@ -11,7 +11,7 @@ Core output contract:
 Workflow context:
 - Backend endpoint for running one step: `POST /api/run-step`.
 - Backend endpoint for reset/new session init: `POST /api/reset-session`.
-- Input step nodes run `process_input(...)`, file nodes run `process_files(...)`, chat nodes run `process_chat(...)`, image nodes run `process_images_prompts(...)`, and operation nodes run `process_operation(...)`.
+- Input step nodes run `process_input(...)`, file nodes build results via `build_step_output(...)` after persistence, chat nodes run `process_chat(...)`, image nodes run `process_images_prompts(...)`, and operation nodes run `process_operation(...)`.
 - Operation nodes do not require user text input and should be submitted without an input payload.
 - Input nodes should support both plain text entry and optional local file upload.
 - For `extData.type == "chat_input"`, treat the step as conversational (`nodeKind='chat'`) and keep plain text input submission behavior.

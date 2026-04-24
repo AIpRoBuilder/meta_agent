@@ -420,6 +420,91 @@ class GraphPlanner(Coder):
 			encoding="utf-8",
 		)
 
+	def _safe_mermaid_id(self, node_name: str, used_ids: set[str]) -> str:
+		base_chars: list[str] = []
+		for ch in str(node_name):
+			if ch.isalnum() or ch == "_":
+				base_chars.append(ch)
+			else:
+				base_chars.append("_")
+		base = "".join(base_chars).strip("_")
+		if not base:
+			base = "node"
+		if not (base[0].isalpha() or base[0] == "_"):
+			base = f"n_{base}"
+
+		candidate = base
+		suffix = 2
+		while candidate in used_ids:
+			candidate = f"{base}_{suffix}"
+			suffix += 1
+		used_ids.add(candidate)
+		return candidate
+
+	def _to_mermaid_text(self, graph_json_path: Path) -> str:
+		payload = json.loads(graph_json_path.read_text(encoding="utf-8"))
+		nodes = payload.get("nodes", [])
+		if not isinstance(nodes, list):
+			nodes = []
+
+		used_ids: set[str] = set()
+		name_to_id: dict[str, str] = {}
+		for node in nodes:
+			if not isinstance(node, dict):
+				continue
+			name = str(node.get("name", "")).strip()
+			if not name or name in name_to_id:
+				continue
+			name_to_id[name] = self._safe_mermaid_id(name, used_ids)
+
+		lines: list[str] = ["flowchart TD"]
+		for node in nodes:
+			if not isinstance(node, dict):
+				continue
+			name = str(node.get("name", "")).strip()
+			if not name or name not in name_to_id:
+				continue
+			node_id = name_to_id[name]
+			label = name.replace('"', "\\\"")
+			lines.append(f'    {node_id}["{label}"]')
+
+		edges_seen: set[tuple[str, str]] = set()
+		for node in nodes:
+			if not isinstance(node, dict):
+				continue
+			name = str(node.get("name", "")).strip()
+			if not name or name not in name_to_id:
+				continue
+			target_id = name_to_id[name]
+			depends = node.get("depends", [])
+			if isinstance(depends, (str, bytes)):
+				depends = [depends]
+			if not isinstance(depends, list):
+				continue
+			for dep in depends:
+				dep_name = str(dep).strip()
+				if not dep_name:
+					continue
+				dep_id = name_to_id.get(dep_name)
+				if dep_id is None:
+					dep_id = self._safe_mermaid_id(dep_name, used_ids)
+					name_to_id[dep_name] = dep_id
+					label = dep_name.replace('"', "\\\"")
+					lines.append(f'    {dep_id}["{label}"]')
+				edge = (dep_id, target_id)
+				if edge in edges_seen:
+					continue
+				edges_seen.add(edge)
+				lines.append(f"    {dep_id} --> {target_id}")
+
+		return "\n".join(lines).strip() + "\n"
+
+	def _write_mermaid_from_graph_json(self, graph_json_path: Path) -> Path:
+		mmd_path = graph_json_path.with_suffix(".mmd")
+		mmd_text = self._to_mermaid_text(graph_json_path)
+		mmd_path.write_text(mmd_text, encoding="utf-8")
+		return mmd_path
+
 	def plan_from_file(
 		self,
 		requirement_md_path: str,
@@ -501,7 +586,8 @@ class GraphPlanner(Coder):
 			temperature=temperature,
 			max_tokens=max_tokens,
 		)
-		self._normalize_ext_data_in_file(Path(result_path))
+		graph_path = Path(result_path)
+		self._normalize_ext_data_in_file(graph_path)
 		return result_path
 
 	def amend_file_with_feedback(
@@ -566,5 +652,6 @@ class GraphPlanner(Coder):
 			temperature=temperature,
 			max_tokens=max_tokens,
 		)
-		self._normalize_ext_data_in_file(Path(result_path))
+		graph_path = Path(result_path)
+		self._normalize_ext_data_in_file(graph_path)
 		return result_path

@@ -100,7 +100,7 @@ class WorkflowFileNode(GNode):
         # 1) parse multiple uploaded coded-byte files from pending input
         # 2) persist files using original uploaded names (local by default, optional remote)
         # 3) gather dependency outputs
-        # 4) call process_files(saved_files, dependency_results, session_state)
+        # 4) call build_step_output(saved_files)
         # 5) require StepRunOutput; persist output/card/state and callback cleanup
         ...
 
@@ -206,51 +206,46 @@ class WorkflowServiceNode(GNode):
         # - formats final StepRunOutput via build_step_output(...)
         ...
 
-    def process_operation(
+    def install_environment(
+        self,
+        dependency_results: dict[str, StepRunOutput],
+        session_state: dict[str, Any],
+    ) -> bool:
+        # Phase 1 – Install / prepare the runtime environment.
+        # Implement based on service.md ## 1. Installation section.
+        # Run install commands (git clone, uv sync, pip install, etc.) via subprocess.run.
+        # Return True if installation succeeded, False otherwise.
+        # Should be idempotent: check whether work is already done before repeating it.
+        raise NotImplementedError
+
+    def start_service(
+        self,
+        dependency_results: dict[str, StepRunOutput],
+        session_state: dict[str, Any],
+    ) -> int:
+        # Phase 2 – Start the service (runs after install_environment returns True).
+        # Implement based on service.md ## 2. Start Service section.
+        # Launch the service as a background process using subprocess.Popen.
+        # Return the integer PID of the launched process (proc.pid); <= 0 signals failure.
+        # Use session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR as working directory.
+        # Do not hardcode absolute paths; define DEFAULT_WORKDIR as a class constant if needed.
+        raise NotImplementedError
+
+    def use_service(
         self,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        spec = self.build_instance_spec(dependency_results, session_state)
-        result = self.run_in_sandbox(spec=spec, session_state=session_state)
-        # If spec contains "output_location", base class calls parse_output() and merges to result
-        output = self.build_step_output(result, dependency_results, session_state)
-        # the returned dict into output.derived automatically – no manual wiring needed here.
-        return output
+        # Phase 3 – Use the running service (runs after start_service returns a valid PID).
+        # Implement based on service.md ## 3. Using section.
+        # Interact with the service (read output files, send HTTP requests, parse results, etc.)
+        # Return StepRunOutput(summary=..., card=..., derived=...) with service results.
+        # Keep card JSON-serializable and derived structured for downstream nodes.
+        raise NotImplementedError
 
-    def build_instance_spec(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> dict[str, Any]:
-        # Main customization point for subclasses.
-        # Return a dict consumed by run_in_sandbox; recognised keys:
-        #   command          – shell command to start the service (run as background process)
-        #   mode             – "local" (default) or sandbox mode string
-        #   workdir          – working directory for local mode
-        #   image / domain   – sandbox image / connection domain
-        #   sandboxTimeoutSeconds / requestTimeoutSeconds – sandbox lifecycle timeouts
-        #   killOnExit       – bool, kill sandbox after command exits
-        #   probeCommand     – shell command polled until exit-0 to confirm service readiness
-        #   probeDelaySeconds – interval (seconds) between consecutive probe retries (default 2)
-        #   probeTimeoutSeconds – total budget (seconds) to wait for probe success (default 30);
-        #                         non-zero exit code is returned when the budget is exhausted
-        #   stdout / pidLogFile – local-mode output/pid capture paths
-        #   output_location  – (optional) absolute file path where the probe/startup command writes
-        #                      structured output (e.g. JSON); when present the base class calls
-        #                      parse_output() after run_in_sandbox and merges its result into derived
-        ...
-
-    def parse_output(self, output_location: str) -> dict[str, Any]:
-        # Override this method whenever output_location is set in build_instance_spec.
-        # Read the file at output_location, parse it, and return a flat dict.
-        # The base-class default reads a JSON file and returns {"parsedOutput": <parsed>}.
-        # Subclasses should return domain-specific key-value pairs, e.g.:
-        #   with open(output_location) as f:
-        #       data = json.load(f)
-        #   return {"servicePort": data["port"], "serviceReady": data["ready"]}
-        # The returned dict is merged into StepRunOutput.derived by the base class.
-        ...
+    # process_operation is NOT meant to be overridden.
+    # The base class implementation calls install_environment → start_service → use_service in order.
+    # Each phase must succeed before the next is attempted.
 
 
 class WorkflowSkillNode(GNode):
@@ -584,6 +579,6 @@ class WorkflowImageNode(GNode):
 ## Preserved Semantics
 
 - Same node taxonomy and interfaces: input, operation, service, chat, file, image.
-- Same required override points: `process_input`, `process_operation` (and for service nodes usually `build_instance_spec`), `process_files`, optional chat/image processors.
+- Same required override points: `process_input`, `process_operation` (and for service nodes usually `build_instance_spec`), optional `build_step_output` for file nodes, optional chat/image processors.
 - Same `StepRunOutput` contract and error semantics (`1001` for execution/type failures, `1003` for missing required input).
 - Same runtime persistence behavior into workflow session maps (`step_outputs`, `step_cards`, `step_states`, `pending_inputs`, callbacks).

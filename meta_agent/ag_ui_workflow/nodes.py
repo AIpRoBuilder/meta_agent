@@ -272,14 +272,10 @@ class WorkflowFileNode(GNode):
 
         try:
             saved_files = self.save_files(files, session.state, storage_override)
-            output = self.process_files(
-                saved_files,
-                dependency_results,
-                session.state,
-            )
+            output = self.build_step_output(saved_files)
             if not isinstance(output, StepRunOutput):
                 self._set_state("failed")
-                return CStatus(1001, f"step {self.STEP_ID} failed: process_files must return StepRunOutput")
+                return CStatus(1001, f"step {self.STEP_ID} failed: build_step_output must return StepRunOutput")
         except Exception as exc:  # pragma: no cover
             self._set_state("failed")
             return CStatus(1001, f"step {self.STEP_ID} failed: {exc}")
@@ -380,7 +376,7 @@ class WorkflowFileNode(GNode):
                 data = _decode_bytes_string(content_text)
 
             if data is None and isinstance(value.get("path"), str):
-                candidate = Pathv(_safe_string(value.get("path")))
+                candidate = Path(_safe_string(value.get("path")))
                 if candidate.exists() and candidate.is_file():
                     data = candidate.read_bytes()
                     if not file_name or file_name == "uploaded_file":
@@ -511,28 +507,25 @@ class WorkflowFileNode(GNode):
 
         return saved
 
-    def process_files(
-        self,
-        saved_files: list[dict[str, Any]],
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> StepRunOutput:
-        return self.build_step_output(saved_files)
-
     def build_step_output(self, saved_files: list[dict[str, Any]]) -> StepRunOutput:
         locations = [
             _safe_string(item.get("location"))
             for item in saved_files
             if _safe_string(item.get("location"))
         ]
+        file_names = [
+            _safe_string(item.get("fileName"))
+            for item in saved_files
+            if _safe_string(item.get("fileName"))
+        ]
         summary = f"Saved {len(saved_files)} file(s)."
         card = {
             "fileCount": len(saved_files),
-            "files": saved_files,
+            "files": file_names,
             "locations": locations,
         }
         derived = {
-            "savedFiles": saved_files,
+            "savedFiles": file_names,
             "savedLocations": locations,
             "fileCount": len(saved_files),
         }
@@ -874,7 +867,8 @@ class WorkflowServiceNode(GNode):
         super().__init__()
         self.setName(self.STEP_ID)
         self.setWaitForInput(False)
-        self._service_running = False
+        self._installed: bool = False
+        self._service_running: bool = False
         self._pid: int | None = None
 
     def run(self) -> CStatus:
@@ -930,355 +924,141 @@ class WorkflowServiceNode(GNode):
             "nodeKind": cls.NODE_KIND,
         }
 
-    def _is_local_process_alive(self) -> bool:
-        # Return True if the tracked local PID is still running.
-        if self._pid is None:
-            return False
-        import os
-        try:
-            os.kill(self._pid, 0)
-            return True
-        except (ProcessLookupError, OSError):
-            return False
+    # ------------------------------------------------------------------
+    # Three-phase execution: install → start → use
+    # Each phase must be implemented by the subclass.  They are called
+    # sequentially inside ``process_operation``; a failure in an earlier
+    # phase prevents subsequent phases from running.
+    # ------------------------------------------------------------------
+
+    def install_environment(
+        self,
+        dependency_results: dict[str, "StepRunOutput"],
+        session_state: dict[str, Any],
+    ) -> bool:
+        """Phase 1 – Install / prepare the runtime environment.
+
+        This method is called first and must complete successfully before
+        :meth:`start_service` is invoked.  Typical tasks include installing
+        packages, writing config files, or pulling a container image.
+
+        Use the helper methods (e.g. :meth:`run_in_sandbox`,
+        :meth:`build_instance_spec`) to interact with the sandbox if needed.
+
+        Args:
+            dependency_results: Outputs of upstream steps keyed by step ID.
+            session_state: Mutable shared workflow session state dict.
+
+        Returns:
+            ``True`` if installation completed successfully, ``False`` otherwise.
+            Returning ``False`` aborts execution before :meth:`start_service` is
+            called.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__}.install_environment() must be implemented.\n"
+            "Install packages, write configs, or pull container images here."
+        )
+
+    def start_service(
+        self,
+        dependency_results: dict[str, "StepRunOutput"],
+        session_state: dict[str, Any],
+    ) -> int:
+        """Phase 2 – Start the service (runs after :meth:`install_environment`).
+
+        This method is called only after :meth:`install_environment` returns
+        ``True``, and is skipped automatically if the service is already running
+        (i.e. ``self._pid`` is set from a previous call).
+
+        Use it to launch a background process, start a server, or bring up a
+        container.  Return the PID of the launched process.
+
+        Args:
+            dependency_results: Outputs of upstream steps keyed by step ID.
+            session_state: Mutable shared workflow session state dict.
+
+        Returns:
+            The integer PID of the running service process.  A value ``<= 0``
+            is treated as a failure and aborts execution before
+            :meth:`use_service` is called.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__}.start_service() must be implemented.\n"
+            "Launch the background service and return its PID here."
+        )
+
+    def use_service(
+        self,
+        dependency_results: dict[str, "StepRunOutput"],
+        session_state: dict[str, Any],
+    ) -> "StepRunOutput":
+        """Phase 3 – Use the running service (runs after :meth:`start_service`).
+
+        This method is called only after :meth:`start_service` returns ``True``.
+        Interact with the now-running service (e.g. send requests, run queries,
+        scrape results) and return the final step output that will be stored in
+        the workflow session.
+
+        Args:
+            dependency_results: Outputs of upstream steps keyed by step ID.
+            session_state: Mutable shared workflow session state dict.
+
+        Returns:
+            A :class:`StepRunOutput` containing the final result produced by
+            interacting with the service.  This becomes the step's recorded
+            output in the workflow session.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__}.use_service() must be implemented.\n"
+            "Send requests to the running service and return the results here."
+        )
 
     def process_operation(
         self,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        if self._service_running:
-            # For local-mode services, verify the process is still alive.
-            if self._pid is not None and not self._is_local_process_alive():
-                self._service_running = False
-                self._pid = None
-            else:
-                return StepRunOutput(
-                    summary="service is running",
-                    card={
-                        "serviceRunning": True,
-                        "skipped": True,
-                        "message": "service is running",
-                        "pid": self._pid,
-                    },
-                    derived={
-                        "serviceRunning": True,
-                        "serviceSkipped": True,
-                        "pid": self._pid,
-                    },
-                )
+        """Orchestrate the three phases in sequence.
 
-        spec = self.build_instance_spec(dependency_results, session_state)
-        result = self.run_in_sandbox(spec=spec, session_state=session_state)
-        self._service_running = bool(result.get("ok", False))
-        if self._service_running and result.get("pid") is not None:
-            self._pid = int(result["pid"])
-        output_location = spec.get("output_location")
-        if output_location:
-            parsed = self.parse_output(_safe_string(output_location))
-            if parsed:
-                result.update(parsed)
-        output = self.build_step_output(result, dependency_results, session_state)
-        return output
-
-    def build_instance_spec(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> dict[str, Any]:
-        command = session_state.get("instanceCommand")
-
-        return {
-            "command": command,
-            "image": session_state.get("sandboxImage"),
-            "domain": session_state.get("sandboxDomain"),
-            "sandboxTimeoutSeconds": session_state.get("sandboxTimeoutSeconds"),
-            "requestTimeoutSeconds": session_state.get("sandboxRequestTimeoutSeconds"),
-            "killOnExit": session_state.get("sandboxKillOnExit"),
-            "probeCommand": session_state.get("instanceProbeCommand"),
-            "probeDelaySeconds": session_state.get("instanceProbeDelaySeconds"),
-            "probeTimeoutSeconds": session_state.get("instanceProbeTimeoutSeconds"),
-        }
-
-    def run_in_sandbox(self, *, spec: dict[str, Any], session_state: dict[str, Any]) -> dict[str, Any]:
-        return self._run_async(self._run_in_sandbox_async(spec=spec, session_state=session_state))
-
-    def _run_async(self, coroutine: Any) -> Any:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coroutine)
-
-        raise RuntimeError(
-            "WorkflowInstanceNode cannot run sync sandbox execution inside an active event loop. "
-            "Use the async sandbox path directly."
-        )
-
-    async def _run_in_sandbox_async(self, *, spec: dict[str, Any], session_state: dict[str, Any]) -> dict[str, Any]:
-        mode = _safe_string(spec.get("mode") or "local").lower() or "local"
-        if mode == "local":
-            # Run a local Python module or script
-            import subprocess
-            import shlex
-            import os
-            command = self._resolve_command(spec)
-            if not command:
-                return {
-                    "mode": "local",
-                    "command": command,
-                    "exitCode": 1,
-                    "stdout": "",
-                    "stderr": "No command specified for local mode.",
-                    "ok": False,
-                }
-            try:
-                user_stdout = spec.get("stdout")
-                pid_log_file = spec.get("pidLogFile")
-                workdir = spec.get("workdir") or self.DEFAULT_WORKDIR
-                # Run as detached background process and log PID
-                out = open(user_stdout, "ab") if user_stdout else subprocess.DEVNULL
-                proc = subprocess.Popen(
-                    shlex.split(command),
-                    cwd=workdir,
-                    stdout=out,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True
-                )
-                if pid_log_file:
-                    with open(pid_log_file, "a") as pidf:
-                        pidf.write(f"{proc.pid}\n")
-                result = {
-                    "mode": "local-service",
-                    "command": command,
-                    "pid": proc.pid,
-                    "stdout": None,
-                    "stderr": None,
-                    "exitCode": None,
-                    "ok": True,
-                }
-                session_state["lastSandboxExecution"] = result
-                return result
-            except Exception as exc:
-                return {
-                    "mode": "local",
-                    "command": command,
-                    "exitCode": 1,
-                    "stdout": "",
-                    "stderr": str(exc),
-                    "ok": False,
-                }
-        else:
-            # Default: run in sandbox as before
-            sandbox_module = self._import_sandbox()
-            Sandbox = sandbox_module["Sandbox"]
-            ConnectionConfig = sandbox_module["ConnectionConfig"]
-
-            domain = self._resolve_domain(spec)
-            image = self._resolve_image(spec)
-            request_timeout = self._resolve_seconds(spec.get("requestTimeoutSeconds"), self.DEFAULT_REQUEST_TIMEOUT_SECONDS)
-            sandbox_timeout = self._resolve_seconds(spec.get("sandboxTimeoutSeconds"), self.DEFAULT_SANDBOX_TIMEOUT_SECONDS)
-            kill_on_exit = self._resolve_bool(spec.get("killOnExit"), self.DEFAULT_KILL_ON_EXIT)
-
-            config = ConnectionConfig(
-                domain=domain,
-                request_timeout=timedelta(seconds=request_timeout),
-            )
-
-            sandbox = await Sandbox.create(
-                image,
-                connection_config=config,
-                timeout=timedelta(seconds=sandbox_timeout),
-            )
-
-            async with sandbox:
-                execution = await self._run_service_mode(sandbox=sandbox, spec=spec)
-
-                stdout = self._extract_logs_text(execution, "stdout")
-                stderr = self._extract_logs_text(execution, "stderr")
-                exit_code = self._extract_exit_code(execution)
-
-                if kill_on_exit:
-                    await sandbox.kill()
-
-                result = {
-                    "mode": mode,
-                    "command": self._resolve_command(spec),
-                    "image": image,
-                    "domain": domain,
-                    "exitCode": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "ok": (exit_code == 0),
-                }
-                session_state["lastSandboxExecution"] = result
-                return result
-
-    async def _run_service_mode(self, *, sandbox: Any, spec: dict[str, Any]) -> Any:
-        service_command = self._resolve_command(spec)
-        probe_command = _safe_string(spec.get("probeCommand"))
-        probe_interval = self._resolve_seconds(spec.get("probeDelaySeconds"), 2)
-        probe_timeout = self._resolve_seconds(spec.get("probeTimeoutSeconds"), 300)
-
-        start_cmd = f"{service_command} >/tmp/workflow_instance_service.log 2>&1 &"
-
-        if probe_command:
-            # Poll probe_command in a loop until it exits 0 or the timeout elapses.
-            wait_script = (
-                f"_pd=$(($(date +%s)+{probe_timeout})); "
-                f"_ok=0; "
-                f"while [ $(date +%s) -lt $_pd ]; do "
-                f"{probe_command} && _ok=1 && break; "
-                f"sleep {probe_interval}; "
-                f"done; "
-                f"[ $_ok -eq 1 ] || {{ echo 'service probe timed out after {probe_timeout}s' >&2; exit 1; }}"
-            )
-            bootstrap = f"{start_cmd} {wait_script}"
-        else:
-            bootstrap = f"{start_cmd} sleep {probe_interval}; echo service_started"
-
-        return await sandbox.commands.run(bootstrap)
-
-    def _import_sandbox(self) -> dict[str, Any]:
-        try:
-            from opensandbox import Sandbox
-            from opensandbox.config import ConnectionConfig
-        except Exception as exc:  # pragma: no cover
-            raise ImportError("opensandbox is required for WorkflowInstanceNode") from exc
-
-        return {
-            "Sandbox": Sandbox,
-            "ConnectionConfig": ConnectionConfig,
-        }
-
-    def _resolve_domain(self, spec: dict[str, Any]) -> str:
-        domain = _safe_string(spec.get("domain"))
-        if domain:
-            return domain
-        env_domain = _safe_string(os.getenv(self.SANDBOX_DOMAIN_ENV))
-        if env_domain:
-            return env_domain
-        return self.DEFAULT_SANDBOX_DOMAIN
-
-    def _resolve_image(self, spec: dict[str, Any]) -> str:
-        image = _safe_string(spec.get("image"))
-        if image:
-            return image
-        env_image = _safe_string(os.getenv(self.SANDBOX_IMAGE_ENV))
-        if env_image:
-            return env_image
-        return self.DEFAULT_SANDBOX_IMAGE
-
-    def _resolve_command(self, spec: dict[str, Any]) -> str:
-        command = spec.get("command")
-        if isinstance(command, list):
-            return " ".join(_safe_string(part) for part in command if _safe_string(part))
-        command_text = _safe_string(command)
-        return command_text
-
-    def _resolve_seconds(self, value: Any, default_value: int) -> int:
-        try:
-            number = int(value)
-        except Exception:
-            return default_value
-        return number if number > 0 else default_value
-
-    def _resolve_bool(self, value: Any, default_value: bool) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"1", "true", "yes", "on"}:
-                return True
-            if lowered in {"0", "false", "no", "off"}:
-                return False
-        return default_value
-
-    def _extract_logs_text(self, execution: Any, stream: str) -> str:
-        logs = getattr(execution, "logs", None)
-        if logs is None:
-            return ""
-        items = getattr(logs, stream, None)
-        if not isinstance(items, list):
-            return ""
-
-        chunks: list[str] = []
-        for item in items:
-            text = _safe_string(getattr(item, "text", ""))
-            if text:
-                chunks.append(text)
-        return "\n".join(chunks).strip()
-
-    def _extract_exit_code(self, execution: Any) -> int:
-        for attr in ("exit_code", "exitCode", "code"):
-            value = getattr(execution, attr, None)
-            try:
-                return int(value)
-            except Exception:
-                continue
-        return 0
-
-    def parse_output(self, output_location: str) -> dict[str, Any]:
-        """Parse output from ``output_location`` after the service runs.
-
-        The default implementation reads a JSON file at that path and returns
-        its contents under the ``parsedOutput`` key.  Subclasses may override
-        this method to support other formats or locations (e.g. a URL, a binary
-        file, or a structured directory).
-
-        Args:
-            output_location: The value of the ``output_location`` key returned
-                by :meth:`build_instance_spec`.
-
-        Returns:
-            A dict whose entries are merged into the step's ``derived`` dict.
+        Calls :meth:`install_environment`, then :meth:`start_service`, then
+        :meth:`use_service`, passing each phase's output to the next.  Any
+        exception or wrong return type in an earlier phase aborts execution
+        before the subsequent phases are attempted.
         """
-        try:
-            path = Path(output_location)
-            if path.exists():
-                content = path.read_text("utf-8")
-                return {"parsedOutput": json.loads(content)}
-        except Exception:  # pragma: no cover
-            pass
-        return {}
+        # --- Phase 1: install environment (skipped if already completed) ---
+        if not self._installed:
+            installed = self.install_environment(dependency_results, session_state)
+            if not isinstance(installed, bool):
+                raise TypeError(
+                    f"install_environment must return bool, got {type(installed).__name__}"
+                )
+            if not installed:
+                raise RuntimeError(
+                    f"{self.__class__.__name__}.install_environment() returned False – installation failed."
+                )
+            self._installed = True
 
-    def build_step_output(
-        self,
-        result: dict[str, Any],
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> StepRunOutput:
-        command = _safe_string(result.get("command"))
-        mode = _safe_string(result.get("mode") or "command")
-        image = _safe_string(result.get("image"))
-        exit_code = result.get("exitCode", 0)
-        ok = bool(result.get("ok", True))
+        # --- Phase 2: start service (skipped if already running) ---
+        if not self._service_running or self._pid is None:
+            pid = self.start_service(dependency_results, session_state)
+            if not isinstance(pid, int):
+                raise TypeError(
+                    f"start_service must return int (PID), got {type(pid).__name__}"
+                )
+            if pid <= 0:
+                raise RuntimeError(
+                    f"{self.__class__.__name__}.start_service() returned {pid} – service failed to start."
+                )
+            self._pid = pid
+            self._service_running = True
 
-        summary = f"{self.STEP_ID} ran in sandbox ({mode}) with exit code {exit_code}."
-        if command:
-            summary = f"{summary} command: {command}"
-
-        card = {
-            "mode": mode,
-            "image": image,
-            "domain": result.get("domain"),
-            "summary": summary,
-            "command": command,
-            "exitCode": exit_code,
-            "ok": ok,
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-        }
-
-        derived = {
-            "instanceResult": result,
-            "sandboxCommand": command,
-            "sandboxImage": image,
-            "sandboxOk": ok,
-            "sandboxExitCode": exit_code,
-            "sandboxStdout": result.get("stdout", ""),
-            "sandboxStderr": result.get("stderr", ""),
-        }
-        return StepRunOutput(summary=summary, card=card, derived=derived)
-
+        # --- Phase 3: use service ---
+        use_result = self.use_service(dependency_results, session_state)
+        if not isinstance(use_result, StepRunOutput):
+            raise TypeError(
+                f"use_service must return StepRunOutput, got {type(use_result).__name__}"
+            )
+        return use_result
 
 class WorkflowChatNode(GNode):
     INPUT_REQUIRED = True
@@ -1303,7 +1083,7 @@ class WorkflowChatNode(GNode):
     QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     TEMPERATURE = 0.2
-    MAX_TOKENS = 20000
+    MAX_TOKENS = 8192
     SYSTEM_PROMPT = (
         "You are a helpful workflow assistant. Use dependency outputs and user input to produce a concise, useful answer."
     )
@@ -1468,6 +1248,7 @@ class WorkflowChatNode(GNode):
                 {"role": "user", "content": user_prompt},
             ],
         )
+        print(response_stream)
 
         deltas: list[str] = []
         for chunk in response_stream:

@@ -67,7 +67,10 @@ class NodeAuditor(BaseAuditor):
                 elif isinstance(base, ast.Attribute) and base.attr == "GParam":
                     subclass_names.add(cls.name)
 
+        gnode_subclasses = self._collect_local_gnode_subclasses(class_defs)
+
         for cls in class_defs:
+            self._check_gnode_subclass_register_class(cls, gnode_subclasses, violations)
             self._check_registered_class_name_matches_file_prefix(cls, path, violations)
             self._check_clone(cls, violations)
             self._check_init(cls, violations)
@@ -75,6 +78,7 @@ class NodeAuditor(BaseAuditor):
             self._check_step_node_dependency_results(cls, path, violations)
             self._check_chat_node_dependency_results(cls, path, violations)
             self._check_image_node_dependency_results(cls, path, violations)
+            self._check_file_node_no_build_step_output(cls, violations)
             self._check_operation_node_dependency_results(cls, path, violations)
             self._check_service_node_dependency_results(cls, path, violations)
             self._check_skill_node_dependency_results(cls, path, violations)
@@ -269,6 +273,26 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_file_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowFileNode"})
+
+    def _check_file_node_no_build_step_output(self, cls: ast.ClassDef, violations: List[RuleViolation]) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_file_node_subclass(cls):
+            return
+
+        method = self._get_method(cls, "build_step_output")
+        if method is not None:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="workflow_file_node_build_step_output_not_allowed",
+                    detail=(
+                        "WorkflowFileNode subclasses must not implement build_step_output; "
+                        "use base WorkflowFileNode output behavior."
+                    ),
+                    lineno=method.lineno,
+                )
+            )
 
     def _is_workflow_service_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowServiceNode"})
@@ -793,7 +817,7 @@ class NodeAuditor(BaseAuditor):
         if not self._is_workflow_service_node_subclass(cls):
             return
 
-        method = self._get_method(cls, "build_step_output")
+        method = self._get_method(cls, "use_service")
         if method is None:
             return
 
@@ -802,7 +826,7 @@ class NodeAuditor(BaseAuditor):
             node_file_path=node_file_path,
             method=method,
             violations=violations,
-            method_name="build_step_output",
+            method_name="use_service",
         )
 
     def _check_skill_node_dependency_results(
@@ -1197,6 +1221,55 @@ class NodeAuditor(BaseAuditor):
         if isinstance(annotation, ast.Attribute) and annotation.attr == "CStatus":
             return True
         return False
+
+    def _collect_local_gnode_subclasses(self, class_defs: List[ast.ClassDef]) -> Set[str]:
+        """Collect class names that subclass GNode directly or through local classes."""
+        gnode_subclasses: Set[str] = set()
+        unresolved = {cls.name: cls for cls in class_defs}
+
+        while unresolved:
+            progressed = False
+            for class_name, cls in list(unresolved.items()):
+                if self._has_gnode_ancestor(cls, gnode_subclasses):
+                    gnode_subclasses.add(class_name)
+                    unresolved.pop(class_name, None)
+                    progressed = True
+
+            if not progressed:
+                break
+
+        return gnode_subclasses
+
+    def _has_gnode_ancestor(self, cls: ast.ClassDef, known_gnode_subclasses: Set[str]) -> bool:
+        for base in cls.bases:
+            if isinstance(base, ast.Name):
+                if base.id == "GNode" or base.id in known_gnode_subclasses:
+                    return True
+            elif isinstance(base, ast.Attribute):
+                if base.attr == "GNode" or base.attr in known_gnode_subclasses:
+                    return True
+        return False
+
+    def _check_gnode_subclass_register_class(
+        self,
+        cls: ast.ClassDef,
+        gnode_subclasses: Set[str],
+        violations: List[RuleViolation],
+    ) -> None:
+        """Ensure every local GNode subclass has a @register_class decorator."""
+        if cls.name not in gnode_subclasses:
+            return
+        if self._is_registered_class(cls):
+            return
+
+        violations.append(
+            RuleViolation(
+                class_name=cls.name,
+                rule="gnode_subclass_missing_register_class",
+                detail="Classes that subclass GNode must be decorated with @register_class.",
+                lineno=cls.lineno,
+            )
+        )
 
     def _is_registered_class(self, cls: ast.ClassDef) -> bool:
         for decorator in cls.decorator_list:

@@ -6,6 +6,7 @@ Core objective:
 - Generate the smallest runnable node implementation that fully satisfies the requirement analysis.
 - Prefer direct, readable code over abstraction.
 - Avoid over-engineering: no extra classes, no architecture layers, no speculative extensibility.
+- Do not mock data or simulate node execution/processes; implement real runnable logic that uses actual inputs/dependencies/services.
 
 Guidelines:
 - Write code with the simplest possible approach that satisfies requirements.
@@ -21,9 +22,9 @@ Guidelines:
     - `WorkflowStepNode`: Interactive workflow step that collects and validates explicit user input, then returns structured `StepRunOutput` via `process_input(...)`.
     - `WorkflowChatNode`: Conversational workflow step that combines user message + dependency context, then returns It returns a prompt `str` for built-in VLM execution via `process_chat(...)`.
     - `WorkflowOperationNode`: Non-interactive workflow step for deterministic/derived computation from dependencies and session state, returning `StepRunOutput` via `process_operation(...)`.
-    - `WorkflowServiceNode`: Non-interactive service bootstrap step that prepares sandbox/local execution spec and starts/probes a service, typically by overriding `build_instance_spec(...)` and returning final `StepRunOutput` through base orchestration.
+    - `WorkflowServiceNode`: Non-interactive service lifecycle step that executes three phases in order: `install_environment(...)` (Phase 1 — install packages/deps from service.md `## 1. Installation`), `start_service(...)` (Phase 2 — launch background process from `## 2. Start Service`, return PID), `use_service(...)` (Phase 3 — interact with running service from `## 3. Using`, return `StepRunOutput`). The base class orchestrates the three phases automatically; do **not** override `process_operation`.
     - `WorkflowSkillNode`: Non-interactive skill-library step that wraps a pre-built skill (defined by `skill.md`). Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc and exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`. Implement `process_operation(...)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
-    - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via `process_files(...)` + `StepRunOutput.derived`.
+    - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via `build_step_output(saved_files)` + `StepRunOutput.derived`.
     - `WorkflowImageNode`: Dependency-driven vision workflow step that reads image file locations from `dependency_results`, loads/encodes local or remote images, and analyzes them via `process_images_prompts(...)`. It returns a prompt `str` for built-in VLM execution.
 
 Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
@@ -40,22 +41,14 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
     - `WorkflowStepNode`: implement `process_input(self, user_input, dependency_results, session_state) -> StepRunOutput`.
     - `WorkflowChatNode`: implement `process_chat(self, user_input, dependency_results, session_state) -> str`.
     - `WorkflowOperationNode`: implement `process_operation(self, dependency_results, session_state) -> StepRunOutput`.
-    - `WorkflowServiceNode`: implement `build_instance_spec(self, dependency_results, session_state) -> dict[str, Any]` to construct service command/probe/image/domain/mode spec used by base execution.
-        - `probeCommand` (str): shell command repeatedly polled until it exits 0.  Leave empty to skip probing.
-        - `probeDelaySeconds` (int, default 2): interval in seconds between consecutive probe attempts.
-        - `probeTimeoutSeconds` (int, default 30): total wall-clock budget in seconds to wait for the probe to succeed; command fails with non-zero exit code if the service is not ready within this window.
-        - Always include `workdir` in returned spec as `str(session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR)`.
-        - Never hardcode repo-specific absolute workdir paths in command startup logic.
-        - If service-specific default root is needed, define `DEFAULT_WORKDIR` in the generated service class.
-        - `output_location` (str, optional): absolute file path to which the probe/startup command writes structured output (e.g. JSON health payload).  Include this key only when downstream nodes need data produced by the service probe.
-            - When `output_location` is set, the `probeCommand` must redirect its stdout/stderr to that path (e.g. `some-health-cmd > /tmp/svc_out.json 2>&1`) so the file is populated on a successful probe.
-            - When `output_location` is present in the spec, also override `parse_output(self, output_location: str) -> dict[str, Any]` to read and parse the file; the returned dict is merged into `derived` by the base class.  Use `json.loads` for JSON files; extract key fields for other formats.
-            - If no structured output is needed by downstream nodes, omit `output_location` and do **not** override `parse_output`.
+    - `WorkflowServiceNode`: implement three phase methods (do **not** override `process_operation`):
+        - `install_environment(self, dependency_results, session_state) -> bool`: Phase 1 based on service.md `## 1. Installation`. Run install commands (e.g. `git clone`, `uv sync`, `pip install`) via `subprocess.run`. Return `True` on success, `False` on failure. Skip if already installed (idempotent check).
+        - `start_service(self, dependency_results, session_state) -> int`: Phase 2 based on service.md `## 2. Start Service`. Launch the service as a background process using `subprocess.Popen`. Return the integer PID (`proc.pid`); `<= 0` signals failure. Use `session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR` as working directory. The generated command must be valid for the current OS.
+        - `use_service(self, dependency_results, session_state) -> StepRunOutput`: Phase 3 based on service.md `## 3. Using`. Interact with the running service (e.g. read output files, send HTTP requests, parse results). Return `StepRunOutput(summary=..., card=..., derived=...)` with results. Keep `card` JSON-serializable and `derived` structured for downstream nodes.
     - `WorkflowSkillNode`: set `SKILL_DIR` (absolute path to skill directory) and `SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md')` as class constants. Implement `process_operation(self, dependency_results, session_state) -> StepRunOutput`.
         - The base class __init__ reads `skill.md` and populates `self.skill_description`, `self.skill_using`, `self.skill_examples`.
         - In `process_operation`, invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
         - Return `StepRunOutput(summary=..., card=..., derived=...)` with results from the skill invocation.
-    - `WorkflowFileNode`: implement `process_files(self, saved_files, dependency_results, session_state) -> StepRunOutput`.
         - `saved_files` contains persisted files with original `fileName` and saved `location` from local/remote storage.
     - `WorkflowImageNode`: implement `process_images_prompts(self, request_text, dependency_results, session_state) -> str`.
 - Use `dependency_results[<step_id>].derived[...]` to read prerequisite outputs.
@@ -69,12 +62,14 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
 - Keep `derived` as structured values for downstream step computation.
 - Do not override `run` unless explicitly required; base class `run` orchestrates flow.
 - If the required behavior cannot be fully implemented from available context, keep valid runnable placeholder logic and add a concise TODO comment for the missing detail.
+- Never fabricate outputs (for example fake API responses, synthetic records, or simulated service success) when real execution paths are required.
 - If external data access is required by node metadata, add a dedicated helper function (for example `query_data`) and call it from `process_input`.
 
 Minimality checklist (must follow):
 - Keep imports minimal; only import symbols actually used.
-- Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation` / `build_instance_spec` / `process_files` / `process_images_prompts`).
+- Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation` / `build_instance_spec` / `build_step_output` / `process_images_prompts`).
 - Do not add helper methods unless they remove duplicated logic used at least twice.
+- Do not include mocked/sample/simulated runtime data in business logic.
 - Do not add logging, debug prints, test stubs, or markdown/comments beyond concise TODOs.
 - Use straightforward guard clauses and `.get(...)` defaults instead of complex validation frameworks.
 - Keep summaries/cards concise and requirement-focused.
@@ -84,6 +79,8 @@ Example:
 ```python
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from pydaograph import register_class, CStatus
@@ -217,45 +214,57 @@ class MediaCrawlerServiceNode(WorkflowServiceNode):
     DEPENDENCIES = ["SavingsPlanNode"]
     DEFAULT_WORKDIR = str(Path.cwd())
 
-    def build_instance_spec(
+    def install_environment(
         self,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> bool:
+        workdir = str(session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR)
+        crawler_dir = Path(workdir) / "MediaCrawler"
+        if not crawler_dir.exists():
+            r = subprocess.run(
+                ["git", "clone", "git@github.com:NanmiCoder/MediaCrawler.git"],
+                cwd=workdir, capture_output=True,
+            )
+            if r.returncode != 0:
+                return False
+        r = subprocess.run(["uv", "sync"], cwd=str(crawler_dir), capture_output=True)
+        return r.returncode == 0
+
+    def start_service(
+        self,
+        dependency_results: dict[str, StepRunOutput],
+        session_state: dict[str, Any],
+    ) -> int:
         previous_monthly_savings = dependency_results["SavingsPlanNode"].derived.get("monthlySavings", 0.0)
         session_state["previousMonthlySavings"] = previous_monthly_savings
-
         workdir = str(session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR)
-        command = str(
-            session_state.get("instanceCommand")
-            or (
-                f"sh -lc \""
-                "cd /{workdir} && "
-                "if [ ! -d MediaCrawler ]; then git clone git@github.com:NanmiCoder/MediaCrawler.git; fi && "
-                f"cd {workdir} && uv sync && uv run playwright install && "
-                "uv run main.py --platform xhs --lt qrcode --type search"
-                "\""
-            )
+        crawler_dir = str(Path(workdir) / "MediaCrawler")
+        cmd = session_state.get("instanceCommand") or (
+            "uv run main.py --platform xhs --lt qrcode --type search --keywords 学习 --save_data_option json"
         )
+        proc = subprocess.Popen(cmd, shell=True, cwd=crawler_dir)
+        return proc.pid
 
-        probe_command = str(
-            session_state.get("instanceProbeCommand")
-            or "sh -lc \"pgrep -f 'main.py --platform xhs --lt qrcode --type search' >/dev/null && echo service_started\""
-        )
-
-        return {
-            "mode": "local",
-            "command": command,
-            "probeCommand": probe_command,
-            "probeDelaySeconds": session_state.get("instanceProbeDelaySeconds") or 5,
-            "probeTimeoutSeconds": session_state.get("instanceProbeTimeoutSeconds") or 120,
-            "sandboxTimeoutSeconds": session_state.get("sandboxTimeoutSeconds") or 1800,
-            "requestTimeoutSeconds": session_state.get("sandboxRequestTimeoutSeconds") or 180,
-            "killOnExit": session_state.get("sandboxKillOnExit", True),
-            "stdout": session_state.get("serviceStdout") or "/tmp/media_crawler_service.log",
-            "image": session_state.get("sandboxImage") or "opensandbox/playwright:latest",
-            "domain": session_state.get("sandboxDomain"),
-        }
+    def use_service(
+        self,
+        dependency_results: dict[str, StepRunOutput],
+        session_state: dict[str, Any],
+    ) -> StepRunOutput:
+        import json as _json
+        workdir = str(session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR)
+        data_dir = Path(workdir) / "MediaCrawler" / "data" / "xhs"
+        records: list[dict] = []
+        for fpath in sorted(data_dir.glob("*.jsonl")):
+            with open(fpath, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        records.append(_json.loads(line))
+        summary = f"Collected {len(records)} records from MediaCrawler."
+        card = {"summary": summary, "count": len(records)}
+        derived = {"records": records, "recordCount": len(records)}
+        return StepRunOutput(summary=summary, card=card, derived=derived)
 
 
 @register_class
@@ -285,4 +294,4 @@ class ReceiptImageNode(WorkflowImageNode):
         )
 ```
 
-When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `none -> WorkflowOperationNode`, `chat_input -> WorkflowChatNode`, `user_file_input -> WorkflowFileNode`, `image -> WorkflowImageNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` (or prompt `str` for `WorkflowImageNode`; service nodes provide `build_instance_spec`; skill nodes provide `process_operation`).
+When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `none -> WorkflowOperationNode`, `chat_input -> WorkflowChatNode`, `user_file_input -> WorkflowFileNode`, `image -> WorkflowImageNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` (or prompt `str` for `WorkflowImageNode`; service nodes implement three phases `install_environment -> bool`, `start_service -> int PID`, `use_service -> StepRunOutput` without overriding `process_operation`; skill nodes provide `process_operation`).

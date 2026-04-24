@@ -495,17 +495,59 @@ class WorkflowChatNodeCoder(PromptNodeFileCoderBase):
 class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
     node_base_class: str = "WorkflowFileNode"
 
+    def _build_requirement_prompt(
+        self,
+        node_name: str,
+        node_meta: NodeMeta,
+        requirement_text: str,
+        node_markdown_reference: str,
+        output_path: str,
+        graph_plan_path: str,
+        language_clean: str,
+        node_base_class: str,
+        node_contract_text: str,
+    ) -> str:
+        base_prompt = super()._build_requirement_prompt(
+            node_name=node_name,
+            node_meta=node_meta,
+            requirement_text=requirement_text,
+            node_markdown_reference=node_markdown_reference,
+            output_path=output_path,
+            graph_plan_path=graph_plan_path,
+            language_clean=language_clean,
+            node_base_class=node_base_class,
+            node_contract_text=node_contract_text,
+        )
+
+        ext_data = node_meta.ext_data if isinstance(node_meta.ext_data, Mapping) else {}
+        remote_desc = ""
+        if isinstance(ext_data, Mapping):
+            remote_desc = str(ext_data.get("remote_desc", "")).strip()
+
+        if not remote_desc:
+            return (
+                base_prompt
+                + "\n\nWorkflowFileNode generation rule (authoritative):\n"
+                + "- Do not implement any custom methods.\n"
+                + "- Rely on WorkflowFileNode base implementation for save_files/save_files_remote/build_step_output.\n"
+                + "- Only define required class constants (STEP_ID, TITLE, PROMPT, DEPENDENCIES).\n"
+            )
+
+        return (
+            base_prompt
+            + "\n\nWorkflowFileNode remote persistence rule (authoritative):\n"
+            + "- ext_data.remote_desc is provided; implement save_files_remote(files, session_state) based on it.\n"
+            + f"- remote_desc: {remote_desc}\n"
+            + "- Do not modify or override other base persistence/output methods unless strictly required by remote_desc.\n"
+        )
+
     def get_node_contract_text(self) -> str:
         return (
             "Generate a WorkflowFileNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Implement file handling behavior in process_files(saved_files, dependency_results, session_state) and return StepRunOutput.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
+            "By default, do not implement any custom methods; rely on WorkflowFileNode base behavior.\n"
+            "Only when ext_data.remote_desc is present, implement save_files_remote(files, session_state) according to remote_desc.\n"
             "saved_files contains uploaded files already persisted by WorkflowFileNode save_files/save_files_remote, including original fileName and saved location.\n"
-            "If you need a custom root directory for persisted files, override only save_files_remote(files, session_state); do not modify other base persistence methods.\n"
-            "Use dependency_results and saved file locations as context for downstream business logic.\n"
-            "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
-            "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
-            "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
             "Ensure this node expects user file input and supports multiple uploaded files.\n\n"
         )
@@ -513,8 +555,8 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
     def get_feedback_contract_text(self) -> str:
         return (
             "Preserve the WorkflowFileNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_files returning StepRunOutput based on saved file locations). "
-            "If file root customization is needed, only override save_files_remote(files, session_state).\n"
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES). "
+            "Default to no custom methods; only override save_files_remote(files, session_state) when remote storage behavior is explicitly required (e.g., ext_data.remote_desc).\n"
         )
 
 
@@ -614,6 +656,32 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
             return ""
         return service_doc.read_text(encoding="utf-8").strip()
 
+    def _extract_service_sections(self, service_markdown: str) -> tuple[str, str, str]:
+        """Return (installation_section, start_service_section, using_section) from a parsed service.md.
+
+        Sections are matched by H2 headings that start with '1.', '2.', or '3.' respectively.
+        """
+        if not service_markdown.strip():
+            return "", "", ""
+        try:
+            from meta_agent.tools.file_tools import parse_skill_md
+            sections = parse_skill_md(service_markdown)
+        except Exception:
+            sections = {}
+        # Match sections by numeric prefix to tolerate slight heading variants.
+        installation = ""
+        start_service = ""
+        using = ""
+        for key, value in sections.items():
+            key_stripped = key.strip()
+            if key_stripped.startswith("1. Installation"):
+                installation = value.strip()
+            elif key_stripped.startswith("2. Start Service"):
+                start_service = value.strip()
+            elif key_stripped.startswith("3. Using"):
+                using = value.strip()
+        return installation, start_service, using
+
     def _build_requirement_prompt(
         self,
         node_name: str,
@@ -642,6 +710,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
         available_services = self._list_available_services(services_root)
         service_name = self._extract_service_name(node_meta)
         service_doc_text = self._read_service_markdown(services_root, service_name)
+        installation_section, start_section, using_section = self._extract_service_sections(service_doc_text)
         current_os = self._current_os_label()
 
         service_context_lines = [
@@ -657,29 +726,74 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
             service_context_lines.extend(
                 [
                     "",
-                    "Selected service run guide (service.md):",
+                    "Full service run guide (service.md) for reference:",
                     service_doc_text,
-                    "",
-                    "Implementation constraints for this service node:",
-                    "- Subclass WorkflowServiceNode.",
-                    "- Build service startup command sequence from service.md run guide and store command in build_instance_spec.",
-                    "- In build_instance_spec, set spec['workdir'] from session_state.get('serviceWorkdir') with fallback to self.DEFAULT_WORKDIR.",
-                    "- Do not hardcode repository-specific absolute paths for service working directory.",
-                    "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific command variant when service.md lists multiple variants.",
-                    "- If the service probe produces structured output needed by downstream nodes, set spec['output_location'] to a unique temp file path and redirect probeCommand stdout to it; also override parse_output(self, output_location) -> dict to parse that file and return a flat dict of derived fields.",
-                    "- If no structured service output is needed, omit output_location and do NOT override parse_output.",
-                    "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
-                    "- If session_state provides instanceCommand, it should override generated command.",
                 ]
             )
-        else:
+
+        if installation_section:
+            service_context_lines.extend(
+                [
+                    "",
+                    "service.md ## 1. Installation section (authoritative — implement this in install_environment):",
+                    installation_section,
+                ]
+            )
+
+        if start_section:
+            service_context_lines.extend(
+                [
+                    "",
+                    "service.md ## 2. Start Service section (authoritative — implement this in start_service):",
+                    start_section,
+                ]
+            )
+
+        if using_section:
+            service_context_lines.extend(
+                [
+                    "",
+                    "service.md ## 3. Using section (authoritative — implement this in use_service):",
+                    using_section,
+                ]
+            )
+
+        service_context_lines.extend(
+            [
+                "",
+                "Implementation constraints for this service node:",
+                "- Subclass WorkflowServiceNode.",
+                "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
+                "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
+                "- Implement use_service(dependency_results, session_state) -> StepRunOutput based on the ## 3. Using section.",
+                "- Do not override process_operation; the base class orchestrates the three phases automatically.",
+                "- Use DEFAULT_WORKDIR or session_state.get('serviceWorkdir') as working directory; do not hardcode absolute paths.",
+                "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
+                "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
+            ]
+            if not service_doc_text else [
+                "",
+                "Implementation constraints for this service node:",
+                "- Subclass WorkflowServiceNode.",
+                "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
+                "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
+                "- Implement use_service(dependency_results, session_state) -> StepRunOutput based on the ## 3. Using section.",
+                "- Do not override process_operation; the base class orchestrates the three phases automatically.",
+                "- Use DEFAULT_WORKDIR or session_state.get('serviceWorkdir') as working directory; do not hardcode absolute paths.",
+                "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
+                "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
+            ]
+        )
+
+        if not service_doc_text:
             service_context_lines.extend(
                 [
                     "",
                     "No service.md found for selected service_name.",
-                    "- Fall back to minimal safe service command behavior.",
-                    "- Set spec['workdir'] from session_state.get('serviceWorkdir') with fallback to self.DEFAULT_WORKDIR.",
-                    "- Keep fallback command compatible with current_operating_system.",
+                    "- Fall back to minimal safe stub implementations for all three phases.",
+                    "- install_environment: return True after a no-op check.",
+                    "- start_service: launch a placeholder process and return its pid.",
+                    "- use_service: return a minimal StepRunOutput with a descriptive summary.",
                     "- Do not invent unavailable service details.",
                 ]
             )
@@ -689,35 +803,42 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
     def get_node_contract_text(self) -> str:
         return (
             "Generate a WorkflowServiceNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Implement service bootstrap behavior by overriding build_instance_spec(dependency_results, session_state).\n"
-            "build_instance_spec must return a dict spec consumable by WorkflowServiceNode.run_in_sandbox.\n"
-            "Always include workdir in the returned spec, using session_state.get('serviceWorkdir') with fallback to self.DEFAULT_WORKDIR.\n"
-            "If a custom default workdir is required, define class constant DEFAULT_WORKDIR in the generated node.\n"
-            "The generated service command must be valid for the current operating system context.\n"
-            "Probe readiness fields:\n"
-            "  probeCommand (str): shell command retried until exit-0 to confirm the service started.\n"
-            "  probeDelaySeconds (int): interval in seconds between retries; default 2; read from session_state.get('instanceProbeDelaySeconds').\n"
-            "  probeTimeoutSeconds (int): total wait budget in seconds before the node fails; default 30; read from session_state.get('instanceProbeTimeoutSeconds').\n"
-            "Always populate probeCommand, probeDelaySeconds, and probeTimeoutSeconds in build_instance_spec when a probe is appropriate.\n"
-            "output_location / parse_output pattern:\n"
-            "  - If the service produces structured output (e.g. JSON, status file) that downstream nodes need, include an\n"
-            "    'output_location' key in the spec dict returned by build_instance_spec, set to an absolute file path.\n"
-            "  - The probeCommand (or startup command) must redirect its output to that path so the file is populated on success.\n"
-            "  - When output_location is set in the spec, override parse_output(self, output_location: str) -> dict[str, Any]\n"
-            "    to read that file, parse its content, and return a flat dict; the base class merges the dict into derived.\n"
-            "  - If no structured output is required by downstream nodes, omit output_location and do NOT override parse_output.\n"
+            "Implement the three-phase execution pattern by overriding these three methods:\n"
+            "\n"
+            "Phase 1 — install_environment(self, dependency_results, session_state) -> bool:\n"
+            "  Implement based on service.md ## 1. Installation section.\n"
+            "  Run install commands (e.g. git clone, uv sync, pip install) using subprocess.run or equivalent.\n"
+            "  Return True if installation succeeded, False otherwise.\n"
+            "  Skip work if it was already done (e.g. check if directory/venv exists before cloning/installing).\n"
+            "\n"
+            "Phase 2 — start_service(self, dependency_results, session_state) -> int:\n"
+            "  Implement based on service.md ## 2. Start Service section.\n"
+            "  Launch the service as a background process using subprocess.Popen.\n"
+            "  Return the integer PID of the launched process (proc.pid); <= 0 signals failure.\n"
+            "  The working directory should be session_state.get('serviceWorkdir') or self.DEFAULT_WORKDIR.\n"
+            "  If a custom default workdir is required, define class constant DEFAULT_WORKDIR in the generated node.\n"
+            "  The generated command must be valid for the current operating system context.\n"
+            "\n"
+            "Phase 3 — use_service(self, dependency_results, session_state) -> StepRunOutput:\n"
+            "  Implement based on service.md ## 3. Using section.\n"
+            "  Interact with the running service (e.g. read output files, send HTTP requests, parse results).\n"
+            "  Return StepRunOutput(summary=..., card=..., derived=...) with the service results.\n"
+            "  Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
+            "\n"
+            "Do NOT override process_operation — the base class calls the three phases in order automatically.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state when needed.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
-            "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
             "This node should not require direct user input.\n\n"
         )
 
     def get_feedback_contract_text(self) -> str:
         return (
-            "Preserve the WorkflowServiceNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and build_instance_spec for service execution).\n"
+            "Preserve the WorkflowServiceNode three-phase contract "
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and install_environment returning bool, "
+            "start_service returning int PID, use_service returning StepRunOutput).\n"
+            "Do NOT override process_operation.\n"
         )
 
 

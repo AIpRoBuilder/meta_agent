@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from pydaograph import CStatus, GElement, GPipeline
+
 from meta_agent.architect import GraphPlanner, NodePlanner, Graph
 from meta_agent.auditor import GraphJsonAuditor, NodeAuditor, MainEntryPointAuditor, OutputAuditor, FrontendAuditor
 from meta_agent.worker.main_writer import PromptMainFileCoder
@@ -27,7 +29,50 @@ from meta_agent.worker.node_writer import (
 from meta_agent.worker.frontend_writer import PromptFrontendCoder
 from meta_agent.demand_analyzer import RequirementDisector
 
+class _NodeGenerateElement(GElement):
+    def __init__(self, builder: "AgentBuilder", node_name: str,total: int, node_index: int, language: str, temperature: float) -> None:
+        super().__init__()
+        self.builder = builder
+        self.node_name = node_name
+        self.node_index = node_index
+        self.node_meta = self.builder.planned_graph.get_node_meta(self.node_name)
+        self.coder = self.builder._make_node_coder(self.node_meta)
+        self.total = total
+        self.temperature = temperature
+        self.language = language
 
+    def run(self) -> CStatus:
+        try:
+            out_dir = os.path.join(self.builder.root_dir, self.node_name)
+            print(f"[{self.node_index}/{self.total}] Generating node '{self.node_name}' -> {out_dir}.py")
+
+            # create a node-specific coder for this metadata type
+            file_path = self.coder.write_node_from_requirement(
+                self.node_name,
+                self.node_meta,
+                self.builder.requirement_md_path,
+                out_dir,
+                graph_plan_path=self.builder.graph_plan_path,
+                language=self.language,
+                temperature=self.temperature,
+            )
+
+            # audit/amend loop remains the same
+            while True:
+                ok, violations = self.builder.node_auditor.audit_node_file(file_path, self.node_meta)
+                if ok:
+                    print(f"[{self.node_index}/{self.total}] Node audit passed: {self.node_name}")
+                    break
+                amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+                print(f"[{self.node_index}/{self.total}] Node audit failed: {self.node_name}. {amendment} Applying amendment...")
+                self.coder.amend_code_with_feedback(out_dir, amendment, language=self.language, temperature=0.2)
+
+            self.builder.node_location_map[self.node_name] = file_path
+
+            return CStatus()
+        except Exception as exc:
+            return CStatus(1001, f"node generation failed for {self.node_name}: {exc}")
+                
 class AgentBuilder:
     """Build AG-UI workflow artifacts with generation, auditing, and progress display."""
 
@@ -42,6 +87,8 @@ class AgentBuilder:
         self._progress_total = 0
         self._progress_current = 0
         self._progress_width = 28
+        self.requirement_md_path: Optional[str] = None
+        self.graph_plan_path: Optional[str] = None
 
         self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
 
@@ -99,17 +146,24 @@ class AgentBuilder:
         by the `RequirementDisector` and written to `out_file` under `root_dir`.
         """
         if requirement_file:
+            self.requirement_md_path = requirement_file
             return requirement_file
 
         out_path = os.path.join(self.root_dir, out_file)
         print(f"Analyzing requirement -> {out_path}")
         self.analyzer.code_to_file(requirement_text or "", out_path)
+        self.requirement_md_path = out_path
         return out_path
 
-    def plan_graph(self, requirement_md_path: str, graph_plan_filename: str = "graph_plan.json", temperature: float = 0.0) -> str:
+    def plan_graph(self, requirement_md_path: Optional[str] = None, graph_plan_filename: str = "graph_plan.json", temperature: float = 0.2) -> str:
+        if requirement_md_path:
+            self.requirement_md_path = requirement_md_path
+        if not self.requirement_md_path:
+            raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
+
         self.graph_plan_path = os.path.join(self.root_dir, graph_plan_filename)
         print(f"Planning graph -> {self.graph_plan_path}")
-        self.planner.plan_from_file(requirement_md_path, self.graph_plan_path)
+        self.planner.plan_from_file(self.requirement_md_path, self.graph_plan_path)
 
         while True:
             self.planned_graph = Graph(self.graph_plan_path)
@@ -119,11 +173,17 @@ class AgentBuilder:
                 break
             amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
             print("Graph audit failed. Applying amendment...")
-            self.planner.amend_file_with_feedback(self.graph_plan_path, amendment, temperature=0.2)
-
+            self.planner.amend_file_with_feedback(self.graph_plan_path, amendment, temperature=temperature)
+        self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
         return self.graph_plan_path
 
-    def generate_nodes(self, graph_plan_path: str, requirement_md_path: str, language: str = "python", temperature: float = 0.0) -> List[str]:
+    def generate_nodes(
+        self,
+        graph_plan_path: Optional[str] = None,
+        requirement_md_path: Optional[str] = None,
+        language: str = "python",
+        temperature: float = 0.1,
+    ) -> List[str]:
         """Generate code for every node in the planned graph.
 
         A separate :class:`PromptNodeFileCoder` instance is created for each
@@ -133,49 +193,43 @@ class AgentBuilder:
 
         Returns a list of all generated file paths as before.
         """
+        if graph_plan_path:
+            self.graph_plan_path = graph_plan_path
+        if requirement_md_path:
+            self.requirement_md_path = requirement_md_path
+        if not self.graph_plan_path:
+            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
+        if not self.requirement_md_path:
+            raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
 
         # ensure we start with fresh mappings each time
         self.node_coder_map = {}
         self.node_location_map = {}
 
         nodes = self.planned_graph.get_topological_sorted_nodes()
-        generated_files: List[str] = []
         total = len(nodes)
+        pipeline = GPipeline()
 
+        
+
+        elements: Dict[str, _NodeGenerateElement] = {}
         for index, name in enumerate(nodes, start=1):
+            elements[name] = _NodeGenerateElement(self, name, total, index, language=language, temperature=temperature)
+
+        for name in nodes:
             node_meta = self.planned_graph.get_node_meta(name)
-            out_dir = os.path.join(self.root_dir, name)
-            print(f"[{index}/{total}] Generating node '{name}' -> {out_dir}.py")
+            depends = set()
+            if node_meta and node_meta.depends:
+                depends = {elements[dep] for dep in node_meta.depends if dep in elements}
+            status = pipeline.registerGElement(elements[name], depends, name, 1)
+            if status.isErr():
+                raise RuntimeError(f"registerGElement failed for {name}: {status.getInfo()}")
 
-            # create a node-specific coder for this metadata type
-            coder = self._make_node_coder(node_meta)
-            file_path = coder.write_node_from_requirement(
-                name,
-                node_meta,
-                requirement_md_path,
-                out_dir,
-                graph_plan_path=graph_plan_path,
-                language=language,
-                temperature=temperature,
-            )
+        process_status = pipeline.process()
+        if process_status.isErr():
+            raise RuntimeError(f"generate_nodes pipeline.process failed: {process_status.getInfo()}")
 
-            # audit/amend loop remains the same
-            while True:
-                ok, violations = self.node_auditor.audit_node_file(file_path, node_meta)
-                if ok:
-                    print(f"[{index}/{total}] Node audit passed: {name}")
-                    break
-                amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-                print(f"[{index}/{total}] Node audit failed: {name}. {amendment} Applying amendment...")
-                coder.amend_code_with_feedback(out_dir, amendment, language=language, temperature=0.2)
-
-            # record mapping for later use
-            self.node_coder_map[name] = coder
-            self.node_location_map[name] = file_path
-
-            generated_files.append(file_path)
-
-        return generated_files
+        return [self.node_location_map[name] for name in nodes if name in self.node_location_map]
 
     def generate_node_markdowns(
         self,
@@ -471,7 +525,7 @@ class AgentBuilder:
             self._advance_progress("Per-node markdown plans generated")
 
         print("Starting node generation and audit...")
-        self.generate_nodes(self.graph_plan_path, req_path, language="python", temperature=0.0)
+        self.generate_nodes(language="python", temperature=0.0)
         print("All nodes generated and audited successfully.")
         self._advance_progress("Node files generated and audited")
 

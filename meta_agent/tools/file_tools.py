@@ -323,11 +323,13 @@ def check_registered_class_imports(root_path: str, target_file_path: str) -> lis
 
 
 _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
-	"WorkflowStepNode": ("process_input", "build_step_output"),
-	"WorkflowFileNode": ("process_files", "build_step_output"),
-	"WorkflowOperationNode": ("process_operation", "build_step_output"),
+	"WorkflowStepNode": ("process_input"),
+	"WorkflowFileNode": ("build_step_output"),
+	"WorkflowOperationNode": ("process_operation"),
 	"WorkflowChatNode": ("build_step_output"),
 	"WorkflowImageNode": ("build_step_output"),
+ 	"WorkflowServiceNode": ("use_service"),
+	"WorkflowSkillNode": ("process_operation"),
 }
 
 
@@ -339,6 +341,8 @@ def _get_workflow_base_class_objects() -> dict[str, type]:
 		WorkflowImageNode,
 		WorkflowOperationNode,
 		WorkflowStepNode,
+		WorkflowServiceNode,
+		WorkflowSkillNode,
 	)
 	return {
 		"WorkflowStepNode": WorkflowStepNode,
@@ -346,6 +350,8 @@ def _get_workflow_base_class_objects() -> dict[str, type]:
 		"WorkflowOperationNode": WorkflowOperationNode,
 		"WorkflowChatNode": WorkflowChatNode,
 		"WorkflowImageNode": WorkflowImageNode,
+		"WorkflowServiceNode": WorkflowServiceNode,
+		"WorkflowSkillNode": WorkflowSkillNode,
 	}
 
 

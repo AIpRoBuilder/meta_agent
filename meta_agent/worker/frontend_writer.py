@@ -117,7 +117,7 @@ class PromptFrontendCoder(Coder):
 			f"run-step endpoint: {run_step_endpoint}\n"
 			f"reset-session endpoint: {reset_session_endpoint}\n\n"
 			"The backend emits SSE AG-UI events, including CUSTOM event name='step_card'.\n"
-			"Each step returns StepRunOutput (input nodes via process_input, file nodes via process_files, chat nodes via build_step_output, image nodes via build_step_output, operation nodes via process_operation) with fields:\n"
+			"Each step returns StepRunOutput (input nodes via process_input, file nodes via build_step_output after persistence, chat nodes via build_step_output, image nodes via build_step_output, operation nodes via process_operation) with fields:\n"
 			"- summary: string\n"
 			"- card: object (render rows from card.rows where each row has name/value; also render card.actions when present)\n"
 			"- derived: object (for backend chaining and possible final display)\n\n"

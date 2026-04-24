@@ -3,12 +3,57 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from pydaograph import CStatus, GElement, GPipeline
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR))
 
 from llm_client.coder import Coder
+
+
+class _NodePlanElement(GElement):
+	def __init__(
+		self,
+		planner: "NodePlanner",
+		node: dict[str, Any],
+		index: int,
+		target_dir: Path,
+		requirement_text: str,
+		overwrite: bool,
+		temperature: float,
+		max_tokens: int,
+		outputs: dict[str, Path],
+	) -> None:
+		super().__init__()
+		self.planner = planner
+		self.node = node
+		self.index = index
+		self.target_dir = target_dir
+		self.requirement_text = requirement_text
+		self.overwrite = overwrite
+		self.temperature = temperature
+		self.max_tokens = max_tokens
+		self.outputs = outputs
+
+	def run(self) -> CStatus:
+		try:
+			node_name = str(self.node.get("name", "")).strip() or f"Node{self.index}"
+			node_context = self.planner._node_context(self.node, self.index)
+			node_file = self.target_dir / self.planner._node_filename(self.node, self.index)
+
+			user_prompt = self.planner._build_node_prompt(self.requirement_text, node_context)
+			written = self.planner.code_to_file(
+				user_prompt,
+				str(node_file),
+				overwrite=self.overwrite,
+				temperature=self.temperature,
+				max_tokens=self.max_tokens,
+			)
+			self.outputs[node_name] = written
+			return CStatus()
+		except Exception as exc:
+			return CStatus(1001, f"node planning failed for index {self.index}: {exc}")
 
 
 @dataclass
@@ -104,8 +149,8 @@ class NodePlanner(Coder):
 				"extType": ext_type,
 				"nodeKind": "file",
 				"baseClass": "WorkflowFileNode",
-				"primaryFunctions": ["process_files", "save_files_remote(optional)"],
-				"note": "File-upload node: handles persisted files and emits structured derived outputs.",
+				"primaryFunctions": ["build_step_output(optional)", "save_files_remote(optional)"],
+				"note": "File-upload node: persists uploaded files and can optionally customize StepRunOutput via build_step_output.",
 			}
 		if ext_type == "image":
 			return {
@@ -230,6 +275,26 @@ class NodePlanner(Coder):
 		name = str(node.get("name", "")).strip() or f"Node{index}"
 		return f"{name}.md"
 
+	def _build_node_prompt(self, requirement_text: str, node_context: str) -> str:
+		return (
+			"Generate a BRIEF markdown implementation guide for this SINGLE node only.\n"
+			"Goal: recommend concrete tools/functions and a short implementation strategy.\n"
+			"Input sources to use: requirement analysis + node desc + ext_data-derived node type.\n"
+			"Node type must align with workflow reference contracts.\n"
+			"Keep output concise and practical (MVP-first, no extra features).\n\n"
+			"Mandatory output sections:\n"
+			"1) # Node Implementation Brief\n"
+			"2) ## Node Summary\n"
+			"3) ## Tools and Functions\n"
+			"4) ## Input/Dependency Handling\n"
+			"5) ## Output Contract\n"
+			"6) ## Minimal TODOs (3-6 bullets)\n\n"
+			"Requirement analysis markdown:\n"
+			f"{requirement_text}\n\n"
+			"Target node context:\n"
+			f"{node_context}\n"
+		)
+
 	def plan_each_from_files(
 		self,
 		requirement_md_path: str,
@@ -286,37 +351,45 @@ class NodePlanner(Coder):
 		target_dir = Path(output_dir)
 		target_dir.mkdir(parents=True, exist_ok=True)
 
-		output_paths: list[Path] = []
+		pipeline = GPipeline()
+		node_entries: list[tuple[int, dict[str, Any], str]] = []
+		elements: dict[str, _NodePlanElement] = {}
+		node_outputs: dict[str, Path] = {}
+
 		for index, node in enumerate(nodes, start=1):
-			node_context = self._node_context(node, index)
-			node_file = target_dir / self._node_filename(node, index)
-
-			user_prompt = (
-				"Generate a BRIEF markdown implementation guide for this SINGLE node only.\n"
-				"Goal: recommend concrete tools/functions and a short implementation strategy.\n"
-				"Input sources to use: requirement analysis + node desc + ext_data-derived node type.\n"
-				"Node type must align with workflow reference contracts.\n"
-				"Keep output concise and practical (MVP-first, no extra features).\n\n"
-				"Mandatory output sections:\n"
-				"1) # Node Implementation Brief\n"
-				"2) ## Node Summary\n"
-				"3) ## Tools and Functions\n"
-				"4) ## Input/Dependency Handling\n"
-				"5) ## Output Contract\n"
-				"6) ## Minimal TODOs (3-6 bullets)\n\n"
-				"Requirement analysis markdown:\n"
-				f"{requirement_text}\n\n"
-				"Target node context:\n"
-				f"{node_context}\n"
-			)
-
-			written = self.code_to_file(
-				user_prompt,
-				str(node_file),
+			node_name = str(node.get("name", "")).strip() or f"Node{index}"
+			node_entries.append((index, node, node_name))
+			elements[node_name] = _NodePlanElement(
+				planner=self,
+				node=node,
+				index=index,
+				target_dir=target_dir,
+				requirement_text=requirement_text,
 				overwrite=overwrite,
 				temperature=temperature,
 				max_tokens=max_tokens,
+				outputs=node_outputs,
 			)
-			output_paths.append(written)
+
+		for index, node, node_name in node_entries:
+			depends = node.get("depends", [])
+			dep_names = depends if isinstance(depends, list) else []
+			dep_elements = {elements[dep_name] for dep_name in dep_names if dep_name in elements}
+			status = pipeline.registerGElement(elements[node_name], dep_elements, node_name, 2)
+			if status.isErr():
+				raise RuntimeError(f"registerGElement failed for {node_name}: {status.getInfo()}")
+
+		process_status = pipeline.process()
+		if process_status.isErr():
+			raise RuntimeError(f"plan_each pipeline.process failed: {process_status.getInfo()}")
+
+		output_paths: list[Path] = []
+		for index, _node, node_name in node_entries:
+			if node_name in node_outputs:
+				output_paths.append(node_outputs[node_name])
+			else:
+				expected = target_dir / self._node_filename(_node, index)
+				if expected.exists():
+					output_paths.append(expected)
 
 		return output_paths
