@@ -239,6 +239,9 @@ class NodePlanner(Coder):
 		depends = node.get("depends", [])
 		if not isinstance(depends, list):
 			depends = []
+		services = node.get("services", [])
+		if not isinstance(services, list):
+			services = []
 		ext_data = node.get("ext_data", {})
 		profile = self._derive_node_profile(ext_data)
 
@@ -261,6 +264,10 @@ class NodePlanner(Coder):
 			ctx_lines.append(f"- ext_data.service_name: {service_name_val}")
 		if skill_name_val:
 			ctx_lines.append(f"- ext_data.skill_name: {skill_name_val}")
+		if services:
+			ctx_lines.append(f"- services: {json.dumps(services, ensure_ascii=False)}")
+		else:
+			ctx_lines.append("- services: none")
 		ctx_lines.extend(
 			[
 				f"- derived node kind: {profile['nodeKind']}",

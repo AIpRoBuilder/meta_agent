@@ -216,6 +216,21 @@ class PromptNodeFileCoderBase(Coder):
     def _format_depends(depends: list[str] | None) -> str:
         return ", ".join(depends) if depends else "none"
 
+    @staticmethod
+    def _format_services(services: list[dict[str, str]] | None) -> str:
+        if not services:
+            return "none"
+        normalized: list[dict[str, str]] = []
+        for item in services:
+            if not isinstance(item, Mapping):
+                continue
+            service_name = str(item.get("service_name", "")).strip()
+            use_desc = str(item.get("use_desc", "")).strip()
+            if not service_name:
+                continue
+            normalized.append({"service_name": service_name, "use_desc": use_desc})
+        return json.dumps(normalized, ensure_ascii=False) if normalized else "none"
+
     def _build_requirement_prompt(
         self,
         node_name: str,
@@ -230,6 +245,7 @@ class PromptNodeFileCoderBase(Coder):
     ) -> str:
         depends_text = self._format_depends(node_meta.depends)
         ext_data_text = self._format_ext_data(node_meta.ext_data)
+        services_text = self._format_services(node_meta.services)
 
         minimal_policy_text = (
             "Minimal implementation policy (must follow):\n"
@@ -248,6 +264,7 @@ class PromptNodeFileCoderBase(Coder):
             f"Description: {node_meta.desc}\n"
             f"Depends on: {depends_text}\n"
             f"External data: {ext_data_text}\n"
+            f"Services usage: {services_text}\n"
             f"Expected base class: {node_base_class}\n"
             f"Target language: {language_clean}\n\n"
             f"{minimal_policy_text}"

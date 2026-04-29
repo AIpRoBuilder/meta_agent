@@ -39,33 +39,33 @@ def main() -> None:
 结构分析与模仿
 风格迁移(保持爆款节奏)
 内容替换(融入教育元素)
-输出:适配后的视频脚本/图文文案,引导购买或者加微
+输出:适配后的图文文案,引导购买或者加微
 4.多媒体内容制作模块
 输入:脚本/文案、内容形式要求
 处理:
-口播类:调用数字人API生成视频
-剧情类:调用文生视频API生成短视频
-图文类:自动排版设计
-输出:成品视频/图文素材
+图文类:调用文生图API生成图片，自动排版设计
+输出:成品图文素材
 5.分发物料生成模块
 输入:核心内容、目标平台特性
 处理:
 平台适配标题生成
-封面图自动设计
+封面图自动设计和组装
 分发文案撰写
 输出:完整的分发物料包
  """
+requirement_text = """帮我构建一个工作流：
+1.定时执行任务：每分钟自动执行一次，返回当前时间戳。"""
 
-	builder = AgentBuilder(
-		api_key="sk-7b750ecf940b45be82019e430be390b0",
+builder = AgentBuilder(api_key="sk-7b750ecf940b45be82019e430be390b0",
 		provider="deepseek",
 		model="deepseek-reasoner",
-		root_dir="./example_agent",
+		root_dir="./example_agent", frontend_style_prompt="style: pinky, lovable, and beautiful. Use markdown format for outputs when applicable."
 	)
 
-	builder.run_full_pipeline(
+builder.run_full_pipeline(
 		requirement_text=requirement_text,
 		test_after_generation=True,
+    crontab_expression="*/1 * * * *"
 	)
 
 

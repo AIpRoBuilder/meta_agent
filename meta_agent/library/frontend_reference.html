@@ -427,10 +427,12 @@
 			<section class="topbar">
 				<div>
 					<div class="title">AG-UI Financial Planning Workflow</div>
-					<div class="meta">Streams AG-UI lifecycle events from <code>/api/run-step</code></div>
+					<div class="meta">Streams AG-UI lifecycle events from <code>/api/run-step</code> and <code>/api/run-all-cron</code></div>
 				</div>
 				<div class="session">
 					<span class="badge" id="sessionBadge"></span>
+					<button id="startCronBtn">Start Cron</button>
+					<button id="stopCronBtn" disabled>Stop Cron</button>
 					<button id="newSessionBtn">New Session</button>
 					<button id="resetSessionBtn">Reset Session</button>
 				</div>
@@ -452,6 +454,7 @@
 
 		<script>
 			const RUN_STEP_ENDPOINT = "/api/run-step";
+			const RUN_ALL_CRON_ENDPOINT = "/api/run-all-cron";
 			const RESET_SESSION_ENDPOINT = "/api/reset-session";
 			const SESSION_KEY = "sessionId";
 
@@ -506,11 +509,15 @@
 				cards: new Map(),
 				inFlightStepId: null,
 				autoQueuedSteps: new Set(),
-				assistantByMessageId: new Map()
+				assistantByMessageId: new Map(),
+				cronAbortController: null,
+				cronRunning: false
 			};
 
 			const els = {
 				sessionBadge: document.getElementById("sessionBadge"),
+				startCronBtn: document.getElementById("startCronBtn"),
+				stopCronBtn: document.getElementById("stopCronBtn"),
 				newSessionBtn: document.getElementById("newSessionBtn"),
 				resetSessionBtn: document.getElementById("resetSessionBtn"),
 				steps: document.getElementById("steps"),
@@ -592,6 +599,12 @@
 				els.finalResult.hidden = true;
 				els.finalResult.textContent = "";
 				renderSteps();
+				updateCronButtons();
+			}
+
+			function updateCronButtons() {
+				els.startCronBtn.disabled = state.cronRunning;
+				els.stopCronBtn.disabled = !state.cronRunning;
 			}
 
 			async function callResetSession(sessionId) {
@@ -893,6 +906,47 @@
 				}
 			}
 
+			async function startCronStream() {
+				if (state.cronRunning) return;
+				state.cronRunning = true;
+				state.cronAbortController = new AbortController();
+				updateCronButtons();
+				appendMessage("system", "Starting cron stream...");
+
+				try {
+					const response = await fetch(RUN_ALL_CRON_ENDPOINT, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							sessionId: state.sessionId,
+							resetBeforeEachRun: true
+						}),
+						signal: state.cronAbortController.signal
+					});
+
+					if (!response.ok || !response.body) {
+						throw new Error(`run-all-cron failed: ${response.status}`);
+					}
+
+					await consumeSSE(response.body);
+				} catch (error) {
+					if (error && error.name === "AbortError") {
+						appendMessage("system", "Cron stream stopped.");
+					} else {
+						appendMessage("error", `Cron stream error: ${error.message || String(error)}`);
+					}
+				} finally {
+					state.cronRunning = false;
+					state.cronAbortController = null;
+					updateCronButtons();
+				}
+			}
+
+			function stopCronStream() {
+				if (!state.cronRunning || !state.cronAbortController) return;
+				state.cronAbortController.abort();
+			}
+
 			function normalizeType(typeValue) {
 				return String(typeValue || "").trim().toUpperCase();
 			}
@@ -978,6 +1032,7 @@
 			}
 
 			async function onNewSession() {
+				stopCronStream();
 				const newId = `session_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 				try {
 					const payload = await callResetSession(newId);
@@ -990,6 +1045,7 @@
 			}
 
 			async function onResetSession() {
+				stopCronStream();
 				try {
 					const payload = await callResetSession(state.sessionId);
 					setSessionId(payload.sessionId || state.sessionId);
@@ -1002,8 +1058,13 @@
 
 			function init() {
 				setSessionId(state.sessionId);
+				els.startCronBtn.addEventListener("click", () => {
+					void startCronStream();
+				});
+				els.stopCronBtn.addEventListener("click", stopCronStream);
 				els.newSessionBtn.addEventListener("click", onNewSession);
 				els.resetSessionBtn.addEventListener("click", onResetSession);
+				updateCronButtons();
 				renderSteps();
 				appendMessage("system", "Ready. Submit an unlocked step to start streaming events.");
 			}

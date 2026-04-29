@@ -16,7 +16,7 @@ class GraphPlanner(Coder):
 	"""Generate a JSON graph plan from a requirements analysis markdown.
 
 	Nodes in the plan should be objects with keys: `name`, `type`, `desc`,
-	`depends`, and `ext_data`.
+	`depends`, `ext_data`, and optional `services`.
 
 	`ext_data` should be a JSON object for every node with shape:
 	{
@@ -25,6 +25,11 @@ class GraphPlanner(Coder):
 		"service_name": "optional service directory name (required when type=service)",
 		"skill_name": "optional skill directory name (required when type=skill)"
 	}
+
+	If a node uses one or more upstream services, it should include:
+	"services": [
+		{"service_name": "...", "use_desc": "..."}
+	]
 
 	Use `{"type": "user_input", ...}` for nodes that require user input.
 	Use `{"type": "chat_input", ...}` for nodes that should be implemented as WorkflowChatNode.
@@ -349,6 +354,145 @@ class GraphPlanner(Coder):
 			return self.SERVICE_EXT_DESC
 		return f"service bootstrap node: {description}"
 
+	def _is_service_node(self, node: dict[str, Any]) -> bool:
+		ext_data = node.get("ext_data", {})
+		if not isinstance(ext_data, dict):
+			return False
+		ext_type = str(ext_data.get("type", "")).strip().lower()
+		service_name = str(ext_data.get("service_name", "")).strip()
+		return ext_type == "service" or bool(service_name)
+
+	def _collect_upstream_service_names(
+		self,
+		node: dict[str, Any],
+		node_by_name: dict[str, dict[str, Any]],
+		available_services: list[str],
+	) -> list[str]:
+		depends = node.get("depends", [])
+		if isinstance(depends, (str, bytes)):
+			depends = [depends]
+		if not isinstance(depends, list):
+			return []
+
+		stack: list[str] = [str(dep).strip() for dep in depends if str(dep).strip()]
+		visited: set[str] = set()
+		service_names: set[str] = set()
+
+		while stack:
+			current = stack.pop()
+			if current in visited:
+				continue
+			visited.add(current)
+
+			upstream = node_by_name.get(current)
+			if not isinstance(upstream, dict):
+				continue
+
+			if self._is_service_node(upstream):
+				resolved = self._resolve_service_name(upstream, available_services)
+				if resolved:
+					service_names.add(resolved)
+				else:
+					ext_data = upstream.get("ext_data", {})
+					if isinstance(ext_data, dict):
+						raw_name = str(ext_data.get("service_name", "")).strip()
+						if raw_name:
+							service_names.add(raw_name)
+
+			upstream_depends = upstream.get("depends", [])
+			if isinstance(upstream_depends, (str, bytes)):
+				upstream_depends = [upstream_depends]
+			if not isinstance(upstream_depends, list):
+				continue
+			for dep in upstream_depends:
+				dep_name = str(dep).strip()
+				if dep_name and dep_name not in visited:
+					stack.append(dep_name)
+
+		return sorted(service_names)
+
+	def _default_service_use_desc(
+		self,
+		node: dict[str, Any],
+		service_name: str,
+	) -> str:
+		node_desc = str(node.get("desc", "")).strip()
+		ext_data = node.get("ext_data", {})
+		ext_desc = ""
+		if isinstance(ext_data, dict):
+			ext_desc = str(ext_data.get("desc", "")).strip()
+
+		target_desc = node_desc or ext_desc
+		if target_desc:
+			return f"use service '{service_name}' to support: {target_desc}"
+		return f"use service '{service_name}' in this node"
+
+	def _normalize_services_field(
+		self,
+		payload: dict[str, Any],
+		available_services: list[str],
+	) -> None:
+		nodes = payload.get("nodes", [])
+		if not isinstance(nodes, list):
+			return
+
+		node_by_name: dict[str, dict[str, Any]] = {}
+		for node in nodes:
+			if not isinstance(node, dict):
+				continue
+			name = str(node.get("name", "")).strip()
+			if name:
+				node_by_name[name] = node
+
+		for node in nodes:
+			if not isinstance(node, dict):
+				continue
+
+			if self._is_service_node(node):
+				node.pop("services", None)
+				continue
+
+			upstream_service_names = self._collect_upstream_service_names(
+				node,
+				node_by_name,
+				available_services,
+			)
+
+			existing_services = node.get("services")
+			normalized: dict[str, str] = {}
+			if isinstance(existing_services, list):
+				for item in existing_services:
+					if not isinstance(item, dict):
+						continue
+					service_name = str(item.get("service_name", "")).strip()
+					use_desc = str(item.get("use_desc", "")).strip()
+					if not service_name:
+						continue
+					resolved = service_name
+					if available_services:
+						matched = self._resolve_service_name(
+							{"name": "", "type": "", "desc": "", "ext_data": {"service_name": service_name}},
+							available_services,
+						)
+						if matched:
+							resolved = matched
+					normalized[resolved] = use_desc
+
+			for service_name in upstream_service_names:
+				normalized.setdefault(service_name, "")
+
+			if not normalized:
+				node.pop("services", None)
+				continue
+
+			node["services"] = [
+				{
+					"service_name": service_name,
+					"use_desc": use_desc or self._default_service_use_desc(node, service_name),
+				}
+				for service_name, use_desc in sorted(normalized.items())
+			]
+
 	def _normalize_ext_data_in_file(self, graph_json_path: Path) -> None:
 		# Normalize ext_data shape and enforce type=none description rules.
 
@@ -368,6 +512,13 @@ class GraphPlanner(Coder):
 		for node in nodes:
 			if not isinstance(node, dict):
 				continue
+
+			loop_value = node.get("loop", 1)
+			try:
+				loop_int = int(loop_value)
+			except (TypeError, ValueError):
+				loop_int = 1
+			node["loop"] = max(1, loop_int)
 
 			ext_data = node.get("ext_data")
 			if not isinstance(ext_data, dict):
@@ -414,6 +565,8 @@ class GraphPlanner(Coder):
 				ext_data["service_name"] = ""
 			if "skill_name" in ext_data and ext_data["skill_name"] is None:
 				ext_data["skill_name"] = ""
+
+		self._normalize_services_field(payload, available_services)
 
 		graph_json_path.write_text(
 			json.dumps(payload, ensure_ascii=False, indent=2),
@@ -558,6 +711,10 @@ class GraphPlanner(Coder):
 			"- Do not invent node categories outside Step/Operation/Chat/File/Image/Service/Skill capabilities defined in the workflow reference\n"
 			"Schema requirements for each node:\n"
 			"- Required fields: name, type, desc, enable, depends, ext_data\n"
+			"- For any node that depends directly or transitively on a service node (ext_data.type='service'), include node.services as a list of objects: [{'service_name':'<service>','use_desc':'<how this node uses the service>'}] could be empty if no services are used\n"
+			"- service nodes themselves should not include services\n"
+			"- Use node-level loop to represent repeated execution; default loop=1\n"
+			"- If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2)\n"
 			"- ext_data must be a JSON object with keys: type, desc (and service_name when type='service', skill_name when type='skill')\n"
 			"- Mark text input nodes with ext_data.type = 'user_input'\n"
 			"- Mark conversational/chat assistant nodes with ext_data.type = 'chat_input'\n"
@@ -572,6 +729,7 @@ class GraphPlanner(Coder):
 			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'chat_input','desc':'chat with assistant using previous step outputs'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'image','desc':'analyze images from dependency file node outputs'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}\n"
 			"- For nodes without external dependency, include ext_data as {'type':'none','desc':'no need for ext data'}\n"
 			"- If ext_data.type is 'none', desc must be exactly 'no need for ext data'\n"
+			"- Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'enable':true}\n"
 			f"{self._build_service_context_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON.\n\n"
@@ -623,6 +781,10 @@ class GraphPlanner(Coder):
 			"- WorkflowImageNode has no direct upload handler: if user-uploaded images are needed, create an upstream user_file_input node and set the image node depends on it\n"
 			"- Do not invent node categories outside Step/Operation/Chat/File/Image/Service/Skill capabilities defined in the workflow reference\n"
 			"Preserve the graph schema (top-level nodes list with name, type, desc, depends, ext_data).\n"
+			"For any node that depends directly or transitively on a service node (ext_data.type='service'), include node.services as a list of objects: [{'service_name':'<service>','use_desc':'<how this node uses the service>'}] could be empty if no services are used.\n"
+			"Service nodes themselves should not include services.\n"
+			"Use node-level loop to represent repeated execution; default loop=1.\n"
+			"If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2).\n"
 			"Every node must include ext_data as a JSON object with keys: type, desc (plus service_name when type='service', skill_name when type='skill').\n"
 			"Mark text input nodes with ext_data.type='user_input'.\n"
 			"Mark conversational/chat assistant nodes with ext_data.type='chat_input'.\n"
@@ -635,6 +797,7 @@ class GraphPlanner(Coder):
 			"For user image upload, use a separate user_file_input node and depend on it from the image node.\n"
 			"Workflow mapping: user_input -> WorkflowStepNode, chat_input -> WorkflowChatNode, user_file_input -> WorkflowFileNode, image -> WorkflowImageNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode.\n"
 			"If ext_data.type is 'none', desc must be exactly 'no need for ext data'.\n"
+			"Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'enable':true}.\n"
 			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'chat_input','desc':'chat with assistant using previous step outputs'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'image','desc':'analyze images from dependency file node outputs'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}.\n"
 			f"{self._build_service_context_prompt()}"
 			f"{self._build_skill_context_prompt()}"

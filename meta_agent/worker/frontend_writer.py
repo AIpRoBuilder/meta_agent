@@ -42,6 +42,23 @@ class PromptFrontendCoder(Coder):
 			if not isinstance(dependencies, Sequence) or isinstance(dependencies, (str, bytes)):
 				raise ValueError(f"dependencies must be a list for step: {step_id}")
 
+			services_raw = item.get("services") or []
+			services: list[dict[str, str]] = []
+			if isinstance(services_raw, Sequence) and not isinstance(services_raw, (str, bytes)):
+				for service_item in services_raw:
+					if not isinstance(service_item, Mapping):
+						continue
+					service_name = str(service_item.get("service_name", "")).strip()
+					use_desc = str(service_item.get("use_desc", "")).strip()
+					if not service_name:
+						continue
+					services.append(
+						{
+							"service_name": service_name,
+							"use_desc": use_desc,
+						}
+					)
+
 			ext_data_raw = item.get("extData") or item.get("ext_data") or {}
 			if isinstance(ext_data_raw, Mapping):
 				ext_type = str(ext_data_raw.get("type", "none")).strip().lower()
@@ -76,6 +93,7 @@ class PromptFrontendCoder(Coder):
 					"title": title,
 					"prompt": str(item.get("prompt", "")).strip(),
 					"dependencies": [str(dep).strip() for dep in dependencies if str(dep).strip()],
+					"services": services,
 					"inputRequired": input_required,
 					"nodeKind": node_kind,
 					"extData": {
@@ -95,6 +113,7 @@ class PromptFrontendCoder(Coder):
 		*,
 		steps_meta: list[dict[str, Any]],
 		run_step_endpoint: str,
+		run_all_cron_endpoint: str | None,
 		reset_session_endpoint: str,
 		page_title: str,
 		reference_frontend: str,
@@ -115,6 +134,7 @@ class PromptFrontendCoder(Coder):
 			f"{style_block}"
 			f"Page title text: {page_title}\n"
 			f"run-step endpoint: {run_step_endpoint}\n"
+			f"run-all-cron endpoint: {run_all_cron_endpoint or '(disabled)'}\n"
 			f"reset-session endpoint: {reset_session_endpoint}\n\n"
 			"The backend emits SSE AG-UI events, including CUSTOM event name='step_card'.\n"
 			"Each step returns StepRunOutput (input nodes via process_input, file nodes via build_step_output after persistence, chat nodes via build_step_output, image nodes via build_step_output, operation nodes via process_operation) with fields:\n"
@@ -131,6 +151,10 @@ class PromptFrontendCoder(Coder):
 			"4) Render step_card.state, step_card.summary, step_card.card.rows, and step_card.card.actions into the matching step card.\n"
 			"5) Maintain sessionId in localStorage and show it in a badge.\n"
 			"6) Include New Session + Reset Session actions that call reset-session endpoint.\n"
+			"6.1) If run-all-cron endpoint is provided (not '(disabled)'), include Start Cron and Stop Cron controls.\n"
+			"6.2) Start Cron should POST to run-all-cron with payload at least {sessionId, resetBeforeEachRun}; consume SSE continuously using the same event handler as run-step events.\n"
+			"6.3) Stop Cron should cancel the active cron stream (for example via AbortController) and update UI state to idle.\n"
+			"6.4) Ensure only one cron stream is active at a time and disable Start Cron while running.\n"
 			"7) If step metadata includes inputRequired=false or nodeKind in ('operation','service','skill'), do not require text input for submission.\n"
 			"7.1) For any step that does not require direct user input (for example operation/service/skill/image/dependency-driven steps), auto-submit it immediately when it becomes unlocked and visible; do not require a click on a Run button.\n"
 			"8) If step extData.type == 'user_file_input' (or nodeKind='file'), treat it as WorkflowFileNode input: render a multi-file upload control (allow selecting multiple files).\n"
@@ -160,6 +184,7 @@ class PromptFrontendCoder(Coder):
 		steps_meta: Sequence[Mapping[str, Any]],
 		output_path: str,
 		run_step_endpoint: str = "/api/run-step",
+		run_all_cron_endpoint: str | None = "/api/run-all-cron",
 		reset_session_endpoint: str = "/api/reset-session",
 		page_title: str = "AG-UI Lifecycle Events + GPipeline DAG",
 		reference_frontend_path: str | None = None,
@@ -188,6 +213,7 @@ class PromptFrontendCoder(Coder):
 		user_prompt = self._build_user_prompt(
 			steps_meta=normalized_steps,
 			run_step_endpoint=run_step_endpoint,
+			run_all_cron_endpoint=run_all_cron_endpoint,
 			reset_session_endpoint=reset_session_endpoint,
 			page_title=page_title,
 			reference_frontend=reference_frontend,

@@ -9,6 +9,7 @@ Target architecture:
 Required imports:
 - `from __future__ import annotations`
 - `from pathlib import Path`
+- `from dotenv import load_dotenv`
 - `from fastapi import FastAPI, HTTPException`
 - `from fastapi.responses import HTMLResponse, StreamingResponse`
 - `from pydantic import BaseModel`
@@ -16,6 +17,9 @@ Required imports:
 - Import node classes from the generated root package (for example `from example_agent_output import StepA, StepB`)
 
 Required globals and setup:
+- Automatically load environment variables from `.env` at module startup, before app/engine creation.
+- Resolve `.env` path by checking the generated file directory first, then fallback to project root-level `.env`.
+- Call `load_dotenv(...)` for discovered path(s) with non-destructive behavior (do not override existing process env by default).
 - `app = FastAPI(title=...)`
 - `PIPELINE_JSON_PATH = Path(__file__).with_name("workflow_pipeline.json")`
 - `ENGINES: dict[str, WorkflowEngine] = {}`
@@ -57,6 +61,13 @@ Required functions and endpoints:
 - `POST /api/reset-session` with `response_model=ResetSessionOutput`
     - Resolve engine and call `engine.reset_session()`
     - Return `ResetSessionOutput(ok=True, sessionId=..., threadId=engine.thread_id, runId=engine.session.run_id)`
+- Conditional cron endpoint rule:
+    - If `write_main_entrypoint` is invoked with a non-empty `crontab_expression` parameter, generate `POST /api/run-all-cron`.
+    - For this route, do not accept cron expression from request payload; use a preset module-level constant (for example `RUN_ALL_CRON_EXPRESSION = "*/5 * * * *"`) populated from that parameter value.
+    - Add `RunAllCronInput` model containing `sessionId`, optional `inputs`, and `resetBeforeEachRun` (default `True`).
+    - Implement continuous SSE streaming by triggering `engine._run_all_steps_events(step_inputs=payload.inputs)` at each cron tick.
+    - Validate the preset cron expression with `croniter`; return `HTTPException` if invalid.
+    - If `crontab_expression` is empty or not provided, do not generate `/api/run-all-cron`.
 
 Output constraints:
 - Return only runnable Python code.

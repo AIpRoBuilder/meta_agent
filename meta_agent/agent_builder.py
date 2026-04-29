@@ -261,6 +261,7 @@ class AgentBuilder:
             title = (node_meta.desc or node_name) if node_meta else node_name
             prompt = (node_meta.desc or f"Provide input for {node_name}") if node_meta else f"Provide input for {node_name}"
             dependencies = node_meta.depends if node_meta and node_meta.depends else []
+            services = node_meta.services if node_meta and node_meta.services else []
             ext_data = node_meta.ext_data if node_meta and node_meta.ext_data else {"type": "none", "desc": "no need for ext data"}
             if isinstance(ext_data, dict):
                 ext_type = str(ext_data.get("type", "none")).strip().lower()
@@ -292,6 +293,7 @@ class AgentBuilder:
                     "title": title,
                     "prompt": prompt,
                     "dependencies": dependencies,
+                    "services": services,
                     "inputRequired": input_required,
                     "nodeKind": node_kind,
                     "extData": {
@@ -302,7 +304,13 @@ class AgentBuilder:
             )
         return steps_meta
 
-    def generate_frontend(self, output_filename: str = "frontend.html", temperature: float = 0.0, frontend_style_prompt: Optional[str] = None) -> str:
+    def generate_frontend(
+        self,
+        output_filename: str = "frontend.html",
+        temperature: float = 0.0,
+        frontend_style_prompt: Optional[str] = None,
+        run_all_cron_endpoint: Optional[str] = "/api/run-all-cron",
+    ) -> str:
         """Generate and audit frontend.html."""
         frontend_path = os.path.join(self.root_dir, output_filename)
         print(f"Generating frontend -> {frontend_path}")
@@ -318,6 +326,7 @@ class AgentBuilder:
             steps_meta=steps_meta,
             output_path=frontend_path,
             run_step_endpoint="/api/run-step",
+            run_all_cron_endpoint=run_all_cron_endpoint,
             reset_session_endpoint="/api/reset-session",
             frontend_style_prompt=effective_style_prompt,
             overwrite=True,
@@ -336,7 +345,14 @@ class AgentBuilder:
         self.frontend_output_path = frontend_path
         return frontend_path
 
-    def generate_main_entrypoint(self, graph_plan_path: str, output_filename: str = "main.py", fastapi_host: str = "0.0.0.0", temperature: float = 0.0) -> str:
+    def generate_main_entrypoint(
+        self,
+        graph_plan_path: str,
+        output_filename: str = "main.py",
+        fastapi_host: str = "0.0.0.0",
+        temperature: float = 0.0,
+        crontab_expression: Optional[str] = None,
+    ) -> str:
         self.main_output_path = os.path.join(self.root_dir, output_filename)
         print(f"Generating main entrypoint -> {self.main_output_path}")
         self.main_writer.write_main_entrypoint(
@@ -344,6 +360,7 @@ class AgentBuilder:
             graph_plan_json_path=graph_plan_path,
             output_path=self.main_output_path,
             fastapi_host=fastapi_host,
+            crontab_expression=crontab_expression,
             temperature=temperature,
         )
 
@@ -489,6 +506,8 @@ class AgentBuilder:
         test_after_generation: bool = True,
         generate_node_docs: bool = True,
         frontend_style_prompt: Optional[str] = None,
+        crontab_expression: Optional[str] = None,
+        run_all_cron_endpoint: Optional[str] = "/api/run-all-cron",
     ) -> None:
         """Run full build pipeline and generate AG-UI deliverables.
 
@@ -498,6 +517,8 @@ class AgentBuilder:
             test_after_generation: Whether to test generated main.py after generation.
             generate_node_docs: Whether to generate per-node markdown planning docs.
             frontend_style_prompt: Optional style guidance for generated frontend.html.
+            crontab_expression: Optional cron expression; when set, generated main.py should include /api/run-all-cron using this preset schedule.
+            run_all_cron_endpoint: Optional frontend endpoint path for cron streaming; pass None to disable cron controls in generated frontend.
         """
         total_steps = 5
         if generate_node_docs:
@@ -530,15 +551,22 @@ class AgentBuilder:
         self._advance_progress("Node files generated and audited")
 
         print("Generating frontend...")
+        effective_run_all_cron_endpoint = run_all_cron_endpoint if crontab_expression is not None else None
         self.generate_frontend(
             output_filename="frontend.html",
             temperature=0.0,
             frontend_style_prompt=self.frontend_style_prompt,
+            run_all_cron_endpoint=effective_run_all_cron_endpoint,
         )
         self._advance_progress("frontend.html generated and audited")
 
         print("Generating main entrypoint...")
-        main_entrypoint_path = self.generate_main_entrypoint(self.graph_plan_path, output_filename="main.py", temperature=0.0)
+        main_entrypoint_path = self.generate_main_entrypoint(
+            self.graph_plan_path,
+            output_filename="main.py",
+            temperature=0.0,
+            crontab_expression=crontab_expression,
+        )
         self._advance_progress("main.py generated and audited")
 
         if test_after_generation:

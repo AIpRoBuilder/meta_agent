@@ -34,7 +34,25 @@
     - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"image","desc":"analyze images from dependency file node outputs"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。
   - loop: 整数，默认 1；若未提及循环可省略。
+    - 若某节点需要执行多次以更新节点状态，必须显式设置 loop > 1。
+    - 示例：
+      {
+        "name": "UserInput",
+        "type": "UserInput",
+        "desc": "接收用户输入的目标用户画像与教学大纲文本",
+        "loop": 2,
+        "ext_data": {
+          "type": "user_input",
+          "desc": "输入目标用户画像和教学大纲文本"
+        },
+        "enable": true
+      }
   - depends: 数组，依赖节点名称；无依赖时可省略。
+  - services: 可选数组；若该节点直接或间接依赖某个 ext_data.type="service" 的节点，则必须填写，但是如果不使用services可以为空列表。
+    - 格式固定为：[{"service_name":"","use_desc":""}]。
+    - service_name 必须是上游服务节点的 ext_data.service_name。
+    - use_desc 需简要描述该节点如何使用该服务。
+    - 服务节点本身（ext_data.type="service"）不填写 services。
 - 节点数量以满足功能模块为主，避免过度拆分。
 
 ## 示例
@@ -52,6 +70,7 @@
       "type": "MyNode",
       "desc": "calculate the result of 1+2 plus or minus the result from the previous node",
       "ext_data": {"type": "user_input", "desc": "need to get user's choice to either plus or minus the result from previous node"},
+      "services": [{"service_name": "media_crawler", "use_desc": "use media_crawler to fetch web media context before calculation"}],
       "enable": true,
       "loop": 2,
       "depends": ["OtherNode"]
@@ -74,3 +93,4 @@
 - 节点 name/type 一律使用英文，且二者保持相同；禁止使用 MyNode、NewNode、Node1、N1、A 这类无语义占位名。
 - 即使信息不完整，也要基于节点功能写出语义化名称（如 UserInputCollection、ContentSearchExecution、FinalSummaryOutput）。
 - 若有可并行的模块，避免互相依赖。
+- 对任意服务节点的下游节点（包含传递依赖），必须补充 services 字段声明该节点使用了哪些服务及用途。

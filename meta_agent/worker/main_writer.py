@@ -64,16 +64,22 @@ class PromptMainFileCoder(Coder):
         fastapi_host: str,
         fastapi_port: int,
         uvicorn_reload: bool,
+        crontab_expression: str | None,
     ) -> str:
         class_chain = ", ".join(node_class_names) if node_class_names else "none"
+        cron_value = (crontab_expression or "").strip()
+        cron_hint = cron_value if cron_value else "(none)"
         template_lines: Iterable[str] = (
             "Generate a single Python backend file that matches the AG-UI lifecycle workflow backend pattern.",
             f"Project root path: {project_root_path}",
             f"Workflow pipeline JSON path: {graph_plan_json_path}",
             f"Node classes in graph-plan order: {class_chain}",
             f"Node package root name: {nodes_package_name}",
+            f"Crontab expression parameter for run-all-cron: {cron_hint}",
             "The file must:",
             "- Use imports and module layout aligned with the lifecycle example: FastAPI, HTMLResponse, StreamingResponse, BaseModel, WorkflowEngine, and node imports from the root package.",
+            "- Automatically load environment variables from a .env file on startup (prefer `from dotenv import load_dotenv`) before app/engine initialization.",
+            "- Resolve .env path robustly by trying current file directory first and then project root fallback.",
             "- Import all node classes from the package root named above (for example `from example_agent_output import StepA, StepB`) and do NOT import from `.step_nodes`.",
             "- Do not use relative node imports such as `from . import ...`; use `from <root_package_name> import ...` directly.",
             "- Ensure node imports work when executed as script (`python main.py`) and avoid try/except import blocks.",
@@ -91,6 +97,11 @@ class PromptMainFileCoder(Coder):
 			"- Only for extData.type == 'user_file_input', if payload.file_path is provided pass {'file_path': payload.file_path}; otherwise pass payload.input.",
 			"- For extData.type == 'image', do not pass direct file_path/user image payload; pass None or empty input and rely on upstream dependencies.",
             "- Provide POST /api/reset-session returning ResetSessionOutput with ok/sessionId/threadId/runId.",
+            "- If the crontab expression parameter is provided (not '(none)'), also add POST /api/run-all-cron.",
+            "- For /api/run-all-cron, do not accept cron expression from payload; use a preset module-level constant named RUN_ALL_CRON_EXPRESSION set to the provided crontab expression value.",
+            "- /api/run-all-cron must continuously trigger engine._run_all_steps_events(step_inputs=payload.inputs) on the crontab schedule and stream SSE events.",
+            "- For /api/run-all-cron request model, include sessionId, optional inputs, and resetBeforeEachRun (default True).",
+            "- Validate RUN_ALL_CRON_EXPRESSION with croniter; if invalid, return HTTPException with clear error.",
             "- Keep naming and endpoint shapes consistent with the lifecycle example and avoid adding unrelated routes.",
             f"- If adding a local server launcher helper, default host to {fastapi_host} and port to {fastapi_port}; reload default is {uvicorn_reload}.",
             "- Only output runnable Python code; no Markdown fences or commentary.",
@@ -154,6 +165,7 @@ class PromptMainFileCoder(Coder):
         project_root_path: str,
         graph_plan_json_path: str,
         output_path: str,
+        crontab_expression: str | None = None,
         fastapi_host: str = "0.0.0.0",
         fastapi_port: int = 8000,
         uvicorn_reload: bool = False,
@@ -192,6 +204,7 @@ class PromptMainFileCoder(Coder):
             fastapi_host=fastapi_host,
             fastapi_port=fastapi_port,
             uvicorn_reload=uvicorn_reload,
+            crontab_expression=crontab_expression,
         )
 
         return self.code_to_file(

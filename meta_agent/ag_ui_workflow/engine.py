@@ -30,13 +30,58 @@ class WorkflowEngine:
         thread_id: str,
     ) -> None:
         self.pipeline_json_path = str(Path(pipeline_json_path).resolve())
-        self.steps_meta = steps_meta
-        self._step_map = {step["id"]: step for step in steps_meta}
+        self.steps_meta = self._normalize_steps_meta(steps_meta)
+        self._step_map = {str(step["id"]).strip(): step for step in self.steps_meta if str(step.get("id", "")).strip()}
         self.thread_id = thread_id
 
         self.pipeline: GPipeline | None = None
         self.session = WorkflowSession(thread_id=thread_id)
         self._build_pipeline()
+
+    def _normalize_services(self, step: dict[str, Any]) -> list[dict[str, str]]:
+        services_raw = step.get("services") or []
+        if not isinstance(services_raw, list):
+            return []
+
+        normalized: list[dict[str, str]] = []
+        for item in services_raw:
+            if not isinstance(item, dict):
+                continue
+            service_name = str(item.get("service_name", "")).strip()
+            use_desc = str(item.get("use_desc", "")).strip()
+            if not service_name:
+                continue
+            normalized.append(
+                {
+                    "service_name": service_name,
+                    "use_desc": use_desc,
+                }
+            )
+        return normalized
+
+    def _normalize_steps_meta(self, steps_meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized_steps: list[dict[str, Any]] = []
+        for raw_step in steps_meta:
+            if not isinstance(raw_step, dict):
+                continue
+
+            step = dict(raw_step)
+            step_id = str(step.get("id", "")).strip()
+            if not step_id:
+                continue
+
+            dependencies_raw = step.get("dependencies") or []
+            if isinstance(dependencies_raw, (str, bytes)):
+                dependencies_raw = [dependencies_raw]
+            if not isinstance(dependencies_raw, list):
+                dependencies_raw = []
+
+            step["id"] = step_id
+            step["dependencies"] = [str(dep).strip() for dep in dependencies_raw if str(dep).strip()]
+            step["services"] = self._normalize_services(step)
+            normalized_steps.append(step)
+
+        return normalized_steps
 
     def _build_pipeline(self) -> None:
         self.pipeline = GPipeline()
@@ -59,8 +104,17 @@ class WorkflowEngine:
         return self._step_map[step_id]
 
     def _terminal_step_ids(self) -> set[str]:
-        parents = {dep for step in self.steps_meta for dep in step["dependencies"]}
-        return {step["id"] for step in self.steps_meta if step["id"] not in parents}
+        parents = {
+            str(dep).strip()
+            for step in self.steps_meta
+            for dep in (step.get("dependencies") or [])
+            if str(dep).strip()
+        }
+        return {
+            str(step.get("id", "")).strip()
+            for step in self.steps_meta
+            if str(step.get("id", "")).strip() and str(step.get("id", "")).strip() not in parents
+        }
 
     def _step_requires_user_input(self, step: dict[str, Any]) -> bool:
         ext_data = step.get("extData") or step.get("ext_data") or {}
@@ -153,6 +207,43 @@ class WorkflowEngine:
         finally:
             unbind_workflow_session()
 
+    def run_all_steps(
+        self,
+        step_inputs: dict[str, Any] | None = None,
+        callbacks: dict[str, Callable[[StepRunOutput], None]] | None = None,
+    ) -> CStatus:
+        if self.pipeline is None:
+            return CStatus(1006, "pipeline is not initialized")
+
+        inputs = step_inputs or {}
+        submit_callbacks = callbacks or {}
+
+        self.session.run_id = str(uuid.uuid4())
+
+        for step in self.steps_meta:
+            step_id = str(step.get("id", "")).strip()
+            if not step_id:
+                continue
+
+            if step_id in self.session.step_outputs:
+                continue
+
+            has_input = step_id in inputs
+            step_input = inputs.get(step_id)
+            if self._step_requires_user_input(step) and not has_input:
+                return CStatus(1008, f"input required for step {step_id}")
+
+            status = self.run_step(
+                step_id,
+                step_input,
+                callback=submit_callbacks.get(step_id),
+                preserve_run_id=True,
+            )
+            if status.isErr():
+                return status
+
+        return CStatus()
+
     def _run_step_events(self, step_id: str, user_input: Any) -> Iterator[str]:
         terminal_ids = self._terminal_step_ids()
         yield to_sse_payload(self.start_event(self.session))
@@ -242,6 +333,110 @@ class WorkflowEngine:
             "ok": True,
             "stepId": last_step_id,
             "isFinal": last_step_id in terminal_ids,
+            "completedSteps": list(self.session.step_outputs.keys()),
+        }
+        if result["isFinal"]:
+            result["final"] = last_output.derived if last_output is not None else {}
+
+        yield to_sse_payload(self.finish_event(self.session, result=result))
+
+    def _run_all_steps_events(self, step_inputs: dict[str, Any] | None = None) -> Iterator[str]:
+        terminal_ids = self._terminal_step_ids()
+        inputs = step_inputs or {}
+        self.session.run_id = str(uuid.uuid4())
+        yield to_sse_payload(self.start_event(self.session))
+        last_step_id = ""
+        last_output: StepRunOutput | None = None
+
+        def _execute_step_events(
+            step: dict[str, Any],
+            step_input: Any,
+        ) -> Generator[str, None, tuple[bool, str, StepRunOutput | None]]:
+            captured_output: dict[str, Any] = {}
+
+            def _on_submit(output: StepRunOutput) -> None:
+                captured_output["value"] = output
+
+            sid = str(step.get("id", "")).strip()
+            yield to_sse_payload(self.step_started_event(step_name=sid))
+
+            status = self.run_step(sid, step_input, callback=_on_submit, preserve_run_id=True)
+            if status.isErr():
+                yield to_sse_payload(self.error_event(message=status.getInfo(), code=str(status.getCode())))
+                return False, sid, None
+
+            output = captured_output.get("value") or self.session.step_outputs.get(sid)
+            if output is None:
+                card_payload = self.session.step_cards.get(sid)
+                step_state = str(self.session.step_states.get(sid, "")).strip().lower()
+                if card_payload is not None or step_state in {"completed", "done", "finished", "success", "succeeded"}:
+                    summary = ""
+                    if isinstance(card_payload, dict):
+                        summary = str(card_payload.get("summary", "")).strip() or str(card_payload.get("label", "")).strip()
+                    if not summary:
+                        summary = f"{sid} completed"
+                    synthesized = StepRunOutput(
+                        summary=summary,
+                        card=card_payload if isinstance(card_payload, dict) else {},
+                        derived={},
+                    )
+                    self.session.step_outputs[sid] = synthesized
+                    output = synthesized
+            if output is None:
+                yield to_sse_payload(
+                    self.error_event(
+                        message=f"step output missing after proceed/run for {sid}",
+                        code="missing_step_output",
+                    )
+                )
+                return False, sid, None
+
+            streamed_deltas = self.session.streamed_text_deltas.pop(sid, None)
+            for event in self.message_events(content=output.summary, deltas=streamed_deltas):
+                yield to_sse_payload(event)
+
+            yield to_sse_payload(
+                self.step_card_event(
+                    step=step,
+                    output=output,
+                    unlocked=True,
+                    is_final=(sid in terminal_ids),
+                )
+            )
+
+            yield to_sse_payload(self.step_finished_event(step_name=sid))
+            return True, sid, output
+
+        for step in self.steps_meta:
+            step_id = str(step.get("id", "")).strip()
+            if not step_id:
+                continue
+
+            if step_id in self.session.step_outputs:
+                continue
+
+            has_input = step_id in inputs
+            step_input = inputs.get(step_id)
+            if self._step_requires_user_input(step) and not has_input:
+                yield to_sse_payload(
+                    self.error_event(
+                        message=f"input required for step {step_id}",
+                        code="1008",
+                    )
+                )
+                yield to_sse_payload(self.finish_event(self.session, result={"ok": False, "stepId": step_id}))
+                return
+
+            step_result = yield from _execute_step_events(step, step_input)
+            ok, last_step_id, last_output = step_result
+            if not ok:
+                yield to_sse_payload(self.finish_event(self.session, result={"ok": False, "stepId": last_step_id}))
+                return
+
+        result: dict[str, Any] = {
+            "ok": True,
+            "stepId": last_step_id,
+            "isFinal": bool(last_step_id) and last_step_id in terminal_ids,
             "completedSteps": list(self.session.step_outputs.keys()),
         }
         if result["isFinal"]:

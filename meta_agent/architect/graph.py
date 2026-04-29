@@ -16,6 +16,7 @@ class NodeMeta:
     ext_data: Optional[Dict[str, Any] | str] = None
     enable: bool = True
     depends: List[str] = field(default_factory=list)
+    services: List[Dict[str, str]] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert node metadata to dictionary."""
@@ -70,7 +71,8 @@ class Graph:
                     desc=node.get('desc', ''),
                     ext_data=node.get('ext_data'),
                     enable=node.get('enable', True),
-                    depends=node.get('depends', [])
+                    depends=node.get('depends', []),
+                    services=node.get('services', []) if isinstance(node.get('services', []), list) else []
                 )
                 self.node_metas[node_meta.name] = node_meta
             except Exception as e:

@@ -26,4 +26,7 @@ setup(
 		)
 	),
 	include_package_data=True,
+	install_requires=[
+		"croniter>=2.0.0",
+	],
 )
