@@ -13,7 +13,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from llm_client.coder import Coder
 from context_builder.context import Context, GraphContextBuilder
-from architect.graph import NodeMeta
+from architect.graph import Graph, NodeMeta
 from tools.file_tools import compile_node_file_and_get_derived_keys
 
 
@@ -106,11 +106,29 @@ def _build_dependency_derived_context(node_dir: Path, dependency_names: list[str
 
         derived_keys = compile_node_file_and_get_derived_keys(str(dep_file))
         if derived_keys:
-            lines.append(f"- {dep_name}: {', '.join(derived_keys)}")
+            lines.append(f"- {dep_name}:")
+            for key in derived_keys:
+                lines.append(f"  - dependency_results['{dep_name}'].derived['{key}']")
         else:
             lines.append(f"- {dep_name}: (no derived keys detected)")
 
     return "\n".join(lines)
+
+
+def _build_ancestor_session_state_context(graph_plan_path: str, node_name: str) -> str:
+    if not graph_plan_path or not node_name:
+        return ""
+
+    try:
+        graph = Graph(graph_plan_path)
+        session_state_keys = graph.get_ancestor_session_state_keys(node_name)
+    except Exception:
+        return ""
+
+    if not session_state_keys:
+        return ""
+
+    return f"- {node_name}: {', '.join(session_state_keys)}"
 
 
 def _extract_declared_dependencies_from_code(source: str) -> list[str]:
@@ -171,6 +189,7 @@ class PromptNodeFileCoderBase(Coder):
     reference_excerpt_path: str = "library/workflow_nodes_reference_excerpts.md"
     root_dir_path: str = ""
     context_text: str = ""
+    ancestor_session_state_context_text: str = ""
     reference_excerpt_text: str = ""
 
     def __post_init__(self) -> None:
@@ -231,6 +250,18 @@ class PromptNodeFileCoderBase(Coder):
             normalized.append({"service_name": service_name, "use_desc": use_desc})
         return json.dumps(normalized, ensure_ascii=False) if normalized else "none"
 
+    @staticmethod
+    def _format_inputs_format(inputs_format: Mapping[str, Any] | None) -> str:
+        if not isinstance(inputs_format, Mapping) or not inputs_format:
+            return "none"
+        normalized: dict[str, str] = {}
+        for key, value in inputs_format.items():
+            field_name = str(key).strip()
+            field_type = str(value).strip()
+            if field_name and field_type:
+                normalized[field_name] = field_type
+        return json.dumps(normalized, ensure_ascii=False) if normalized else "none"
+
     def _build_requirement_prompt(
         self,
         node_name: str,
@@ -246,6 +277,7 @@ class PromptNodeFileCoderBase(Coder):
         depends_text = self._format_depends(node_meta.depends)
         ext_data_text = self._format_ext_data(node_meta.ext_data)
         services_text = self._format_services(node_meta.services)
+        inputs_format_text = self._format_inputs_format(node_meta.inputs_format)
 
         minimal_policy_text = (
             "Minimal implementation policy (must follow):\n"
@@ -257,6 +289,13 @@ class PromptNodeFileCoderBase(Coder):
             "- Do not include TODO markers in generated code.\n\n"
         )
 
+        state_routing_policy_text = (
+            "State routing policy (authoritative):\n"
+            "- If a value should be shared globally or reused across non-immediate downstream steps, store/update it in session_state.\n"
+            "- If a value is only intended for downstream child-step passing, put it in StepRunOutput.derived.\n"
+            "- Do not store child-step-only transit values in session_state unless long-lived/global reuse is explicitly required.\n\n"
+        )
+
         user_prompt = (
             "You are generating an AG-UI workflow step node for PyDaoGraph.\n"
             f"Node name: {node_name}\n"
@@ -264,14 +303,26 @@ class PromptNodeFileCoderBase(Coder):
             f"Description: {node_meta.desc}\n"
             f"Depends on: {depends_text}\n"
             f"External data: {ext_data_text}\n"
+            f"User inputs format: {inputs_format_text}\n"
             f"Services usage: {services_text}\n"
             f"Expected base class: {node_base_class}\n"
             f"Target language: {language_clean}\n\n"
             f"{minimal_policy_text}"
+            f"{state_routing_policy_text}"
             f"{node_contract_text}"
             "Requirement analysis that this node should satisfy:\n"
             f"{requirement_text}\n\n"
         )
+
+        ext_data = node_meta.ext_data if isinstance(node_meta.ext_data, Mapping) else {}
+        ext_type = str(ext_data.get("type", "none")).strip().lower()
+        if ext_type == "user_input" and inputs_format_text != "none":
+            user_prompt += (
+                "User-input schema constraints (authoritative):\n"
+                "- This node is ext_data.type='user_input' with explicit inputs_format.\n"
+                f"- inputs_format: {inputs_format_text}\n"
+                "- In process_input, parse/validate user_input against this schema and produce structured derived fields using the same keys when reasonable.\n\n"
+            )
 
         if self.reference_excerpt_text.strip():
             user_prompt += (
@@ -286,6 +337,7 @@ class PromptNodeFileCoderBase(Coder):
             )
 
         self.context_text = ""
+        self.ancestor_session_state_context_text = ""
 
         dependency_context = _build_dependency_derived_context(
             node_dir=Path(output_path).expanduser().resolve().parent,
@@ -298,6 +350,20 @@ class PromptNodeFileCoderBase(Coder):
                 f"{dependency_context}\n"
             )
 
+        ancestor_session_state_context = _build_ancestor_session_state_context(
+            graph_plan_path=graph_plan_path,
+            node_name=node_name,
+        )
+        self.ancestor_session_state_context_text = ancestor_session_state_context
+        if ancestor_session_state_context:
+            user_prompt += (
+                "\n\nAncestor session_state keys from node files "
+                "(via get_ancestor_session_state_keys, authoritative):\n"
+                f"{ancestor_session_state_context}\n"
+                "- Only read/write session_state keys that are required by the node logic and consistent with this context.\n"
+                "- Avoid inventing unrelated session_state key names; use safe fallback handling when keys may be absent.\n"
+            )
+
         if graph_plan_path:
             context_builder = GraphContextBuilder(root_path=self.root_dir_path, language=language_clean)
             context_builder.search(current_node_name=node_name, graph_plan_path=graph_plan_path)
@@ -308,7 +374,9 @@ class PromptNodeFileCoderBase(Coder):
                 user_prompt += (
                     "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                     "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
+                    "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
                     "- In process_input/process_chat/process_images_prompts/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                    "- Do not initialize required upstream fields with hardcoded empty defaults (for example '', [], {}); instead read from dependency_results and fail fast with a clear error when required values are missing.\n"
                     "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
                     f"{context_text}"
                 )
@@ -379,12 +447,20 @@ class PromptNodeFileCoderBase(Coder):
         language_clean: str,
         contract_text: str,
     ) -> str:
+        state_routing_policy_text = (
+            "State routing policy (authoritative):\n"
+            "- If a value should be shared globally or reused across non-immediate downstream steps, store/update it in session_state.\n"
+            "- If a value is only intended for downstream child-step passing, put it in StepRunOutput.derived.\n"
+            "- Do not store child-step-only transit values in session_state unless long-lived/global reuse is explicitly required.\n\n"
+        )
+
         user_prompt = (
             "You are updating an existing AG-UI workflow node implementation.\n"
             f"Target language: {language_clean}\n"
             "Keep the code as simple as possible while fully satisfying the amendment and node requirements.\n"
             "Avoid adding new abstractions unless they are strictly needed.\n"
             "Every defined variable must be used; remove dead assignments.\n"
+            f"{state_routing_policy_text}"
             f"{contract_text}"
             "Apply the amendment or feedback to produce the improved code.\n"
             "Return only runnable code without commentary or markdown fences.\n\n"
@@ -401,6 +477,8 @@ class PromptNodeFileCoderBase(Coder):
         code_path: str,
         amendment: str,
         *,
+        graph_plan_path: str = "",
+        current_node_name: str = "",
         language: str = "python",
         overwrite: bool = True,
         temperature: float = 0.2,
@@ -441,9 +519,26 @@ class PromptNodeFileCoderBase(Coder):
             user_prompt += (
                 "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                 "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
+                "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
                 "- In process_input/process_chat/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                "- Do not initialize required upstream fields with hardcoded empty defaults (for example '', [], {}); instead read from dependency_results and fail fast with a clear error when required values are missing.\n"
                 "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
                 f"{self.context_text}\n"
+            )
+
+        if not self.ancestor_session_state_context_text.strip():
+            inferred_node_name = current_node_name.strip() if current_node_name else target_path.stem
+            self.ancestor_session_state_context_text = _build_ancestor_session_state_context(
+                graph_plan_path=graph_plan_path,
+                node_name=inferred_node_name,
+            )
+
+        if self.ancestor_session_state_context_text.strip():
+            user_prompt += (
+                "\n\nAncestor session_state keys from node files "
+                "(via get_ancestor_session_state_keys, authoritative):\n"
+                f"{self.ancestor_session_state_context_text}\n"
+                "- Keep session_state usage aligned with these established keys unless amendment explicitly requires a new key.\n"
             )
 
         return self.code_to_file(
@@ -467,10 +562,14 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
 
     def get_node_contract_text(self) -> str:
         return (
-            "Generate a WorkflowOperationNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
+            "Generate a WorkflowOperationNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
             "Implement business logic in process_operation(dependency_results, session_state) and return StepRunOutput.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
+            "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
+            "If SERVICES is non-empty, call self.use_service(session_state) in process_operation before service-dependent logic.\n"
+            "If process_operation needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from meta_agent.ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
+            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
@@ -480,7 +579,8 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
     def get_feedback_contract_text(self) -> str:
         return (
             "Preserve the WorkflowOperationNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_operation returning StepRunOutput).\n"
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SERVICES and process_operation returning StepRunOutput). "
+            "If SERVICES is non-empty, keep/restore self.use_service(session_state) before service-dependent logic and import workflow_service_registry only when direct registry access is needed.\n"
         )
 
 
@@ -495,6 +595,7 @@ class WorkflowChatNodeCoder(PromptNodeFileCoderBase):
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Use dependency_results and user_input together as context for chat responses.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
+            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
@@ -589,6 +690,7 @@ class WorkflowImageNodeCoder(PromptNodeFileCoderBase):
             "image_refs is a list of uploaded file/image references and may contain multiple files.\n"
             "Use dependency_results and user-provided image/file list together as context for vision-language responses.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
+            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
@@ -608,10 +710,15 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
 
     def get_node_contract_text(self) -> str:
         return (
-            "Generate a WorkflowStepNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
+            "Generate a WorkflowStepNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
             "Implement business logic in process_input(user_input, dependency_results, session_state) and return StepRunOutput.\n"
+            "If node metadata includes inputs_format, parse/validate user_input according to that schema (field names + primitive types).\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
+            "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
+            "If SERVICES is non-empty, call self.use_service(session_state) in process_input before service-dependent logic.\n"
+            "If process_input needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from meta_agent.ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
+            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n\n"
@@ -620,7 +727,8 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
     def get_feedback_contract_text(self) -> str:
         return (
             "Preserve the WorkflowStepNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_input returning StepRunOutput).\n"
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SERVICES and process_input returning StepRunOutput). "
+            "If SERVICES is non-empty, keep/restore self.use_service(session_state) before service-dependent logic and import workflow_service_registry only when direct registry access is needed.\n"
         )
 
 
@@ -673,13 +781,13 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
             return ""
         return service_doc.read_text(encoding="utf-8").strip()
 
-    def _extract_service_sections(self, service_markdown: str) -> tuple[str, str, str]:
-        """Return (installation_section, start_service_section, using_section) from a parsed service.md.
+    def _extract_service_sections(self, service_markdown: str) -> tuple[str, str]:
+        """Return (installation_section, start_service_section) from a parsed service.md.
 
-        Sections are matched by H2 headings that start with '1.', '2.', or '3.' respectively.
+        Sections are matched by H2 headings that start with '1.' or '2.' respectively.
         """
         if not service_markdown.strip():
-            return "", "", ""
+            return "", ""
         try:
             from meta_agent.tools.file_tools import parse_skill_md
             sections = parse_skill_md(service_markdown)
@@ -688,16 +796,13 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
         # Match sections by numeric prefix to tolerate slight heading variants.
         installation = ""
         start_service = ""
-        using = ""
         for key, value in sections.items():
             key_stripped = key.strip()
             if key_stripped.startswith("1. Installation"):
                 installation = value.strip()
             elif key_stripped.startswith("2. Start Service"):
                 start_service = value.strip()
-            elif key_stripped.startswith("3. Using"):
-                using = value.strip()
-        return installation, start_service, using
+        return installation, start_service
 
     def _build_requirement_prompt(
         self,
@@ -727,7 +832,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
         available_services = self._list_available_services(services_root)
         service_name = self._extract_service_name(node_meta)
         service_doc_text = self._read_service_markdown(services_root, service_name)
-        installation_section, start_section, using_section = self._extract_service_sections(service_doc_text)
+        installation_section, start_section = self._extract_service_sections(service_doc_text)
         current_os = self._current_os_label()
 
         service_context_lines = [
@@ -766,24 +871,16 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
                 ]
             )
 
-        if using_section:
-            service_context_lines.extend(
-                [
-                    "",
-                    "service.md ## 3. Using section (authoritative — implement this in use_service):",
-                    using_section,
-                ]
-            )
-
         service_context_lines.extend(
             [
                 "",
                 "Implementation constraints for this service node:",
                 "- Subclass WorkflowServiceNode.",
+                "- Import workflow_service_registry from meta_agent.ag_ui_workflow.services.",
                 "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
                 "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
-                "- Implement use_service(dependency_results, session_state) -> StepRunOutput based on the ## 3. Using section.",
-                "- Do not override process_operation; the base class orchestrates the three phases automatically.",
+                "- In start_service, after successful launch, call workflow_service_registry.update_service_status(..., status='running', is_running=True, pid=proc.pid, installed=True).",
+                "- Do not override process_operation; the base class orchestrates install + start automatically.",
                 "- Use DEFAULT_WORKDIR or session_state.get('serviceWorkdir') as working directory; do not hardcode absolute paths.",
                 "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
                 "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
@@ -792,10 +889,11 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
                 "",
                 "Implementation constraints for this service node:",
                 "- Subclass WorkflowServiceNode.",
+                "- Import workflow_service_registry from meta_agent.ag_ui_workflow.services.",
                 "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
                 "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
-                "- Implement use_service(dependency_results, session_state) -> StepRunOutput based on the ## 3. Using section.",
-                "- Do not override process_operation; the base class orchestrates the three phases automatically.",
+                "- In start_service, after successful launch, call workflow_service_registry.update_service_status(..., status='running', is_running=True, pid=proc.pid, installed=True).",
+                "- Do not override process_operation; the base class orchestrates install + start automatically.",
                 "- Use DEFAULT_WORKDIR or session_state.get('serviceWorkdir') as working directory; do not hardcode absolute paths.",
                 "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
                 "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
@@ -807,10 +905,10 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
                 [
                     "",
                     "No service.md found for selected service_name.",
-                    "- Fall back to minimal safe stub implementations for all three phases.",
+                    "- Fall back to minimal safe stub implementations for install/start phases.",
                     "- install_environment: return True after a no-op check.",
                     "- start_service: launch a placeholder process and return its pid.",
-                    "- use_service: return a minimal StepRunOutput with a descriptive summary.",
+                    "- In start_service, mark workflow_service_registry running state after launch.",
                     "- Do not invent unavailable service details.",
                 ]
             )
@@ -820,7 +918,8 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
     def get_node_contract_text(self) -> str:
         return (
             "Generate a WorkflowServiceNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Implement the three-phase execution pattern by overriding these three methods:\n"
+            "Import workflow_service_registry from meta_agent.ag_ui_workflow.services.\n"
+            "Implement the two-phase execution pattern by overriding these methods:\n"
             "\n"
             "Phase 1 — install_environment(self, dependency_results, session_state) -> bool:\n"
             "  Implement based on service.md ## 1. Installation section.\n"
@@ -832,17 +931,12 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
             "  Implement based on service.md ## 2. Start Service section.\n"
             "  Launch the service as a background process using subprocess.Popen.\n"
             "  Return the integer PID of the launched process (proc.pid); <= 0 signals failure.\n"
+            "  After successful launch, mark service running in workflow_service_registry via update_service_status(...).\n"
             "  The working directory should be session_state.get('serviceWorkdir') or self.DEFAULT_WORKDIR.\n"
             "  If a custom default workdir is required, define class constant DEFAULT_WORKDIR in the generated node.\n"
             "  The generated command must be valid for the current operating system context.\n"
             "\n"
-            "Phase 3 — use_service(self, dependency_results, session_state) -> StepRunOutput:\n"
-            "  Implement based on service.md ## 3. Using section.\n"
-            "  Interact with the running service (e.g. read output files, send HTTP requests, parse results).\n"
-            "  Return StepRunOutput(summary=..., card=..., derived=...) with the service results.\n"
-            "  Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
-            "\n"
-            "Do NOT override process_operation — the base class calls the three phases in order automatically.\n"
+            "Do NOT override process_operation — the base class calls install + start automatically.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state when needed.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
@@ -852,9 +946,9 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
 
     def get_feedback_contract_text(self) -> str:
         return (
-            "Preserve the WorkflowServiceNode three-phase contract "
+            "Preserve the WorkflowServiceNode two-phase contract "
             "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and install_environment returning bool, "
-            "start_service returning int PID, use_service returning StepRunOutput).\n"
+            "start_service returning int PID; start_service must update workflow_service_registry running state).\n"
             "Do NOT override process_operation.\n"
         )
 

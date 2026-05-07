@@ -59,13 +59,24 @@ class _NodeGenerateElement(GElement):
 
             # audit/amend loop remains the same
             while True:
-                ok, violations = self.builder.node_auditor.audit_node_file(file_path, self.node_meta)
+                ok, violations = self.builder.node_auditor.audit_node_file(
+                    file_path,
+                    self.node_meta,
+                    graph_plan_path=self.builder.graph_plan_path,
+                )
                 if ok:
                     print(f"[{self.node_index}/{self.total}] Node audit passed: {self.node_name}")
                     break
                 amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
                 print(f"[{self.node_index}/{self.total}] Node audit failed: {self.node_name}. {amendment} Applying amendment...")
-                self.coder.amend_code_with_feedback(out_dir, amendment, language=self.language, temperature=0.2)
+                self.coder.amend_code_with_feedback(
+                    out_dir,
+                    amendment,
+                    graph_plan_path=self.builder.graph_plan_path or "",
+                    current_node_name=self.node_name,
+                    language=self.language,
+                    temperature=0.2,
+                )
 
             self.builder.node_location_map[self.node_name] = file_path
 
@@ -263,6 +274,15 @@ class AgentBuilder:
             dependencies = node_meta.depends if node_meta and node_meta.depends else []
             services = node_meta.services if node_meta and node_meta.services else []
             ext_data = node_meta.ext_data if node_meta and node_meta.ext_data else {"type": "none", "desc": "no need for ext data"}
+            inputs_format = node_meta.inputs_format if node_meta and getattr(node_meta, "inputs_format", None) else {}
+            if not isinstance(inputs_format, Mapping):
+                inputs_format = {}
+            normalized_inputs_format: Dict[str, str] = {}
+            for key, value in inputs_format.items():
+                field_name = str(key).strip()
+                field_type = str(value).strip().lower()
+                if field_name and field_type:
+                    normalized_inputs_format[field_name] = field_type
             if isinstance(ext_data, dict):
                 ext_type = str(ext_data.get("type", "none")).strip().lower()
                 ext_desc = str(ext_data.get("desc", "")).strip()
@@ -299,6 +319,7 @@ class AgentBuilder:
                     "extData": {
                         "type": ext_type,
                         "desc": ext_desc,
+                        "inputs_format": normalized_inputs_format if ext_type == "user_input" else {},
                     },
                 }
             )
@@ -494,7 +515,15 @@ class AgentBuilder:
 
                 try:
                     print(f"Applying amendment to {fname}: {detail}")
-                    coder.amend_code_with_feedback(target_path, detail, language="python", temperature=0.2)
+                    current_node_name = Path(target_path).stem
+                    coder.amend_code_with_feedback(
+                        target_path,
+                        detail,
+                        graph_plan_path=self.graph_plan_path or "",
+                        current_node_name=current_node_name,
+                        language="python",
+                        temperature=0.2,
+                    )
                 except Exception as e:
                     print(f"Failed to amend {fname}: {e}")
         return ok

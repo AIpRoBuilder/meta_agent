@@ -36,7 +36,15 @@ class WorkflowEngine:
 
         self.pipeline: GPipeline | None = None
         self.session = WorkflowSession(thread_id=thread_id)
+        self._sync_steps_meta_to_session_state()
         self._build_pipeline()
+
+    def _sync_steps_meta_to_session_state(self) -> None:
+        self.session.state["_workflow_step_meta_map"] = {
+            str(step.get("id", "")).strip(): dict(step)
+            for step in self.steps_meta
+            if str(step.get("id", "")).strip()
+        }
 
     def _normalize_services(self, step: dict[str, Any]) -> list[dict[str, str]]:
         services_raw = step.get("services") or []
@@ -97,6 +105,7 @@ class WorkflowEngine:
         if self.pipeline is not None:
             self.pipeline.destroy()
         self.session = WorkflowSession(thread_id=self.thread_id)
+        self._sync_steps_meta_to_session_state()
         self._build_pipeline()
         return self.session
 

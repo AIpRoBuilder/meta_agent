@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 from .types import StepRunOutput
 from .session import get_bound_workflow_session
+from .services import workflow_service_registry
 from meta_agent.tools.file_tools import parse_skill_md, extract_skill_commands
 
 try:  # Optional dependency for OpenAI-compatible chat providers
@@ -142,11 +143,115 @@ def _get_step_output_derived_keys(step_id: str) -> list[str]:
     return list(output.derived.keys())
 
 
+def _workflow_root_dir() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _resolve_service_md_path(service_name: str) -> Path | None:
+    raw_name = _safe_string(service_name)
+    if not raw_name:
+        return None
+
+    candidate_paths: list[Path] = []
+    raw_path = Path(raw_name)
+    repo_root = _workflow_root_dir()
+
+    if raw_path.suffix.lower() == ".md":
+        candidate_paths.extend(
+            [
+                raw_path,
+                repo_root / raw_path,
+            ]
+        )
+    else:
+        candidate_paths.extend(
+            [
+                raw_path / "service.md",
+                repo_root / raw_path / "service.md",
+                repo_root / "agent_services" / raw_path / "service.md",
+            ]
+        )
+
+    for candidate in candidate_paths:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            continue
+        if resolved.exists() and resolved.is_file():
+            return resolved
+    return None
+
+
+def _collect_declared_services_for_step(step_id: str, session_state: dict[str, Any]) -> list[dict[str, str]]:
+    meta_map = session_state.get("_workflow_step_meta_map")
+    if not isinstance(meta_map, dict):
+        return []
+    step_meta = meta_map.get(step_id)
+    if not isinstance(step_meta, dict):
+        return []
+    services = step_meta.get("services") or []
+    if not isinstance(services, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in services:
+        if not isinstance(item, dict):
+            continue
+        service_name = _safe_string(item.get("service_name"))
+        if not service_name:
+            continue
+        normalized.append(
+            {
+                "service_name": service_name,
+                "use_desc": _safe_string(item.get("use_desc")),
+            }
+        )
+    return normalized
+
+
+def _resolve_service_usages_for_step(step_id: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
+    service_defs = _collect_declared_services_for_step(step_id, session_state)
+    if not service_defs:
+        return []
+
+    usages: list[dict[str, Any]] = []
+    for item in service_defs:
+        service_name = item["service_name"]
+        use_desc = item["use_desc"]
+
+        record = workflow_service_registry.require_running(service_name)
+
+        service_md_path = _resolve_service_md_path(service_name)
+        if service_md_path is None:
+            raise FileNotFoundError(
+                f"service '{service_name}' is running but service.md was not found. "
+                f"Expected '{service_name}/service.md' or 'agent_services/{service_name}/service.md'."
+            )
+
+        service_md_text = service_md_path.read_text(encoding="utf-8")
+        sections = parse_skill_md(service_md_text)
+        using_text = _safe_string(sections.get("Using"))
+
+        usages.append(
+            {
+                "service_name": service_name,
+                "use_desc": use_desc,
+                "service_md_path": str(service_md_path),
+                "service_using": using_text,
+                "pid": record.pid,
+                "status": record.status,
+            }
+        )
+
+    return usages
+
+
 class WorkflowStepNode(GNode):
     STEP_ID = ""
     TITLE = ""
     PROMPT = ""
     DEPENDENCIES: list[str] = []
+    SERVICES: list[dict[str, str]] = []
     INPUT_REQUIRED = True
     NODE_KIND = "input"
 
@@ -176,6 +281,7 @@ class WorkflowStepNode(GNode):
             if dep in session.step_outputs
         }
         try:
+            self.use_service(session.state)
             output = self.process_input(
                 raw_input,
                 dependency_results,
@@ -207,6 +313,21 @@ class WorkflowStepNode(GNode):
     def get_derived_keys(self) -> list[str]:
         return _get_step_output_derived_keys(self.STEP_ID)
 
+    def use_service(self, session_state: dict[str, Any]) -> list[dict[str, Any]]:
+        meta_map = session_state.get("_workflow_step_meta_map")
+        if not isinstance(meta_map, dict):
+            meta_map = {}
+            session_state["_workflow_step_meta_map"] = meta_map
+        if self.STEP_ID not in meta_map:
+            meta_map[self.STEP_ID] = self.step_meta()
+
+        usages = _resolve_service_usages_for_step(self.STEP_ID, session_state)
+        if usages:
+            service_usage_map = session_state.setdefault("service_usage", {})
+            if isinstance(service_usage_map, dict):
+                service_usage_map[self.STEP_ID] = usages
+        return usages
+
     def process_input(
         self,
         user_input: str,
@@ -225,6 +346,7 @@ class WorkflowStepNode(GNode):
             "title": cls.TITLE,
             "prompt": cls.PROMPT,
             "dependencies": list(cls.DEPENDENCIES),
+            "services": list(cls.SERVICES),
             "inputRequired": cls.INPUT_REQUIRED,
             "nodeKind": cls.NODE_KIND,
         }
@@ -776,6 +898,7 @@ class WorkflowOperationNode(GNode):
     TITLE = ""
     PROMPT = ""
     DEPENDENCIES: list[str] = []
+    SERVICES: list[dict[str, str]] = []
     NODE_KIND = "operation"
 
     def __init__(self) -> None:
@@ -792,6 +915,7 @@ class WorkflowOperationNode(GNode):
             if dep in session.step_outputs
         }
         try:
+            self.use_service(session.state)
             output = self.process_operation(
                 dependency_results,
                 session.state,
@@ -822,6 +946,21 @@ class WorkflowOperationNode(GNode):
     def get_derived_keys(self) -> list[str]:
         return _get_step_output_derived_keys(self.STEP_ID)
 
+    def use_service(self, session_state: dict[str, Any]) -> list[dict[str, Any]]:
+        meta_map = session_state.get("_workflow_step_meta_map")
+        if not isinstance(meta_map, dict):
+            meta_map = {}
+            session_state["_workflow_step_meta_map"] = meta_map
+        if self.STEP_ID not in meta_map:
+            meta_map[self.STEP_ID] = self.step_meta()
+
+        usages = _resolve_service_usages_for_step(self.STEP_ID, session_state)
+        if usages:
+            service_usage_map = session_state.setdefault("service_usage", {})
+            if isinstance(service_usage_map, dict):
+                service_usage_map[self.STEP_ID] = usages
+        return usages
+
     def clone(self):
         return self
 
@@ -832,6 +971,7 @@ class WorkflowOperationNode(GNode):
             "title": cls.TITLE,
             "prompt": cls.PROMPT,
             "dependencies": list(cls.DEPENDENCIES),
+            "services": list(cls.SERVICES),
             "inputRequired": cls.INPUT_REQUIRED,
             "nodeKind": cls.NODE_KIND,
         }
@@ -889,6 +1029,7 @@ class WorkflowServiceNode(GNode):
                 return CStatus(1001, f"step {self.STEP_ID} failed: process_operation must return StepRunOutput")
         except Exception as exc:  # pragma: no cover
             self._set_state("failed")
+            workflow_service_registry.mark_failed(self.STEP_ID, str(exc))
             return CStatus(1001, f"step {self.STEP_ID} failed: {exc}")
 
         session.step_outputs[self.STEP_ID] = output
@@ -925,10 +1066,8 @@ class WorkflowServiceNode(GNode):
         }
 
     # ------------------------------------------------------------------
-    # Three-phase execution: install → start → use
-    # Each phase must be implemented by the subclass.  They are called
-    # sequentially inside ``process_operation``; a failure in an earlier
-    # phase prevents subsequent phases from running.
+    # Two-phase execution: install → start
+    # Service registration happens after start succeeds.
     # ------------------------------------------------------------------
 
     def install_environment(
@@ -979,38 +1118,11 @@ class WorkflowServiceNode(GNode):
 
         Returns:
             The integer PID of the running service process.  A value ``<= 0``
-            is treated as a failure and aborts execution before
-            :meth:`use_service` is called.
+            is treated as a failure.
         """
         raise NotImplementedError(
             f"{self.__class__.__name__}.start_service() must be implemented.\n"
             "Launch the background service and return its PID here."
-        )
-
-    def use_service(
-        self,
-        dependency_results: dict[str, "StepRunOutput"],
-        session_state: dict[str, Any],
-    ) -> "StepRunOutput":
-        """Phase 3 – Use the running service (runs after :meth:`start_service`).
-
-        This method is called only after :meth:`start_service` returns ``True``.
-        Interact with the now-running service (e.g. send requests, run queries,
-        scrape results) and return the final step output that will be stored in
-        the workflow session.
-
-        Args:
-            dependency_results: Outputs of upstream steps keyed by step ID.
-            session_state: Mutable shared workflow session state dict.
-
-        Returns:
-            A :class:`StepRunOutput` containing the final result produced by
-            interacting with the service.  This becomes the step's recorded
-            output in the workflow session.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__}.use_service() must be implemented.\n"
-            "Send requests to the running service and return the results here."
         )
 
     def process_operation(
@@ -1018,12 +1130,11 @@ class WorkflowServiceNode(GNode):
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        """Orchestrate the three phases in sequence.
+        """Orchestrate install/start and register running service.
 
-        Calls :meth:`install_environment`, then :meth:`start_service`, then
-        :meth:`use_service`, passing each phase's output to the next.  Any
-        exception or wrong return type in an earlier phase aborts execution
-        before the subsequent phases are attempted.
+        Calls :meth:`install_environment`, then :meth:`start_service`. After
+        start succeeds, this node is registered into
+        ``workflow_service_registry`` with running status.
         """
         # --- Phase 1: install environment (skipped if already completed) ---
         if not self._installed:
@@ -1052,13 +1163,39 @@ class WorkflowServiceNode(GNode):
             self._pid = pid
             self._service_running = True
 
-        # --- Phase 3: use service ---
-        use_result = self.use_service(dependency_results, session_state)
-        if not isinstance(use_result, StepRunOutput):
-            raise TypeError(
-                f"use_service must return StepRunOutput, got {type(use_result).__name__}"
-            )
-        return use_result
+        workflow_service_registry.register_service(
+            self.STEP_ID,
+            node_class=self.__class__.__name__,
+            metadata={
+                "title": self.TITLE,
+                "node_kind": self.NODE_KIND,
+                "dependencies": list(self.DEPENDENCIES),
+            },
+        )
+        workflow_service_registry.update_service_status(
+            self.STEP_ID,
+            status="running",
+            is_running=True,
+            pid=self._pid,
+            installed=self._installed,
+            last_error="",
+        )
+
+        return StepRunOutput(
+            summary=f"Service {self.STEP_ID} is running (pid={self._pid}).",
+            card={
+                "service": self.STEP_ID,
+                "status": "running",
+                "pid": self._pid,
+                "installed": self._installed,
+            },
+            derived={
+                "service_name": self.STEP_ID,
+                "service_running": True,
+                "pid": self._pid,
+                "installed": self._installed,
+            },
+        )
 
 class WorkflowChatNode(GNode):
     INPUT_REQUIRED = True

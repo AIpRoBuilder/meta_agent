@@ -8,7 +8,7 @@ from pydaograph import GParam
 
 from auditor.data import RuleViolation
 from auditor.base_auditor import BaseAuditor
-from architect.graph import NodeMeta
+from architect.graph import Graph, NodeMeta
 from tools.file_tools import compile_node_file_and_get_derived_keys
 
 
@@ -21,12 +21,18 @@ class NodeAuditor(BaseAuditor):
         self.white_list: Set[str] = set(default_white_list)
         return
 
-    def audit_node_file(self, file_path: str, node_meta: Optional[NodeMeta] = None) -> tuple[bool, List[RuleViolation]]:
+    def audit_node_file(
+        self,
+        file_path: str,
+        node_meta: Optional[NodeMeta] = None,
+        graph_plan_path: Optional[str] = None,
+    ) -> tuple[bool, List[RuleViolation]]:
         """Audit a Python file and return whether it passes plus violations.
         
         Args:
             file_path: Path to the Python file to audit.
             node_meta: Optional NodeMeta object for additional ext_data checks.
+            graph_plan_path: Optional graph JSON path used for ancestor session_state checks.
         """
 
         path = Path(file_path)
@@ -82,6 +88,12 @@ class NodeAuditor(BaseAuditor):
             self._check_operation_node_dependency_results(cls, path, violations)
             self._check_service_node_dependency_results(cls, path, violations)
             self._check_skill_node_dependency_results(cls, path, violations)
+            self._check_session_state_reads_use_ancestor_keys(
+                cls=cls,
+                node_file_path=path,
+                violations=violations,
+                graph_plan_path=graph_plan_path,
+            )
             self._check_node_meta_base_class_by_ext_data(cls, violations, node_meta)
             self._check_dependencies_match_node_meta(cls, violations, node_meta)
             self._check_self_calls(cls, violations, subclass_names)
@@ -879,6 +891,27 @@ class NodeAuditor(BaseAuditor):
                 )
             )
 
+        forbidden_field_accesses = self._collect_forbidden_dependency_fields(method)
+        for dep_name, field_name, lineno in forbidden_field_accesses:
+            if dep_name == "*":
+                detail = (
+                    f"{method_name} must not use dependency_results[*].{field_name}. "
+                    f"Current node should not consume dependent nodes' {field_name}."
+                )
+            else:
+                detail = (
+                    f"{method_name} must not use dependency_results['{dep_name}'].{field_name}. "
+                    f"Current node should not consume dependent nodes' {field_name}."
+                )
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="dependency_results_summary_card_forbidden",
+                    detail=detail,
+                    lineno=lineno,
+                )
+            )
+
         if not derived_accesses:
             return
 
@@ -1025,6 +1058,44 @@ class NodeAuditor(BaseAuditor):
 
         return referenced_deps, derived_accesses, references_all_dependencies
 
+    def _collect_forbidden_dependency_fields(
+        self,
+        method: ast.FunctionDef,
+    ) -> List[Tuple[str, str, int]]:
+        dependency_aliases: Dict[str, str] = {}
+        dependency_value_aliases: Set[str] = set()
+
+        for node in ast.walk(method):
+            if isinstance(node, ast.For):
+                dependency_value_aliases.update(self._extract_dependency_results_value_aliases(node))
+
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                alias_name = node.targets[0].id
+                alias_dep = self._extract_dependency_key_expr(node.value)
+                if alias_dep is not None:
+                    dependency_aliases[alias_name] = alias_dep
+
+        accesses: List[Tuple[str, str, int]] = []
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if node.attr not in {"summary", "card"}:
+                continue
+
+            dep_name: Optional[str] = None
+            dep_expr = node.value
+            dep_name = self._extract_dependency_key_expr(dep_expr)
+            if dep_name is None and isinstance(dep_expr, ast.Name):
+                dep_name = dependency_aliases.get(dep_expr.id)
+                if dep_name is None and dep_expr.id in dependency_value_aliases:
+                    dep_name = "*"
+            if dep_name is None:
+                continue
+
+            accesses.append((dep_name, node.attr, node.lineno))
+
+        return accesses
+
     def _extract_dependency_derived_expr(self, expr: ast.AST) -> Optional[str]:
         if not isinstance(expr, ast.Attribute) or expr.attr != "derived":
             return None
@@ -1150,6 +1221,105 @@ class NodeAuditor(BaseAuditor):
             derived_keys = compile_node_file_and_get_derived_keys(str(dep_file))
             result[dep_name] = set(derived_keys)
         return result
+
+    def _check_session_state_reads_use_ancestor_keys(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+        graph_plan_path: Optional[str],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_step_node_subclass(cls):
+            return
+
+        allowed_keys = self._load_ancestor_session_state_keys(
+            node_name=cls.name,
+            node_file_path=node_file_path,
+            graph_plan_path=graph_plan_path,
+        )
+        if allowed_keys is None:
+            return
+
+        for method in cls.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for key_name, lineno in self._collect_session_state_read_accesses(method):
+                if key_name in allowed_keys:
+                    continue
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="session_state_ancestor_key_invalid",
+                        detail=(
+                            f"Method '{method.name}' reads session_state['{key_name}'], "
+                            f"but this key is not declared in ancestor nodes."
+                        ),
+                        lineno=lineno,
+                    )
+                )
+
+    def _collect_session_state_read_accesses(
+        self,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> List[Tuple[str, int]]:
+        aliases: Set[str] = {"session_state"}
+
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            if isinstance(node.value, ast.Name) and node.value.id in aliases:
+                aliases.add(target.id)
+
+        reads: List[Tuple[str, int]] = []
+        for node in ast.walk(method):
+            if isinstance(node, ast.Subscript):
+                if not isinstance(node.ctx, ast.Load):
+                    continue
+                if not isinstance(node.value, ast.Name) or node.value.id not in aliases:
+                    continue
+                key_name = self._extract_string_subscript_key(node)
+                if key_name:
+                    reads.append((key_name, node.lineno))
+                continue
+
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "get"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in aliases
+                and len(node.args) >= 1
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                continue
+            reads.append((node.args[0].value, node.lineno))
+
+        return reads
+
+    def _load_ancestor_session_state_keys(
+        self,
+        node_name: str,
+        node_file_path: Path,
+        graph_plan_path: Optional[str],
+    ) -> Optional[Set[str]]:
+        graph_path = Path(graph_plan_path) if graph_plan_path else (node_file_path.parent / "graph_plan.json")
+        if not graph_path.is_file():
+            return None
+
+        try:
+            graph = Graph(str(graph_path))
+        except Exception:
+            return None
+
+        return set(graph.get_ancestor_session_state_keys(node_name, include_current=False))
 
     def _dependency_file_path(self, node_file_path: Path, dependency_name: str) -> Path:
         return node_file_path.parent / f"{dependency_name}.py"

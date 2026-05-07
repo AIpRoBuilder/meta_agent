@@ -5,6 +5,8 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Iterable, Mapping, MutableMapping, Set, Tuple
 
+from meta_agent.tools.file_tools import collect_session_state_keys_from_node_file
+
 
 @dataclass
 class NodeMeta:
@@ -14,6 +16,7 @@ class NodeMeta:
     type: str
     desc: str
     ext_data: Optional[Dict[str, Any] | str] = None
+    inputs_format: Dict[str, str] = field(default_factory=dict)
     enable: bool = True
     depends: List[str] = field(default_factory=list)
     services: List[Dict[str, str]] = field(default_factory=list)
@@ -65,11 +68,21 @@ class Graph:
         
         for node in self.nodes:
             try:
+                raw_inputs_format = node.get('inputs_format', {})
+                inputs_format: Dict[str, str] = {}
+                if isinstance(raw_inputs_format, Mapping):
+                    for key, value in raw_inputs_format.items():
+                        field_name = str(key).strip()
+                        field_type = str(value).strip()
+                        if field_name and field_type:
+                            inputs_format[field_name] = field_type
+
                 node_meta = NodeMeta(
                     name=node.get('name', ''),
                     type=node.get('type', ''),
                     desc=node.get('desc', ''),
                     ext_data=node.get('ext_data'),
+                    inputs_format=inputs_format,
                     enable=node.get('enable', True),
                     depends=node.get('depends', []),
                     services=node.get('services', []) if isinstance(node.get('services', []), list) else []
@@ -187,6 +200,39 @@ class Graph:
                     stack.append(dep)
 
         return ancestors
+
+    def get_ancestor_session_state_keys(self, node_name: str, include_current: bool = True) -> List[str]:
+        """Get all ``session_state`` keys used by a node and its ancestors.
+
+        This method uses ``_collect_ancestors`` to resolve relevant node names,
+        loads corresponding node files from the graph JSON directory, and then
+        extracts all string keys accessed on the ``session_state`` dict.
+
+        Args:
+            node_name: Target node name.
+            include_current: Whether to include ``node_name`` itself when collecting
+                keys. Defaults to ``True`` for backward compatibility.
+
+        Returns:
+            Sorted list of unique session_state keys from ancestor node files.
+        """
+        if node_name not in self.node_metas:
+            return []
+
+        ancestor_names = self._collect_ancestors(node_name)
+        if not include_current:
+            ancestor_names.discard(node_name)
+        if not ancestor_names:
+            return []
+
+        node_dir = self.graph_json_path.resolve().parent
+        all_keys: Set[str] = set()
+
+        for ancestor_name in ancestor_names:
+            node_file = node_dir / f"{ancestor_name}.py"
+            all_keys.update(collect_session_state_keys_from_node_file(str(node_file), ancestor_name))
+
+        return sorted(all_keys)
 
     def get_all_subgraph(self) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
         """Get root-to-node subgraphs for every node in JSON format.

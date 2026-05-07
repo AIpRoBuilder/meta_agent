@@ -63,9 +63,19 @@ class PromptFrontendCoder(Coder):
 			if isinstance(ext_data_raw, Mapping):
 				ext_type = str(ext_data_raw.get("type", "none")).strip().lower()
 				ext_desc = str(ext_data_raw.get("desc", "")).strip()
+				raw_inputs_format = ext_data_raw.get("inputs_format", {})
 			else:
 				ext_type = str(ext_data_raw).strip().lower() or "none"
 				ext_desc = ""
+				raw_inputs_format = {}
+
+			inputs_format: dict[str, str] = {}
+			if isinstance(raw_inputs_format, Mapping):
+				for key, value in raw_inputs_format.items():
+					field_name = str(key).strip()
+					field_type = str(value).strip().lower()
+					if field_name and field_type:
+						inputs_format[field_name] = field_type
 
 			input_required = bool(item.get("inputRequired", True))
 			node_kind = str(item.get("nodeKind", "input")).strip() or "input"
@@ -99,6 +109,7 @@ class PromptFrontendCoder(Coder):
 					"extData": {
 						"type": ext_type,
 						"desc": ext_desc,
+						"inputs_format": inputs_format if ext_type == "user_input" else {},
 					},
 				}
 			)
@@ -162,7 +173,9 @@ class PromptFrontendCoder(Coder):
 			"10) If step extData.type == 'image' (or nodeKind='image'), treat it as dependency-driven WorkflowImageNode step: do not require or render direct user image/file inputs for this step.\n"
 			"11) For image nodes, submit without manual input payload and rely on image file locations from dependency_results upstream.\n"
 			"12) If only one file is selected in file-upload nodes, still use the same files array shape with one item for consistency.\n"
-			"13) For extData.type == 'user_input' and extData.type == 'chat_input' (or nodeKind='chat'), keep plain text input submission behavior.\n"
+			"13) For extData.type == 'user_input': if extData.inputs_format is non-empty, render structured form controls by field type (string/number/boolean), then stringify the collected object (e.g., JSON.stringify) and submit that serialized value as input string; if inputs_format is empty, keep plain text input behavior.\n"
+			"13.0) Concrete example: extData.inputs_format={'email_address':'string','password':'number','remember_me':'boolean'} => render text/number/checkbox controls, build {'email_address':'user@example.com','password':123456,'remember_me':true}, then submit input='{\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}'.\n"
+			"13.1) For extData.type == 'chat_input' (or nodeKind='chat'), keep plain text input submission behavior.\n"
 			"14) For nodeKind='chat', render labels/status as chat-oriented, keep the same step-card event flow and payload handling, and surface progressive LLM text as chunks arrive over SSE.\n"
 			"15) For nodeKind='file', render labels/status as file-upload/storage oriented; for nodeKind='image', render labels/status as image-analysis oriented; for nodeKind='service', render labels/status as service startup/orchestration oriented; for nodeKind='skill', render labels/status as skill-execution oriented; keep the same step-card event flow and payload handling.\n"
 			"15.1) For auto-run steps, show non-interactive UI (informational text only) and rely on card running indicator/state rather than clickable run controls.\n"

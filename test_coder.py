@@ -1,74 +1,17 @@
 import os
 
 from meta_agent.agent_builder import AgentBuilder
+from pathlib import Path
 
 
-def main() -> None:
-
-	requirement_text = """
-我是中国电信负责AI业务条线FDE团队组建的项目经理，帮我构建一个生成一张工作模式的流程图的工作流，具体功能是
-初始输入FDE流程架构图片和三个工具（智聚、数聚、云聚）的介绍图并根据提供的图片解析，帮我梳理在新形势下如何从传统项目售前、售中、售后模式，转化成FDE团队工作模式的具体落地方式，并形成一张完整的流程图。
-输出流程图要求：
-1、帮我细化出每个步骤所需的角色、分工、所需工具、输入及输出。
-2、流程图需要清晰展示出每个步骤和组件之间的关系和依赖。
-3、流程图需要符合中国电信的企业文化和工作方式，包含三个工具（智聚、数聚、云聚）的介绍
-4、整体流程不依赖人工编辑，需要使用图片大模型解析输入的图片内容并自动生成流程图。
-5、流程图需要以mmd或者json图格式解析成的png图片形式输出，并且可以下载。
-6、需要输入两张图片进行解析
-""".strip()
-	requirement_text = """
- 帮我构建一个工作流
- 工作流程(5步闭环)
-1.热点关键词拆解模块
-输入:课程内容文档、目标用户画像、教学大纲
-处理:
-分析课程核心价值点
-提取3-5个核心关键词
-结合教育热点话题扩展关键词库
-输出:关键词列表(如:自主学习、数学提分、高效学习法、暑假计划)
-2.爆款内容搜索模块
-输入:关键词列表、目标平台(视频号/抖音/小红书)
-处理:
-多平台爆款内容检索
-内容形式识别(口播/剧情/图文)
-互动数据分析(点赞/评论/转发)
-输出:爆款内容列表(含标题、文案、形式、互动数据)
-3.仿写脚本生成模块
-输入:爆款内容原文+课程核心亮点
-处理:
-结构分析与模仿
-风格迁移(保持爆款节奏)
-内容替换(融入教育元素)
-输出:适配后的图文文案,引导购买或者加微
-4.多媒体内容制作模块
-输入:脚本/文案、内容形式要求
-处理:
-图文类:调用文生图API生成图片，自动排版设计
-输出:成品图文素材
-5.分发物料生成模块
-输入:核心内容、目标平台特性
-处理:
-平台适配标题生成
-封面图自动设计和组装
-分发文案撰写
-输出:完整的分发物料包
- """
-requirement_text = """帮我构建一个工作流：
-1.定时执行任务：每分钟自动执行一次，返回当前时间戳。"""
-
+requirement_text = Path("./requirement.txt").read_text(encoding="utf-8")
 builder = AgentBuilder(api_key="sk-7b750ecf940b45be82019e430be390b0",
 		provider="deepseek",
-		model="deepseek-reasoner",
-		root_dir="./example_agent", frontend_style_prompt="style: pinky, lovable, and beautiful. Use markdown format for outputs when applicable."
+		model="deepseek-v4-pro",
+		root_dir="./example_agent", frontend_style_prompt="style: suitable for social media like renote, tiktok, facebook operation platform, clean and easy to use. Use markdown format for outputs when applicable."
 	)
 
-builder.run_full_pipeline(
-		requirement_text=requirement_text,
-		test_after_generation=True,
-    crontab_expression="*/1 * * * *"
+builder.run_full_pipeline(requirement_text=requirement_text,
+                          test_after_generation=True
 	)
-
-
-if __name__ == "__main__":
-	main()
 

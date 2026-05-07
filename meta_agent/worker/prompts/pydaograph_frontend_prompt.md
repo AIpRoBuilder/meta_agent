@@ -60,6 +60,30 @@ UI behavior requirements:
 - For file steps (`nodeKind='file'`), submit uploaded files as `{'files':[{'fileName','fileBytes'}, ...]}`.
 - For image steps (`nodeKind='image'`), do not request/collect direct user image input; submit the step as dependency-driven analysis.
 
+Structured user-input schema example (must support):
+- If a step metadata item contains:
+  {
+    "id": "LoginInput",
+    "nodeKind": "input",
+    "extData": {
+      "type": "user_input",
+      "inputs_format": {
+        "email_address": "string",
+        "password": "number",
+        "remember_me": "boolean"
+      }
+    }
+  }
+- Render one form control per field in `inputs_format`:
+  - `string` -> text input
+  - `number` -> numeric input
+  - `boolean` -> checkbox/toggle
+- On submit, stringify the collected object and send it as an input string (for example via `JSON.stringify(...)`), e.g.:
+  {
+    "input": "{\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}"
+  }
+- If `extData.inputs_format` is empty/missing, fall back to plain text input behavior.
+
 Style requirements:
 - Keep styling clean and lightweight, but visually polished.
 - Make step cards the main visual focus: stronger hierarchy, better spacing, and clearer status affordances.

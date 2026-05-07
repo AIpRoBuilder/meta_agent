@@ -3,23 +3,25 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>AG-UI Workflow Demo</title>
+		<title>AG-UI Lifecycle Events + GPipeline DAG</title>
 		<style>
 			:root {
 				color-scheme: light;
-				--bg: #f3f6fb;
+				--bg: #fdf2f8;
 				--card: #ffffff;
-				--text: #162136;
-				--muted: #5f6b82;
-				--line: #d9e2ef;
-				--line-strong: #c7d5e8;
-				--accent: #2d6cff;
-				--accent-2: #6f47ff;
-				--ok: #15803d;
-				--warn: #b45309;
-				--err: #b91c1c;
-				--shadow-soft: 0 6px 24px rgba(34, 61, 105, 0.08);
-				--shadow-card: 0 8px 28px rgba(38, 74, 132, 0.1);
+				--text: #2d1b2e;
+				--muted: #8b5e7c;
+				--line: #f0d4e5;
+				--line-strong: #e4b8d2;
+				--accent: #d4538a;
+				--accent-2: #b8326e;
+				--ok: #9d3d72;
+				--warn: #c07a4b;
+				--err: #b3345a;
+				--shadow-soft: 0 6px 24px rgba(180, 60, 130, 0.1);
+				--shadow-card: 0 8px 28px rgba(180, 60, 130, 0.14);
+				--pink-glow: rgba(212, 83, 138, 0.08);
+				--radius: 16px;
 			}
 
 			* {
@@ -28,7 +30,7 @@
 
 			body {
 				margin: 0;
-				background: radial-gradient(circle at top left, #f8fbff 0%, var(--bg) 45%, #eef3fb 100%);
+				background: radial-gradient(circle at top left, #fff5fa 0%, var(--bg) 50%, #fbe8f2 100%);
 				color: var(--text);
 				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 			}
@@ -44,49 +46,62 @@
 			.topbar {
 				background: var(--card);
 				border: 1px solid var(--line);
-				border-radius: 14px;
-				padding: 14px;
+				border-radius: var(--radius);
+				padding: 16px 20px;
 				display: flex;
 				align-items: center;
 				justify-content: space-between;
-				gap: 10px;
+				gap: 12px;
 				flex-wrap: wrap;
 				box-shadow: var(--shadow-soft);
 			}
 
 			.title {
-				font-size: 18px;
+				font-size: 20px;
 				font-weight: 700;
+				background: linear-gradient(135deg, #d4538a, #b8326e);
+				-webkit-background-clip: text;
+				-webkit-text-fill-color: transparent;
+				background-clip: text;
+			}
+
+			.title-sub {
+				font-size: 12px;
+				color: var(--muted);
+				margin-top: 2px;
 			}
 
 			.session {
 				display: flex;
 				align-items: center;
 				gap: 8px;
+				flex-wrap: wrap;
 			}
 
 			.badge {
 				border: 1px solid var(--line-strong);
 				border-radius: 999px;
-				padding: 5px 10px;
+				padding: 5px 12px;
 				font-size: 12px;
 				color: var(--muted);
-				background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+				background: linear-gradient(180deg, #ffffff 0%, #fdf2f8 100%);
 			}
 
 			button {
 				border: 1px solid var(--line);
-				background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
-				border-radius: 8px;
-				padding: 8px 12px;
+				background: linear-gradient(180deg, #ffffff 0%, #fdf2f8 100%);
+				border-radius: 10px;
+				padding: 8px 14px;
 				font-size: 13px;
+				font-weight: 500;
 				cursor: pointer;
 				transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+				color: var(--text);
 			}
 
 			button:hover:not(:disabled) {
-				border-color: var(--line-strong);
-				box-shadow: 0 4px 12px rgba(38, 74, 132, 0.12);
+				border-color: var(--accent);
+				box-shadow: 0 4px 16px var(--pink-glow);
 				transform: translateY(-1px);
 			}
 
@@ -94,59 +109,73 @@
 				border-color: transparent;
 				background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
 				color: #fff;
+				font-weight: 600;
+			}
+
+			button.primary:hover:not(:disabled) {
+				box-shadow: 0 4px 20px rgba(212, 83, 138, 0.3);
+				transform: translateY(-1px);
 			}
 
 			button:disabled {
 				cursor: not-allowed;
-				opacity: 0.55;
+				opacity: 0.5;
 			}
 
 			.layout {
 				display: grid;
-				grid-template-columns: 1.2fr 1fr;
+				grid-template-columns: 1.3fr 1fr;
 				gap: 16px;
 			}
 
 			.panel {
 				background: var(--card);
 				border: 1px solid var(--line);
-				border-radius: 14px;
-				padding: 14px;
+				border-radius: var(--radius);
+				padding: 16px;
 				box-shadow: var(--shadow-soft);
 			}
 
 			.panel h2 {
 				margin: 0 0 12px;
 				font-size: 15px;
+				font-weight: 600;
+				color: var(--accent-2);
+				display: flex;
+				align-items: center;
+				gap: 8px;
 			}
 
 			.chat {
 				max-height: 420px;
 				overflow: auto;
 				display: grid;
-				gap: 8px;
+				gap: 6px;
+				padding-right: 4px;
 			}
 
 			.msg {
-				border-radius: 10px;
-				padding: 8px 10px;
+				border-radius: 12px;
+				padding: 8px 12px;
 				font-size: 13px;
-				line-height: 1.4;
+				line-height: 1.45;
 			}
 
 			.msg.system {
-				background: #eff6ff;
-				border: 1px solid #dbeafe;
+				background: #fdf2f8;
+				border: 1px solid #f8d4e6;
+				color: #6b3a5a;
 			}
 
 			.msg.assistant {
-				background: #f8fafc;
-				border: 1px solid #e2e8f0;
+				background: #faf5f8;
+				border: 1px solid #f0dce8;
+				color: #2d1b2e;
 			}
 
 			.msg.error {
-				background: #fef2f2;
-				border: 1px solid #fecaca;
+				background: #fef2f4;
+				border: 1px solid #fcc8d4;
 				color: var(--err);
 			}
 
@@ -157,9 +186,9 @@
 
 			.step {
 				border: 1px solid var(--line);
-				border-radius: 14px;
-				padding: 14px;
-				background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+				border-radius: var(--radius);
+				padding: 16px;
+				background: linear-gradient(180deg, #ffffff 0%, #fdf6fa 100%);
 				box-shadow: var(--shadow-card);
 				transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 			}
@@ -167,18 +196,20 @@
 			.step:hover {
 				transform: translateY(-2px);
 				border-color: var(--line-strong);
-				box-shadow: 0 14px 36px rgba(38, 74, 132, 0.14);
+				box-shadow: 0 14px 40px rgba(180, 60, 130, 0.16);
 			}
 
 			.step.locked {
-				opacity: 0.75;
+				opacity: 0.55;
+				pointer-events: none;
+				filter: grayscale(0.3);
 			}
 
 			.step-header {
 				display: flex;
 				justify-content: space-between;
 				align-items: flex-start;
-				gap: 8px;
+				gap: 10px;
 				padding-bottom: 10px;
 				border-bottom: 1px dashed var(--line);
 			}
@@ -188,12 +219,13 @@
 				font-weight: 600;
 				margin: 0;
 				line-height: 1.3;
+				color: var(--text);
 			}
 
 			.step-submeta {
 				display: flex;
 				flex-wrap: wrap;
-				gap: 6px;
+				gap: 5px;
 				margin-top: 6px;
 			}
 
@@ -201,12 +233,12 @@
 				display: inline-flex;
 				align-items: center;
 				gap: 4px;
-				padding: 3px 8px;
+				padding: 3px 9px;
 				border-radius: 999px;
 				font-size: 11px;
 				color: var(--muted);
-				background: #f5f8ff;
-				border: 1px solid #dce7fb;
+				background: #fdf2f8;
+				border: 1px solid #f0d4e5;
 			}
 
 			.meta {
@@ -218,52 +250,53 @@
 			.status {
 				font-size: 11px;
 				border-radius: 999px;
-				padding: 4px 10px;
+				padding: 4px 12px;
 				border: 1px solid var(--line);
 				font-weight: 600;
-				letter-spacing: 0.02em;
+				letter-spacing: 0.03em;
+				white-space: nowrap;
 			}
 
 			.status.done {
 				color: var(--ok);
-				border-color: #bbf7d0;
-				background: #f0fdf4;
+				border-color: #d8b0c8;
+				background: #faf0f6;
 			}
 
 			.status.open {
 				color: var(--accent);
-				border-color: #bfdbfe;
-				background: #eff6ff;
+				border-color: #f0b8d0;
+				background: #fdf2f8;
 			}
 
 			.status.locked {
 				color: var(--warn);
-				border-color: #fde68a;
-				background: #fffbeb;
+				border-color: #eed4b8;
+				background: #fefaf5;
 			}
 
 			.status.running {
 				color: var(--accent);
-				border-color: #bfdbfe;
-				background: #eff6ff;
+				border-color: #f0b8d0;
+				background: #fef0f6;
 			}
 
 			.status.completed {
 				color: var(--ok);
-				border-color: #bbf7d0;
-				background: #f0fdf4;
+				border-color: #d8b0c8;
+				background: #faf0f6;
 			}
 
 			.status.failed {
 				color: var(--err);
-				border-color: #fecaca;
-				background: #fef2f2;
+				border-color: #fcc8d4;
+				background: #fef2f4;
 			}
 
 			.status.awaiting_input {
 				color: var(--warn);
-				border-color: #fde68a;
-				background: #fffbeb;
+				border-color: #eed4b8;
+				background: #fefaf5;
 			}
 
 			.prompt {
@@ -278,53 +311,66 @@
 				grid-template-columns: 1fr auto;
 				gap: 8px;
 				align-items: center;
+				margin-top: 8px;
 			}
 
-			.input-row input {
+			.input-row input,
+			.input-row textarea {
 				width: 100%;
 				border: 1px solid var(--line);
-				border-radius: 8px;
-				padding: 8px 10px;
+				border-radius: 10px;
+				padding: 8px 12px;
 				font-size: 13px;
 				outline: none;
 				background: #ffffff;
 				transition: border-color 0.2s ease, box-shadow 0.2s ease;
+				font-family: inherit;
 			}
 
-			.input-row input:focus {
-				border-color: #9fc2ff;
-				box-shadow: 0 0 0 3px rgba(45, 108, 255, 0.14);
+			.input-row input:focus,
+			.input-row textarea:focus {
+				border-color: #e4a0c0;
+				box-shadow: 0 0 0 3px rgba(212, 83, 138, 0.12);
 			}
 
 			input[type="file"] {
-				padding: 7px;
-				background: #f8fbff;
+				padding: 7px 10px;
+				background: #fdf6fa;
+				border: 1px dashed var(--line-strong);
+				border-radius: 10px;
+				font-size: 12px;
+				width: 100%;
 			}
 
 			.file-row {
-				margin-top: 8px;
+				margin-top: 6px;
 			}
 
 			.inline-note {
 				font-size: 12px;
 				color: var(--muted);
 				margin-top: 8px;
-				padding: 8px 10px;
-				border-radius: 8px;
-				border: 1px dashed #d4e0f5;
-				background: #f7faff;
+				padding: 8px 12px;
+				border-radius: 10px;
+				border: 1px dashed #f0d4e5;
+				background: #fdf6fa;
+				line-height: 1.4;
 			}
 
 			.upload-hint {
-				font-size: 12px;
+				font-size: 11px;
 				color: var(--muted);
-				margin-top: 8px;
+				margin-top: 6px;
 			}
 
 			.summary {
 				margin-top: 12px;
 				font-size: 13px;
 				line-height: 1.5;
+				padding: 8px 10px;
+				border-radius: 10px;
+				background: #fdf6fa;
+				border: 1px solid #f8e4ee;
 			}
 
 			.rows {
@@ -332,7 +378,7 @@
 				border-top: 1px dashed var(--line-strong);
 				padding-top: 8px;
 				display: grid;
-				gap: 6px;
+				gap: 5px;
 			}
 
 			.actions {
@@ -348,11 +394,11 @@
 				display: inline-flex;
 				align-items: center;
 				gap: 6px;
-				padding: 4px 8px;
+				padding: 4px 10px;
 				font-size: 12px;
 				border: 1px solid var(--line);
 				border-radius: 999px;
-				background: #f5f8ff;
+				background: #fdf2f8;
 				transition: border-color 0.2s ease, transform 0.2s ease;
 			}
 
@@ -363,6 +409,7 @@
 
 			.action-item .k {
 				color: var(--muted);
+				font-weight: 500;
 			}
 
 			.row {
@@ -370,30 +417,33 @@
 				justify-content: space-between;
 				gap: 10px;
 				font-size: 12px;
-				padding: 5px 8px;
-				border-radius: 8px;
-				background: #f8fbff;
-				border: 1px solid #e4edf9;
+				padding: 5px 10px;
+				border-radius: 10px;
+				background: #fdf6fa;
+				border: 1px solid #f0dce8;
+				line-height: 1.4;
 			}
 
 			.row .k {
 				color: var(--muted);
+				font-weight: 500;
 			}
 
 			.final {
 				margin-top: 8px;
 				border: 1px solid var(--line);
-				border-radius: 8px;
-				background: #f8fbff;
-				padding: 8px;
+				border-radius: 10px;
+				background: #fdf6fa;
+				padding: 10px;
 				font-size: 12px;
 				white-space: pre-wrap;
+				overflow-x: auto;
 			}
 
 			.step-running {
 				display: inline-flex;
 				align-items: center;
-				gap: 6px;
+				gap: 8px;
 				margin-top: 8px;
 				font-size: 12px;
 				color: var(--accent);
@@ -401,12 +451,12 @@
 			}
 
 			.step-running-dot {
-				width: 10px;
-				height: 10px;
+				width: 12px;
+				height: 12px;
 				border-radius: 999px;
-				border: 2px solid #bdd3ff;
+				border: 2.5px solid #f0b8d0;
 				border-top-color: var(--accent);
-				animation: spin 0.8s linear infinite;
+				animation: spin 0.75s linear infinite;
 			}
 
 			@keyframes spin {
@@ -415,10 +465,82 @@
 				}
 			}
 
+			.structured-form {
+				display: grid;
+				gap: 8px;
+				margin-top: 8px;
+				padding: 10px;
+				border: 1px solid #f0dce8;
+				border-radius: 12px;
+				background: #fdf6fa;
+			}
+
+			.form-field {
+				display: grid;
+				gap: 4px;
+			}
+
+			.form-field label {
+				font-size: 12px;
+				font-weight: 500;
+				color: var(--muted);
+			}
+
+			.form-field input[type="text"],
+			.form-field input[type="number"] {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				padding: 6px 10px;
+				font-size: 13px;
+				outline: none;
+				background: #ffffff;
+				transition: border-color 0.2s ease, box-shadow 0.2s ease;
+				font-family: inherit;
+			}
+
+			.form-field input:focus {
+				border-color: #e4a0c0;
+				box-shadow: 0 0 0 3px rgba(212, 83, 138, 0.1);
+			}
+
+			.form-field .checkbox-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 4px 0;
+			}
+
+			.form-field .checkbox-row input[type="checkbox"] {
+				width: 18px;
+				height: 18px;
+				accent-color: var(--accent);
+				cursor: pointer;
+			}
+
 			@media (max-width: 900px) {
 				.layout {
 					grid-template-columns: 1fr;
 				}
+				.topbar {
+					flex-direction: column;
+					align-items: stretch;
+				}
+				.session {
+					justify-content: center;
+				}
+			}
+
+			/* scrollbar styling */
+			.chat::-webkit-scrollbar {
+				width: 5px;
+			}
+			.chat::-webkit-scrollbar-track {
+				background: #fdf2f8;
+				border-radius: 10px;
+			}
+			.chat::-webkit-scrollbar-thumb {
+				background: #e4b8d2;
+				border-radius: 10px;
 			}
 		</style>
 	</head>
@@ -426,26 +548,26 @@
 		<main class="page">
 			<section class="topbar">
 				<div>
-					<div class="title">AG-UI Financial Planning Workflow</div>
-					<div class="meta">Streams AG-UI lifecycle events from <code>/api/run-step</code> and <code>/api/run-all-cron</code></div>
+					<div class="title">🌸 AG-UI Lifecycle Events + GPipeline DAG</div>
+					<div class="title-sub">Streams AG-UI lifecycle events — pinky, lovable, beautiful</div>
 				</div>
 				<div class="session">
 					<span class="badge" id="sessionBadge"></span>
-					<button id="startCronBtn">Start Cron</button>
-					<button id="stopCronBtn" disabled>Stop Cron</button>
-					<button id="newSessionBtn">New Session</button>
-					<button id="resetSessionBtn">Reset Session</button>
+					<button id="startCronBtn">▶ Start Cron</button>
+					<button id="stopCronBtn" disabled>⏹ Stop Cron</button>
+					<button id="newSessionBtn">✨ New Session</button>
+					<button id="resetSessionBtn">🔄 Reset Session</button>
 				</div>
 			</section>
 
 			<section class="layout">
 				<section class="panel">
-					<h2>Workflow Steps</h2>
+					<h2>📋 Workflow Steps</h2>
 					<div id="steps" class="steps"></div>
 				</section>
 
 				<section class="panel">
-					<h2>AG-UI Event Chat</h2>
+					<h2>💬 AG-UI Event Chat</h2>
 					<div id="chat" class="chat"></div>
 					<div id="finalResult" class="final" hidden></div>
 				</section>
@@ -458,50 +580,93 @@
 			const RESET_SESSION_ENDPOINT = "/api/reset-session";
 			const SESSION_KEY = "sessionId";
 
-			const STEP_META = [
-				{
-					id: "step_navigation",
-					title: "Step Navigation",
-					prompt: "Select step to view or modify",
-					dependencies: []
-				},
-				{
-					id: "income",
-					title: "Step 1 · Income",
-					prompt: "Enter your monthly total income (must be a number greater than 0)",
-					dependencies: ["step_navigation"]
-				},
-				{
-					id: "expense_input",
-					title: "Step 2 · 月度支出",
-					prompt: "请输入各项月度固定支出（元），留空表示0",
-					dependencies: ["income"]
-				},
-				{
-					id: "savings_calculation",
-					title: "Step 3 · 储蓄计划",
-					prompt: "系统将基于您的收入和支出自动计算建议储蓄预算",
-					dependencies: ["income", "expense_input"]
-				},
-				{
-					id: "goal_input",
-					title: "Step 4 · Goal",
-					prompt: "Enter your savings goal amount",
-					dependencies: ["savings_calculation"]
-				},
-				{
-					id: "goal_estimation",
-					title: "Step 4 · Goal Estimation",
-					prompt: "Enter your savings goal amount",
-					dependencies: ["savings_calculation", "goal_input"]
-				},
-				{
-					id: "summary_display",
-					title: "最终汇总",
-					prompt: "查看完整的财务规划摘要",
-					dependencies: ["income", "expense_input", "savings_calculation", "goal_input", "goal_estimation"]
+			const STEP_META = [{
+				"id": "SenderEmailInput",
+				"title": "用户输入发件邮箱地址",
+				"prompt": "用户输入发件邮箱地址",
+				"dependencies": [],
+				"services": [],
+				"inputRequired": true,
+				"nodeKind": "input",
+				"extData": {
+					"type": "user_input",
+					"desc": "用户输入发件邮箱地址",
+					"inputs_format": {
+						"sender_email": "string"
+					}
 				}
-			];
+			}, {
+				"id": "PasswordInput",
+				"title": "用户输入邮箱登录密码",
+				"prompt": "用户输入邮箱登录密码",
+				"dependencies": [],
+				"services": [],
+				"inputRequired": true,
+				"nodeKind": "input",
+				"extData": {
+					"type": "user_input",
+					"desc": "用户输入邮箱登录密码",
+					"inputs_format": {
+						"password": "string"
+					}
+				}
+			}, {
+				"id": "RecipientListInput",
+				"title": "用户输入收件人列表，多个邮箱以逗号分隔",
+				"prompt": "用户输入收件人列表，多个邮箱以逗号分隔",
+				"dependencies": [],
+				"services": [],
+				"inputRequired": true,
+				"nodeKind": "input",
+				"extData": {
+					"type": "user_input",
+					"desc": "用户输入收件人列表，多个邮箱以逗号分隔",
+					"inputs_format": {
+						"recipient_list": "string"
+					}
+				}
+			}, {
+				"id": "MessageContentInput",
+				"title": "用户输入要发送的文本消息内容",
+				"prompt": "用户输入要发送的文本消息内容",
+				"dependencies": [],
+				"services": [],
+				"inputRequired": true,
+				"nodeKind": "input",
+				"extData": {
+					"type": "user_input",
+					"desc": "用户输入要发送的文本消息内容",
+					"inputs_format": {
+						"message_content": "string"
+					}
+				}
+			}, {
+				"id": "RecipientListParser",
+				"title": "将收件人列表字符串按逗号分割，生成邮箱数组",
+				"prompt": "将收件人列表字符串按逗号分割，生成邮箱数组",
+				"dependencies": ["RecipientListInput"],
+				"services": [],
+				"inputRequired": false,
+				"nodeKind": "operation",
+				"extData": {
+					"type": "none",
+					"desc": "no need for ext data",
+					"inputs_format": {}
+				}
+			}, {
+				"id": "EmailSender",
+				"title": "使用之前收集的发件邮箱、密码、解析后的收件人列表和消息内容，调用SMTP或邮件API发送邮件",
+				"prompt": "使用之前收集的发件邮箱、密码、解析后的收件人列表和消息内容，调用SMTP或邮件API发送邮件",
+				"dependencies": ["SenderEmailInput", "PasswordInput", "MessageContentInput", "RecipientListParser"],
+				"services": [],
+				"inputRequired": false,
+				"nodeKind": "operation",
+				"extData": {
+					"type": "none",
+					"desc": "no need for ext data",
+					"inputs_format": {}
+				}
+			}];
 
 			const state = {
 				sessionId: loadOrCreateSessionId(),
@@ -528,7 +693,7 @@
 			function loadOrCreateSessionId() {
 				const existing = localStorage.getItem(SESSION_KEY);
 				if (existing) return existing;
-				const created = `session_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+				const created = "session_" + Date.now() + "_" + Math.random().toString(16).slice(2, 8);
 				localStorage.setItem(SESSION_KEY, created);
 				return created;
 			}
@@ -536,21 +701,18 @@
 			function setSessionId(sessionId) {
 				state.sessionId = sessionId;
 				localStorage.setItem(SESSION_KEY, sessionId);
-				els.sessionBadge.textContent = `sessionId: ${sessionId}`;
+				els.sessionBadge.textContent = "sessionId: " + sessionId;
 			}
 
 			function isStepUnlocked(stepId) {
-				const step = STEP_META.find((item) => item.id === stepId);
+				const step = STEP_META.find(function(item) { return item.id === stepId; });
 				if (!step) return false;
-				return step.dependencies.every((dep) => state.completedSteps.has(dep));
+				return step.dependencies.every(function(dep) { return state.completedSteps.has(dep); });
 			}
 
 			function shouldShowStep(stepIndex) {
-				if (stepIndex <= 0) return true;
-				const firstStep = STEP_META[0];
-				if (!firstStep) return false;
-				if (!state.completedSteps.has(firstStep.id)) return false;
-				const prevStep = STEP_META[stepIndex - 1];
+				if (stepIndex === 0) return true;
+				var prevStep = STEP_META[stepIndex - 1];
 				if (!prevStep) return true;
 				return state.completedSteps.has(prevStep.id);
 			}
@@ -561,15 +723,15 @@
 			}
 
 			function runtimeState(stepId) {
-				const cardEvent = state.cards.get(stepId);
-				const raw = String(cardEvent?.state || "").trim().toLowerCase();
+				var cardEvent = state.cards.get(stepId);
+				var raw = String(cardEvent && cardEvent.state || "").trim().toLowerCase();
 				if (!raw) return "";
 				return raw;
 			}
 
 			function appendMessage(kind, text) {
-				const div = document.createElement("div");
-				div.className = `msg ${kind}`;
+				var div = document.createElement("div");
+				div.className = "msg " + kind;
 				div.textContent = text;
 				els.chat.appendChild(div);
 				els.chat.scrollTop = els.chat.scrollHeight;
@@ -578,15 +740,16 @@
 
 			function ensureAssistantMessage(messageId) {
 				if (!state.assistantByMessageId.has(messageId)) {
-					const container = appendMessage("assistant", "");
+					var container = appendMessage("assistant", "");
 					state.assistantByMessageId.set(messageId, container);
 				}
 				return state.assistantByMessageId.get(messageId);
 			}
 
 			function upsertAssistantDelta(messageId, delta) {
-				const target = ensureAssistantMessage(messageId);
+				var target = ensureAssistantMessage(messageId);
 				target.textContent += delta;
+				els.chat.scrollTop = els.chat.scrollHeight;
 			}
 
 			function clearWorkflowState() {
@@ -608,166 +771,355 @@
 			}
 
 			async function callResetSession(sessionId) {
-				const res = await fetch(RESET_SESSION_ENDPOINT, {
+				var res = await fetch(RESET_SESSION_ENDPOINT, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ sessionId })
+					body: JSON.stringify({ sessionId: sessionId })
 				});
-				if (!res.ok) {
-					throw new Error(`reset-session failed: ${res.status}`);
-				}
+				if (!res.ok) throw new Error("reset-session failed: " + res.status);
 				return await res.json();
 			}
 
 			function renderRows(card) {
-				const rows = [];
-
-				if (Array.isArray(card?.rows)) {
-					rows.push(...card.rows.map((row) => ({ key: row.name ?? row.label ?? "", value: row.value ?? "" })));
+				var rows = [];
+				if (card && Array.isArray(card.rows)) {
+					card.rows.forEach(function(row) {
+						rows.push({ key: row.name || row.label || "", value: row.value || "" });
+					});
 				}
-
-				if (Array.isArray(card?.categories)) {
-					rows.push(...card.categories.map((row) => ({ key: row.name ?? row.label ?? "", value: row.value ?? "" })));
+				if (card && Array.isArray(card.categories)) {
+					card.categories.forEach(function(row) {
+						rows.push({ key: row.name || row.label || "", value: row.value || "" });
+					});
 				}
-
-				if (Array.isArray(card?.sections)) {
-					for (const section of card.sections) {
-						if (Array.isArray(section?.rows)) {
-							rows.push(...section.rows.map((row) => ({ key: row.label ?? row.name ?? "", value: row.value ?? "" })));
+				if (card && Array.isArray(card.sections)) {
+					card.sections.forEach(function(section) {
+						if (section && Array.isArray(section.rows)) {
+							section.rows.forEach(function(row) {
+								rows.push({ key: row.label || row.name || "", value: row.value || "" });
+							});
 						}
-					}
+					});
 				}
-
 				return rows;
 			}
 
 			function renderActions(card) {
-				if (!Array.isArray(card?.actions)) {
-					return [];
+				if (!card || !Array.isArray(card.actions)) return [];
+				return card.actions.map(function(action) {
+					if (action == null) return null;
+					if (typeof action === "string") {
+						var label = action.trim();
+						return label ? { name: "action", value: label } : null;
+					}
+					var name = String(action.name || action.label || action.type || "action").trim() || "action";
+					var valueRaw = action.value || action.text || action.description || action.desc || action.payload || "";
+					var value = typeof valueRaw === "string" ? valueRaw.trim() : JSON.stringify(valueRaw);
+					return { name: name, value: value || "(no value)" };
+				}).filter(Boolean);
+			}
+
+			function escapeHtml(value) {
+				return String(value)
+					.replace(/&/g, "&amp;")
+					.replace(/</g, "&lt;")
+					.replace(/>/g, "&gt;")
+					.replace(/"/g, "&quot;")
+					.replace(/'/g, "&#39;");
+			}
+
+			function buildStructuredForm(step, container) {
+				var extData = step.extData || {};
+				var inputsFormat = extData.inputs_format || {};
+				var keys = Object.keys(inputsFormat);
+				if (keys.length === 0) return null;
+
+				var formDiv = document.createElement("div");
+				formDiv.className = "structured-form";
+
+				var fieldMap = {};
+
+				keys.forEach(function(key) {
+					var type = String(inputsFormat[key] || "string").trim().toLowerCase();
+					var fieldDiv = document.createElement("div");
+					fieldDiv.className = "form-field";
+
+					var label = document.createElement("label");
+					label.textContent = key;
+					fieldDiv.appendChild(label);
+
+					if (type === "boolean") {
+						var checkboxRow = document.createElement("div");
+						checkboxRow.className = "checkbox-row";
+						var cb = document.createElement("input");
+						cb.type = "checkbox";
+						cb.id = "struct_" + step.id + "_" + key;
+						cb.checked = false;
+						fieldMap[key] = cb;
+						checkboxRow.appendChild(cb);
+						var span = document.createElement("span");
+						span.textContent = "false";
+						checkboxRow.appendChild(span);
+						cb.addEventListener("change", function() {
+							span.textContent = cb.checked ? "true" : "false";
+						});
+						fieldDiv.appendChild(checkboxRow);
+					} else if (type === "number") {
+						var inp = document.createElement("input");
+						inp.type = "number";
+						inp.id = "struct_" + step.id + "_" + key;
+						inp.step = "any";
+						inp.placeholder = key;
+						fieldMap[key] = inp;
+						fieldDiv.appendChild(inp);
+					} else {
+						var inp = document.createElement("input");
+						inp.type = "text";
+						inp.id = "struct_" + step.id + "_" + key;
+						inp.placeholder = key;
+						fieldMap[key] = inp;
+						fieldDiv.appendChild(inp);
+					}
+
+					formDiv.appendChild(fieldDiv);
+				});
+
+				container.appendChild(formDiv);
+				return fieldMap;
+			}
+
+			function collectStructuredValue(fieldMap) {
+				if (!fieldMap) return null;
+				var obj = {};
+				var keys = Object.keys(fieldMap);
+				for (var i = 0; i < keys.length; i++) {
+					var key = keys[i];
+					var el = fieldMap[key];
+					if (el.type === "checkbox") {
+						obj[key] = el.checked;
+					} else if (el.type === "number") {
+						obj[key] = el.value === "" ? "" : Number(el.value);
+					} else {
+						obj[key] = el.value;
+					}
 				}
-
-				return card.actions
-					.map((action) => {
-						if (action == null) return null;
-						if (typeof action === "string") {
-							const label = action.trim();
-							return label ? { name: "action", value: label } : null;
-						}
-
-						const name = String(action.name ?? action.label ?? action.type ?? "action").trim() || "action";
-						const valueRaw = action.value ?? action.text ?? action.description ?? action.desc ?? action.payload ?? "";
-						const value = typeof valueRaw === "string" ? valueRaw.trim() : JSON.stringify(valueRaw);
-						return { name, value: value || "(no value)" };
-					})
-					.filter(Boolean);
+				return obj;
 			}
 
 			function renderSteps() {
 				els.steps.innerHTML = "";
-				const autoRunQueue = [];
-				for (let index = 0; index < STEP_META.length; index += 1) {
-					const step = STEP_META[index];
-					if (!shouldShowStep(index)) {
-						continue;
-					}
-					const status = stepStatus(step.id);
-					const cardEvent = state.cards.get(step.id);
-					const runtime = runtimeState(step.id);
-					const displayStatus = runtime || status;
-					const extType = String(step.extData?.type || step.ext_data?.type || "").trim().toLowerCase();
-					const nodeKind = String(step.nodeKind || "").trim().toLowerCase();
-					const isImageStep = extType === "image" || nodeKind === "image";
-					const isFileStep = extType === "user_file_input" || nodeKind === "file";
-					const isOperationStep = step.inputRequired === false || nodeKind === "operation";
-					const inputRequired = !isOperationStep && !isImageStep;
-					const running = state.inFlightStepId === step.id || displayStatus === "running";
-					const summary = cardEvent?.summary || "";
-					const rows = renderRows(cardEvent?.card || {});
-					const actions = renderActions(cardEvent?.card || {});
-					const disabled = state.inFlightStepId !== null || status !== "open";
-					const statusLabel = String(displayStatus || "unknown").replaceAll("_", " ").toUpperCase();
-					const kindLabel = isImageStep ? "image" : isFileStep ? "file" : nodeKind || "input";
+				var autoRunQueue = [];
 
-					let inputBlock = "";
+				for (let index = 0; index < STEP_META.length; index++) {
+					let step = STEP_META[index];
+					if (!shouldShowStep(index)) continue;
+
+					var status = stepStatus(step.id);
+					var cardEvent = state.cards.get(step.id);
+					var runtime = runtimeState(step.id);
+					var displayStatus = runtime || status;
+					var extType = String(step.extData && step.extData.type || "").trim().toLowerCase();
+					var nodeKind = String(step.nodeKind || "").trim().toLowerCase();
+					var isImageStep = extType === "image" || nodeKind === "image";
+					var isFileStep = extType === "user_file_input" || nodeKind === "file";
+					var isOperationStep = step.inputRequired === false || nodeKind === "operation" || nodeKind === "service" || nodeKind === "skill";
+					var isChatStep = extType === "chat_input" || nodeKind === "chat";
+					var hasStructuredInput = extType === "user_input" && step.extData && step.extData.inputs_format && Object.keys(step.extData.inputs_format).length > 0;
+					var inputRequired = !isOperationStep && !isImageStep && !isFileStep;
+
+					var running = state.inFlightStepId === step.id || displayStatus === "running";
+					var summary = (cardEvent && cardEvent.summary) || "";
+					var rows = renderRows(cardEvent && cardEvent.card || {});
+					var actions = renderActions(cardEvent && cardEvent.card || {});
+					var disabled = state.inFlightStepId !== null || status !== "open";
+					var statusLabel = String(displayStatus || "unknown").replace(/_/g, " ").toUpperCase();
+
+					var kindLabel = "input";
+					if (isImageStep) kindLabel = "image";
+					else if (isFileStep) kindLabel = "file";
+					else if (nodeKind === "operation") kindLabel = "operation";
+					else if (nodeKind === "service") kindLabel = "service";
+					else if (nodeKind === "skill") kindLabel = "skill";
+					else if (isChatStep) kindLabel = "chat";
+					else kindLabel = nodeKind || "input";
+
+					var container = document.createElement("article");
+					container.className = "step" + (status === "locked" ? " locked" : "");
+					container.dataset.stepId = step.id;
+
+					var headerHtml =
+						'<div class="step-header">' +
+						'<div>' +
+						'<h3 class="step-title">' + escapeHtml(step.title) + '</h3>' +
+						'<div class="step-submeta">' +
+						'<span class="chip">id: ' + escapeHtml(step.id) + '</span>' +
+						'<span class="chip">kind: ' + escapeHtml(kindLabel) + '</span>' +
+						'<span class="chip">deps: ' + escapeHtml(step.dependencies.join(", ") || "none") + '</span>' +
+						(runtime ? '<span class="chip">runtime: ' + escapeHtml(runtime) + '</span>' : '') +
+						'</div>' +
+						(running ? '<div class="step-running"><span class="step-running-dot"></span><span>Running...</span></div>' : '') +
+						'</div>' +
+						'<span class="status ' + displayStatus + '">' + statusLabel + '</span>' +
+						'</div>';
+
+					var promptHtml = '<p class="prompt">' + escapeHtml(step.prompt || "") + '</p>';
+
+					var inputArea = document.createElement("div");
+
+					var inputRow = document.createElement("div");
+					inputRow.className = "input-row";
+
 					if (isImageStep) {
-						inputBlock = `
-							<div class="input-row">
-								<input id="input_${step.id}" value="Dependency-driven image analysis" disabled />
-							</div>
-							<div class="inline-note">This image step auto-runs when unlocked using upstream dependency results.</div>
-						`;
-					} else if (isOperationStep) {
-						inputBlock = `
-							<div class="input-row">
-								<input id="input_${step.id}" value="Auto-runs when unlocked" disabled />
-							</div>
-						`;
+						var inp = document.createElement("input");
+						inp.id = "input_" + step.id;
+						inp.value = "Dependency-driven image analysis";
+						inp.disabled = true;
+						inputRow.appendChild(inp);
+						container.insertAdjacentHTML("beforeend", headerHtml + promptHtml);
+						var note = document.createElement("div");
+						note.className = "inline-note";
+						note.textContent = "This image step auto-runs when unlocked using upstream dependency results.";
+						container.appendChild(note);
 					} else if (isFileStep) {
-						inputBlock = `
-							<div class="input-row">
-								<input id="input_${step.id}" placeholder="Optional request/context for uploaded files" ${disabled ? "disabled" : ""} />
-								<button class="primary" data-step-id="${step.id}" ${disabled ? "disabled" : ""}>Upload & Submit</button>
-							</div>
-							<div class="upload-hint">Select one or more files. Payload is sent as input.files = [{fileName, fileBytes}, ...].</div>
-							<div class="file-row input-row"><input type="file" id="file_${step.id}" multiple ${disabled ? "disabled" : ""} /></div>
-						`;
+						var inp2 = document.createElement("input");
+						inp2.id = "input_" + step.id;
+						inp2.placeholder = "Optional request/context for uploaded files";
+						inp2.disabled = disabled;
+						inputRow.appendChild(inp2);
+						var btn = document.createElement("button");
+						btn.className = "primary";
+						btn.textContent = "Upload & Submit";
+						btn.dataset.stepId = step.id;
+						btn.disabled = disabled;
+						inputRow.appendChild(btn);
+						container.insertAdjacentHTML("beforeend", headerHtml + promptHtml);
+						container.appendChild(inputRow);
+						var hint = document.createElement("div");
+						hint.className = "upload-hint";
+						hint.textContent = "Select one or more files. Payload is sent as input.files = [{fileName, fileBytes}, ...].";
+						container.appendChild(hint);
+						var fileRow = document.createElement("div");
+						fileRow.className = "file-row input-row";
+						var fileInput = document.createElement("input");
+						fileInput.type = "file";
+						fileInput.id = "file_" + step.id;
+						fileInput.multiple = true;
+						fileInput.disabled = disabled;
+						fileRow.appendChild(fileInput);
+						container.appendChild(fileRow);
+						btn.addEventListener("click", function() {
+							var fi = document.getElementById("file_" + step.id);
+							submitStep(step, inp2.value || "", Array.from(fi && fi.files || []));
+						});
+						inp2.addEventListener("keydown", function(e) {
+							if (e.key === "Enter") {
+								var fi = document.getElementById("file_" + step.id);
+								submitStep(step, inp2.value || "", Array.from(fi && fi.files || []));
+							}
+						});
+					} else if (isOperationStep) {
+						var inp3 = document.createElement("input");
+						inp3.id = "input_" + step.id;
+						inp3.value = "Auto-runs when unlocked";
+						inp3.disabled = true;
+						inputRow.appendChild(inp3);
+						container.insertAdjacentHTML("beforeend", headerHtml + promptHtml);
+						container.appendChild(inputRow);
+						var note2 = document.createElement("div");
+						note2.className = "inline-note";
+						note2.textContent = "This step runs automatically without user input.";
+						container.appendChild(note2);
+					} else if (hasStructuredInput) {
+						container.insertAdjacentHTML("beforeend", headerHtml + promptHtml);
+						var formContainer = document.createElement("div");
+						var fieldMap = buildStructuredForm(step, formContainer);
+						container.appendChild(formContainer);
+						var btnRow = document.createElement("div");
+						btnRow.className = "input-row";
+						var dummyInp = document.createElement("input");
+						dummyInp.style.display = "none";
+						btnRow.appendChild(dummyInp);
+						var btn2 = document.createElement("button");
+						btn2.className = "primary";
+						btn2.textContent = "Submit";
+						btn2.disabled = disabled;
+						btnRow.appendChild(btn2);
+						container.appendChild(btnRow);
+						btn2.addEventListener("click", function() {
+							var collected = collectStructuredValue(fieldMap);
+							var inputStr = JSON.stringify(collected);
+							submitStep(step, inputStr, []);
+						});
 					} else {
-						inputBlock = `
-							<div class="input-row">
-								<input id="input_${step.id}" placeholder="Enter input for ${step.id}" ${disabled ? "disabled" : ""} />
-								<button class="primary" data-step-id="${step.id}" ${disabled ? "disabled" : ""}>Submit</button>
-							</div>
-						`;
-					}
-
-					const container = document.createElement("article");
-					container.className = `step ${status === "locked" ? "locked" : ""}`;
-					container.innerHTML = `
-						<div class="step-header">
-							<div>
-								<h3 class="step-title">${escapeHtml(step.title)}</h3>
-								<div class="step-submeta">
-									<span class="chip">id: ${escapeHtml(step.id)}</span>
-									<span class="chip">kind: ${escapeHtml(kindLabel)}</span>
-									<span class="chip">deps: ${escapeHtml(step.dependencies.join(", ") || "none")}</span>
-									<span class="chip">runtime: ${escapeHtml(runtime || "n/a")}</span>
-								</div>
-								${running ? '<div class="step-running"><span class="step-running-dot"></span><span>Running...</span></div>' : ""}
-							</div>
-							<span class="status ${displayStatus}">${statusLabel}</span>
-						</div>
-						<p class="prompt">${escapeHtml(step.prompt || "")}</p>
-						${inputBlock}
-						<div class="summary">${summary ? `<strong>Summary:</strong> ${escapeHtml(summary)}` : ""}</div>
-						<div class="rows">
-							${rows.map((r) => `<div class="row"><span class="k">${escapeHtml(String(r.key))}</span><span>${escapeHtml(String(r.value))}</span></div>`).join("")}
-						</div>
-						${actions.length ? `<div class="actions">${actions.map((a) => `<span class="action-item"><span class="k">${escapeHtml(String(a.name))}</span><span>${escapeHtml(String(a.value))}</span></span>`).join("")}</div>` : ""}
-					`;
-
-					const button = container.querySelector("button");
-					const input = container.querySelector(`#input_${step.id}`);
-					const fileInput = isFileStep ? container.querySelector(`#file_${step.id}`) : null;
-					if (button) {
-						button.addEventListener("click", () => submitStep(step, inputRequired ? input?.value || "" : "", Array.from(fileInput?.files || [])));
-					}
-					if (inputRequired && input && !input.disabled) {
-						input.addEventListener("keydown", (event) => {
-							if (event.key === "Enter") {
-								submitStep(step, input.value, Array.from(fileInput?.files || []));
+						var inp4 = document.createElement("input");
+						inp4.id = "input_" + step.id;
+						inp4.placeholder = "Enter input for " + step.id;
+						inp4.disabled = disabled;
+						inputRow.appendChild(inp4);
+						var btn3 = document.createElement("button");
+						btn3.className = "primary";
+						btn3.textContent = "Submit";
+						btn3.dataset.stepId = step.id;
+						btn3.disabled = disabled;
+						inputRow.appendChild(btn3);
+						container.insertAdjacentHTML("beforeend", headerHtml + promptHtml);
+						container.appendChild(inputRow);
+						btn3.addEventListener("click", function() {
+							var iv = document.getElementById("input_" + step.id);
+							submitStep(step, iv ? iv.value : "", []);
+						});
+						inp4.addEventListener("keydown", function(e) {
+							if (e.key === "Enter") {
+								var iv = document.getElementById("input_" + step.id);
+								submitStep(step, iv ? iv.value : "", []);
 							}
 						});
 					}
 
+					if (summary) {
+						var summaryDiv = document.createElement("div");
+						summaryDiv.className = "summary";
+						summaryDiv.innerHTML = "<strong>Summary:</strong> " + escapeHtml(summary);
+						container.appendChild(summaryDiv);
+					}
+
+					if (rows.length > 0) {
+						var rowsDiv = document.createElement("div");
+						rowsDiv.className = "rows";
+						for (var ri = 0; ri < rows.length; ri++) {
+							var r = rows[ri];
+							var rowEl = document.createElement("div");
+							rowEl.className = "row";
+							rowEl.innerHTML = '<span class="k">' + escapeHtml(String(r.key)) + '</span><span>' + escapeHtml(String(r.value)) + '</span>';
+							rowsDiv.appendChild(rowEl);
+						}
+						container.appendChild(rowsDiv);
+					}
+
+					if (actions.length > 0) {
+						var actionsDiv = document.createElement("div");
+						actionsDiv.className = "actions";
+						for (var ai = 0; ai < actions.length; ai++) {
+							var a = actions[ai];
+							var span = document.createElement("span");
+							span.className = "action-item";
+							span.innerHTML = '<span class="k">' + escapeHtml(String(a.name)) + '</span><span>' + escapeHtml(String(a.value)) + '</span>';
+							actionsDiv.appendChild(span);
+						}
+						container.appendChild(actionsDiv);
+					}
+
 					els.steps.appendChild(container);
 
-					const shouldAutoRun =
+					var shouldAutoRun =
 						!isFileStep &&
-						!inputRequired &&
+						!hasStructuredInput &&
+						inputRequired === false &&
 						status === "open" &&
 						state.inFlightStepId === null &&
 						!state.completedSteps.has(step.id) &&
 						!state.autoQueuedSteps.has(step.id);
+
 					if (shouldAutoRun) {
 						autoRunQueue.push(step);
 						state.autoQueuedSteps.add(step.id);
@@ -775,56 +1127,56 @@
 				}
 
 				if (autoRunQueue.length > 0 && state.inFlightStepId === null) {
-					const nextStep = autoRunQueue[0];
-					setTimeout(() => submitStep(nextStep, "", []), 0);
+					var nextStep = autoRunQueue[0];
+					setTimeout(function() { submitStep(nextStep, "", []); }, 0);
 				}
 			}
 
 			function arrayBufferToBase64(buffer) {
-				let binary = "";
-				const bytes = new Uint8Array(buffer);
-				const chunkSize = 0x8000;
-				for (let i = 0; i < bytes.length; i += chunkSize) {
-					const chunk = bytes.subarray(i, i + chunkSize);
-					binary += String.fromCharCode(...chunk);
+				var binary = "";
+				var bytes = new Uint8Array(buffer);
+				var chunkSize = 0x8000;
+				for (var i = 0; i < bytes.length; i += chunkSize) {
+					var chunk = bytes.subarray(i, i + chunkSize);
+					binary += String.fromCharCode.apply(null, chunk);
 				}
 				return btoa(binary);
 			}
 
 			function fileToDataUrl(file, base64Payload) {
-				const mimeType = String(file?.type || "").trim() || "application/octet-stream";
-				return `data:${mimeType};base64,${base64Payload}`;
+				var mimeType = String(file && file.type || "").trim() || "application/octet-stream";
+				return "data:" + mimeType + ";base64," + base64Payload;
 			}
 
 			async function submitStep(step, inputValue, inputFiles) {
-				const stepId = step.id;
-				const extType = String(step.extData?.type || step.ext_data?.type || "").trim().toLowerCase();
-				const nodeKind = String(step.nodeKind || "").trim().toLowerCase();
-				const isImageStep = extType === "image" || nodeKind === "image";
-				const isFileStep = extType === "user_file_input" || nodeKind === "file";
-				const isOperationStep = step.inputRequired === false || nodeKind === "operation";
+				var stepId = step.id;
+				var extData = step.extData || {};
+				var extType = String(extData.type || "").trim().toLowerCase();
+				var nodeKind = String(step.nodeKind || "").trim().toLowerCase();
+				var isImageStep = extType === "image" || nodeKind === "image";
+				var isFileStep = extType === "user_file_input" || nodeKind === "file";
+				var isOperationStep = step.inputRequired === false || nodeKind === "operation" || nodeKind === "service" || nodeKind === "skill";
 
-				if (!isStepUnlocked(stepId) || state.inFlightStepId !== null) {
-					return;
-				}
+				if (!isStepUnlocked(stepId) || state.inFlightStepId !== null) return;
+
 				if (isFileStep && (!Array.isArray(inputFiles) || inputFiles.length === 0)) {
 					appendMessage("error", "Please upload at least one file before submitting this file step.");
 					return;
 				}
+
 				state.inFlightStepId = stepId;
 				renderSteps();
-
-				appendMessage("system", `Submitting step: ${stepId}`);
+				appendMessage("system", "Submitting step: " + stepId);
 
 				try {
-					const normalizedRequest = String(inputValue || "").trim();
-					const requestBody = { sessionId: state.sessionId, stepId };
+					var requestBody = { sessionId: state.sessionId, stepId: stepId };
 
 					if (isFileStep) {
-						const filesPayload = [];
-						for (const file of inputFiles) {
-							const fileBuffer = await file.arrayBuffer();
-							const base64Payload = arrayBufferToBase64(fileBuffer);
+						var filesPayload = [];
+						for (var fi = 0; fi < inputFiles.length; fi++) {
+							var file = inputFiles[fi];
+							var fileBuffer = await file.arrayBuffer();
+							var base64Payload = arrayBufferToBase64(fileBuffer);
 							filesPayload.push({
 								fileName: file.name,
 								fileBytes: fileToDataUrl(file, base64Payload)
@@ -832,28 +1184,28 @@
 						}
 						requestBody.input = {
 							files: filesPayload,
-							request: normalizedRequest
+							request: String(inputValue || "").trim()
 						};
-						appendMessage("system", `Uploaded ${filesPayload.length} file(s) sent as encoded byte strings.`);
+						appendMessage("system", "Uploaded " + filesPayload.length + " file(s) sent as encoded byte strings.");
 					} else if (isImageStep || isOperationStep) {
 						// dependency-driven / operation node: no direct input payload
 					} else {
-						requestBody.input = inputValue || "";
+						requestBody.input = String(inputValue || "");
 					}
 
-					const response = await fetch(RUN_STEP_ENDPOINT, {
+					var response = await fetch(RUN_STEP_ENDPOINT, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify(requestBody)
 					});
 
 					if (!response.ok || !response.body) {
-						throw new Error(`run-step failed: ${response.status}`);
+						throw new Error("run-step failed: " + response.status);
 					}
 
 					await consumeSSE(response.body);
 				} catch (error) {
-					appendMessage("error", `Error: ${error.message || String(error)}`);
+					appendMessage("error", "Error: " + (error.message || String(error)));
 				} finally {
 					if (!state.completedSteps.has(stepId)) {
 						state.autoQueuedSteps.delete(stepId);
@@ -864,40 +1216,40 @@
 			}
 
 			async function consumeSSE(stream) {
-				const reader = stream.getReader();
-				const decoder = new TextDecoder("utf-8");
-				let buffer = "";
+				var reader = stream.getReader();
+				var decoder = new TextDecoder("utf-8");
+				var buffer = "";
 
 				function processPacket(packet) {
-					const dataLines = packet
+					var dataLines = packet
 						.split(/\r?\n/)
-						.filter((line) => line.startsWith("data:"))
-						.map((line) => line.slice(5).trim())
+						.filter(function(line) { return line.startsWith("data:"); })
+						.map(function(line) { return line.slice(5).trim(); })
 						.join("\n");
 
 					if (!dataLines) return;
 
 					try {
-						const event = JSON.parse(dataLines);
+						var event = JSON.parse(dataLines);
 						handleEvent(event);
 					} catch (error) {
-						appendMessage("error", `Malformed SSE event: ${error.message || String(error)}`);
+						appendMessage("error", "Malformed SSE event: " + (error.message || String(error)));
 					}
 				}
 
 				while (true) {
-					const { value, done } = await reader.read();
+					var result = await reader.read();
+					var value = result.value;
+					var done = result.done;
 					if (done) {
 						buffer += decoder.decode();
 						break;
 					}
-
 					buffer += decoder.decode(value, { stream: true });
-					const packets = buffer.split(/\r?\n\r?\n/);
+					var packets = buffer.split(/\r?\n\r?\n/);
 					buffer = packets.pop() || "";
-
-					for (const packet of packets) {
-						processPacket(packet);
+					for (var p = 0; p < packets.length; p++) {
+						processPacket(packets[p]);
 					}
 				}
 
@@ -914,7 +1266,7 @@
 				appendMessage("system", "Starting cron stream...");
 
 				try {
-					const response = await fetch(RUN_ALL_CRON_ENDPOINT, {
+					var response = await fetch(RUN_ALL_CRON_ENDPOINT, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify({
@@ -925,7 +1277,7 @@
 					});
 
 					if (!response.ok || !response.body) {
-						throw new Error(`run-all-cron failed: ${response.status}`);
+						throw new Error("run-all-cron failed: " + response.status);
 					}
 
 					await consumeSSE(response.body);
@@ -933,7 +1285,7 @@
 					if (error && error.name === "AbortError") {
 						appendMessage("system", "Cron stream stopped.");
 					} else {
-						appendMessage("error", `Cron stream error: ${error.message || String(error)}`);
+						appendMessage("error", "Cron stream error: " + (error.message || String(error)));
 					}
 				} finally {
 					state.cronRunning = false;
@@ -952,115 +1304,92 @@
 			}
 
 			function normalizeStepName(event) {
-				const candidate = event?.stepName ?? event?.step_name ?? event?.stepId ?? event?.step_id ?? "";
+				var candidate = event && (event.stepName || event.step_name || event.stepId || event.step_id || "");
 				return String(candidate).trim();
 			}
 
 			function handleEvent(event) {
-				const type = normalizeType(event.type);
+				var type = normalizeType(event && event.type);
 
 				switch (type) {
-					case "RUN_STARTED": {
-						appendMessage("system", `Run started: ${event.runId || "(unknown run)"}`);
+					case "RUN_STARTED":
+						appendMessage("system", "Run started: " + (event.runId || "(unknown run)"));
 						break;
-					}
-					case "STEP_STARTED": {
-						appendMessage("system", `STEP_STARTED: ${normalizeStepName(event)}`);
+					case "STEP_STARTED":
+						appendMessage("system", "STEP_STARTED: " + normalizeStepName(event));
 						break;
-					}
-						case "TEXT_MESSAGE_START": {
-							ensureAssistantMessage(event.messageId || "_default");
-							break;
-						}
-					case "TEXT_MESSAGE_CONTENT": {
+					case "TEXT_MESSAGE_START":
+						ensureAssistantMessage(event.messageId || "_default");
+						break;
+					case "TEXT_MESSAGE_CONTENT":
 						upsertAssistantDelta(event.messageId || "_default", String(event.delta || ""));
 						break;
-					}
-					case "TEXT_MESSAGE_END": {
+					case "TEXT_MESSAGE_END":
 						state.assistantByMessageId.delete(event.messageId || "_default");
 						break;
-					}
-					case "CUSTOM": {
-						if (event.name === "step_card" && event.value && event.value.stepId) {
-							const stepId = String(event.value.stepId || event.value.step_id || "").trim();
+					case "CUSTOM":
+						if (event && event.name === "step_card" && event.value && event.value.stepId) {
+							var stepId = String(event.value.stepId || event.value.step_id || "").trim();
 							state.cards.set(stepId, event.value);
-							const cardState = String(event.value.state || "").trim().toLowerCase();
-							if (["completed", "done", "finished", "success", "succeeded"].includes(cardState)) {
+							var cardState = String(event.value.state || "").trim().toLowerCase();
+							if (["completed", "done", "finished", "success", "succeeded"].indexOf(cardState) !== -1) {
 								state.completedSteps.add(stepId);
 							}
-							if (event.value.unlocked === true) {
-								// keep unlocked state computed by dependency model and completion set
-							}
 							renderSteps();
 						}
 						break;
-					}
-					case "STEP_FINISHED": {
-						const stepName = normalizeStepName(event) || String(state.inFlightStepId || "");
+					case "STEP_FINISHED":
+						var stepName = normalizeStepName(event) || String(state.inFlightStepId || "");
 						if (stepName) {
 							state.completedSteps.add(stepName);
-							appendMessage("system", `STEP_FINISHED: ${stepName}`);
+							appendMessage("system", "STEP_FINISHED: " + stepName);
 							renderSteps();
 						}
 						break;
-					}
-					case "RUN_ERROR": {
-						appendMessage("error", `RUN_ERROR: ${event.message || "Unknown error"}`);
+					case "RUN_ERROR":
+						appendMessage("error", "RUN_ERROR: " + (event.message || "Unknown error"));
 						break;
-					}
-					case "RUN_FINISHED": {
+					case "RUN_FINISHED":
 						appendMessage("system", "RUN_FINISHED");
-						const result = event.result;
+						var result = event && event.result;
 						if (result && result.final) {
 							els.finalResult.hidden = false;
 							els.finalResult.textContent = JSON.stringify(result.final, null, 2);
 						}
 						break;
-					}
 					default:
 						break;
 				}
 			}
 
-			function escapeHtml(value) {
-				return String(value)
-					.replaceAll("&", "&amp;")
-					.replaceAll("<", "&lt;")
-					.replaceAll(">", "&gt;")
-					.replaceAll('"', "&quot;")
-					.replaceAll("'", "&#39;");
-			}
-
 			async function onNewSession() {
 				stopCronStream();
-				const newId = `session_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+				var newId = "session_" + Date.now() + "_" + Math.random().toString(16).slice(2, 8);
 				try {
-					const payload = await callResetSession(newId);
+					var payload = await callResetSession(newId);
 					setSessionId(payload.sessionId || newId);
 					clearWorkflowState();
-					appendMessage("system", `New session ready: ${state.sessionId}`);
+					appendMessage("system", "New session ready: " + state.sessionId);
 				} catch (error) {
-					appendMessage("error", `New session failed: ${error.message || String(error)}`);
+					appendMessage("error", "New session failed: " + (error.message || String(error)));
 				}
 			}
 
 			async function onResetSession() {
 				stopCronStream();
 				try {
-					const payload = await callResetSession(state.sessionId);
+					var payload = await callResetSession(state.sessionId);
 					setSessionId(payload.sessionId || state.sessionId);
 					clearWorkflowState();
-					appendMessage("system", `Session reset: ${state.sessionId}`);
+					appendMessage("system", "Session reset: " + state.sessionId);
 				} catch (error) {
-					appendMessage("error", `Reset failed: ${error.message || String(error)}`);
+					appendMessage("error", "Reset failed: " + (error.message || String(error)));
 				}
 			}
 
 			function init() {
 				setSessionId(state.sessionId);
-				els.startCronBtn.addEventListener("click", () => {
-					void startCronStream();
-				});
+				els.startCronBtn.addEventListener("click", function() { startCronStream(); });
 				els.stopCronBtn.addEventListener("click", stopCronStream);
 				els.newSessionBtn.addEventListener("click", onNewSession);
 				els.resetSessionBtn.addEventListener("click", onResetSession);

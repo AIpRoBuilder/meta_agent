@@ -323,13 +323,13 @@ def check_registered_class_imports(root_path: str, target_file_path: str) -> lis
 
 
 _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
-	"WorkflowStepNode": ("process_input"),
-	"WorkflowFileNode": ("build_step_output"),
-	"WorkflowOperationNode": ("process_operation"),
-	"WorkflowChatNode": ("build_step_output"),
-	"WorkflowImageNode": ("build_step_output"),
- 	"WorkflowServiceNode": ("use_service"),
-	"WorkflowSkillNode": ("process_operation"),
+	"WorkflowStepNode": ("process_input",),
+	"WorkflowFileNode": ("build_step_output",),
+	"WorkflowOperationNode": ("process_operation",),
+	"WorkflowChatNode": ("build_step_output",),
+	"WorkflowImageNode": ("build_step_output",),
+	"WorkflowServiceNode": ("use_service",),
+	"WorkflowSkillNode": ("process_operation",),
 }
 
 
@@ -438,6 +438,63 @@ def _extract_derived_keys_from_runtime_method(method_obj: Any) -> set[str]:
 		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
 			return _extract_derived_keys_from_method(node)
 	return set()
+
+
+def collect_session_state_keys_from_node_file(node_file_path: str, node_class_name: str) -> set[str]:
+	"""Collect string keys accessed on ``session_state`` dict in a node class file.
+
+	Args:
+		node_file_path: Path to the node Python file.
+		node_class_name: Expected class name for the node.
+
+	Returns:
+		Set of session_state keys used in the class.
+	"""
+	path = Path(node_file_path)
+	if not path.is_file():
+		return set()
+
+	try:
+		source = path.read_text(encoding="utf-8")
+		tree = ast.parse(source)
+	except Exception:
+		return set()
+
+	keys: set[str] = set()
+
+	def _collect_from_class(cls: ast.ClassDef) -> None:
+		for node in ast.walk(cls):
+			if isinstance(node, ast.Subscript):
+				if isinstance(node.value, ast.Name) and node.value.id == "session_state":
+					if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+						keys.add(node.slice.value)
+
+			if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+				owner = node.func.value
+				if not (isinstance(owner, ast.Name) and owner.id == "session_state"):
+					continue
+
+				if node.func.attr in {"get", "pop", "setdefault"} and node.args:
+					first_arg = node.args[0]
+					if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+						keys.add(first_arg.value)
+
+				if node.func.attr == "update":
+					if node.args and isinstance(node.args[0], ast.Dict):
+						for key_node in node.args[0].keys:
+							if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+								keys.add(key_node.value)
+					for keyword in node.keywords:
+						if keyword.arg:
+							keys.add(keyword.arg)
+
+	class_nodes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+	target_classes = [cls for cls in class_nodes if cls.name == node_class_name] or class_nodes
+
+	for cls in target_classes:
+		_collect_from_class(cls)
+
+	return keys
 
 
 def _load_workflow_base_method_derived_fallbacks() -> dict[str, dict[str, set[str]]]:

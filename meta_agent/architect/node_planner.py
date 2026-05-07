@@ -166,7 +166,7 @@ class NodePlanner(Coder):
 				"nodeKind": "input",
 				"baseClass": "WorkflowStepNode",
 				"primaryFunctions": ["process_input"],
-				"note": "Text-input step node: validates user input and computes output.",
+				"note": "Text-input step node: validates user input against inputs_format and computes output.",
 			}
 
 		return {
@@ -193,6 +193,9 @@ class NodePlanner(Coder):
 			if not isinstance(depends, list):
 				depends = []
 			ext_data = node.get("ext_data", {})
+			inputs_format = node.get("inputs_format", {})
+			if not isinstance(inputs_format, dict):
+				inputs_format = {}
 			profile = self._derive_node_profile(ext_data)
 
 			ext_desc = ""
@@ -210,6 +213,10 @@ class NodePlanner(Coder):
 				f"- ext_data.type: {profile['extType']}",
 				f"- ext_data.desc: {ext_desc or 'n/a'}",
 			]
+			if profile["extType"] == "user_input":
+				node_lines.append(
+					f"- inputs_format: {json.dumps(inputs_format, ensure_ascii=False) if inputs_format else 'n/a'}"
+				)
 			if service_name_val:
 				node_lines.append(f"- ext_data.service_name: {service_name_val}")
 			if skill_name_val:
@@ -243,6 +250,9 @@ class NodePlanner(Coder):
 		if not isinstance(services, list):
 			services = []
 		ext_data = node.get("ext_data", {})
+		inputs_format = node.get("inputs_format", {})
+		if not isinstance(inputs_format, dict):
+			inputs_format = {}
 		profile = self._derive_node_profile(ext_data)
 
 		ext_desc = ""
@@ -260,6 +270,10 @@ class NodePlanner(Coder):
 			f"- ext_data.type: {profile['extType']}",
 			f"- ext_data.desc: {ext_desc or 'n/a'}",
 		]
+		if profile["extType"] == "user_input":
+			ctx_lines.append(
+				f"- inputs_format: {json.dumps(inputs_format, ensure_ascii=False) if inputs_format else 'n/a'}"
+			)
 		if service_name_val:
 			ctx_lines.append(f"- ext_data.service_name: {service_name_val}")
 		if skill_name_val:
@@ -287,6 +301,7 @@ class NodePlanner(Coder):
 			"Generate a BRIEF markdown implementation guide for this SINGLE node only.\n"
 			"Goal: recommend concrete tools/functions and a short implementation strategy.\n"
 			"Input sources to use: requirement analysis + node desc + ext_data-derived node type.\n"
+			"If ext_data.type='user_input' and inputs_format is provided in node context, align process_input validation/parsing to that inputs_format schema.\n"
 			"Node type must align with workflow reference contracts.\n"
 			"Keep output concise and practical (MVP-first, no extra features).\n\n"
 			"Mandatory output sections:\n"
