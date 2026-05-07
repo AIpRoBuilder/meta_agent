@@ -19,6 +19,8 @@ setup(
 		exclude=(
 			"example",
 			"example.*",
+			"example_agent",
+			"example_agent.*",
 			"__pycache__",
 			"__pycache__.*",
 			"tests",
@@ -26,6 +28,16 @@ setup(
 		)
 	),
 	include_package_data=True,
+	package_data={
+		"meta_agent": [
+			"architect/prompts/*.md",
+			"auditor/prompts/*.md",
+			"demand_analyzer/prompts/*.md",
+			"worker/prompts/*.md",
+			"library/*.md",
+			"library/*.html",
+		],
+	},
 	install_requires=[
 		"croniter>=2.0.0",
 	],
