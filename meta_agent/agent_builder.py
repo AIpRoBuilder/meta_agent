@@ -73,9 +73,10 @@ class _NodeGenerateElement(GElement):
                     out_dir,
                     amendment,
                     graph_plan_path=self.builder.graph_plan_path or "",
+                    requirement_md_path=self.builder.requirement_md_path or "",
                     current_node_name=self.node_name,
                     language=self.language,
-                    temperature=0.2,
+                    temperature=self.temperature,
                 )
 
             self.builder.node_location_map[self.node_name] = file_path
@@ -87,12 +88,23 @@ class _NodeGenerateElement(GElement):
 class AgentBuilder:
     """Build AG-UI workflow artifacts with generation, auditing, and progress display."""
 
-    def __init__(self, api_key: str, model: str = "deepseek-chat", provider: str = "deepseek", root_dir: str = "./example", frontend_style_prompt: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "deepseek-chat",
+        provider: str = "deepseek",
+        root_dir: str = "./example",
+        frontend_style_prompt: Optional[str] = None,
+        services_root_path: Optional[str] = None,
+        skills_root_path: Optional[str] = None,
+    ):
         self.api_key = api_key
         self.model = model
         self.provider = provider
         self.root_dir = root_dir
         self.frontend_style_prompt = frontend_style_prompt.strip() if frontend_style_prompt else None
+        self.services_root_path = services_root_path.strip() if isinstance(services_root_path, str) else ""
+        self.skills_root_path = skills_root_path.strip() if isinstance(skills_root_path, str) else ""
         os.makedirs(self.root_dir, exist_ok=True)
 
         self._progress_total = 0
@@ -104,7 +116,13 @@ class AgentBuilder:
         self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
 
         # initialize a shared GraphPlanner and auditors for later validation steps
-        self.planner = GraphPlanner(api_key=self.api_key, model=self.model, provider=self.provider)
+        self.planner = GraphPlanner(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            services_root_path=self.services_root_path,
+            skills_root_path=self.skills_root_path,
+        )
         self.node_planner = NodePlanner(api_key=self.api_key, model=self.model, provider=self.provider)
         self.main_writer = PromptMainFileCoder(api_key=self.api_key, model=self.model, provider=self.provider)
         self.frontend_writer = PromptFrontendCoder(api_key=self.api_key, model=self.model, provider=self.provider)
@@ -119,18 +137,61 @@ class AgentBuilder:
     def _make_node_coder(self, node_meta: Any) -> PromptNodeFileCoderBase:
         ext_data = node_meta.ext_data if node_meta and hasattr(node_meta, 'ext_data') else None
         if is_service_ext_data(ext_data):
-            return WorkflowServiceNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+            return WorkflowServiceNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
+                services_root_path=self.services_root_path,
+            )
         if is_skill_ext_data(ext_data):
-            return WorkflowSkillNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider, root_dir_path=self.root_dir)
+            return WorkflowSkillNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
+                skills_root_path=self.skills_root_path,
+            )
         if is_none_ext_data(ext_data):
-            return WorkflowOperationNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+            return WorkflowOperationNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
+            )
         if is_chat_ext_data(ext_data):
-            return WorkflowChatNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+            return WorkflowChatNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
+            )
         if is_file_ext_data(ext_data):
-            return WorkflowFileNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+            return WorkflowFileNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
+            )
         if is_image_ext_data(ext_data):
-            return WorkflowImageNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider)
-        return WorkflowStepNodeCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+            return WorkflowImageNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
+            )
+        return WorkflowStepNodeCoder(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            root_dir_path=self.root_dir,
+        )
+
+    def _set_services_root_path(self, services_root: Optional[str]) -> None:
+        if services_root is None:
+            return
+        self.services_root_path = str(services_root).strip()
+        self.planner.services_root_path = self.services_root_path
 
     def _start_progress(self, total_steps: int) -> None:
         self._progress_total = max(1, total_steps)
@@ -166,7 +227,14 @@ class AgentBuilder:
         self.requirement_md_path = out_path
         return out_path
 
-    def plan_graph(self, requirement_md_path: Optional[str] = None, graph_plan_filename: str = "graph_plan.json", temperature: float = 0.2) -> str:
+    def plan_graph(
+        self,
+        requirement_md_path: Optional[str] = None,
+        graph_plan_filename: str = "graph_plan.json",
+        temperature: float = 0.35,
+        services_root: Optional[str] = None,
+    ) -> str:
+        self._set_services_root_path(services_root)
         if requirement_md_path:
             self.requirement_md_path = requirement_md_path
         if not self.requirement_md_path:
@@ -183,8 +251,40 @@ class AgentBuilder:
                 print("Graph plan audit passed.")
                 break
             amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-            print("Graph audit failed. Applying amendment...")
+            print(f"Graph audit failed. Applying amendment {amendment}...")
             self.planner.amend_file_with_feedback(self.graph_plan_path, amendment, temperature=temperature)
+        self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
+        return self.graph_plan_path
+
+    def amend_graph(
+        self,
+        amendment: str,
+        graph_plan_path: Optional[str] = None,
+        temperature: float = 0.35,
+        services_root: Optional[str] = None,
+    ) -> str:
+        self._set_services_root_path(services_root)
+        if graph_plan_path:
+            self.graph_plan_path = graph_plan_path
+        if not self.graph_plan_path:
+            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
+        if not isinstance(amendment, str) or not amendment.strip():
+            raise ValueError("amendment must be a non-empty string.")
+
+        while True:
+            self.planner.amend_file_with_feedback(
+                self.graph_plan_path,
+                amendment,
+                temperature=temperature,
+            )
+            self.planned_graph = Graph(self.graph_plan_path)
+            ok, violations = self.graph_auditor.audit_graph_json(self.planned_graph)
+            if ok:
+                print("Graph amendment audit passed.")
+                break
+            amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+            print("Graph amendment audit failed. Applying amendment...")
+
         self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
         return self.graph_plan_path
 
@@ -193,7 +293,8 @@ class AgentBuilder:
         graph_plan_path: Optional[str] = None,
         requirement_md_path: Optional[str] = None,
         language: str = "python",
-        temperature: float = 0.1,
+        temperature: float = 0.35,
+        services_root: Optional[str] = None,
     ) -> List[str]:
         """Generate code for every node in the planned graph.
 
@@ -204,6 +305,7 @@ class AgentBuilder:
 
         Returns a list of all generated file paths as before.
         """
+        self._set_services_root_path(services_root)
         if graph_plan_path:
             self.graph_plan_path = graph_plan_path
         if requirement_md_path:
@@ -247,7 +349,7 @@ class AgentBuilder:
         requirement_md_path: str,
         graph_plan_path: str,
         output_dirname: str = "node_docs",
-        temperature: float = 0.0,
+        temperature: float = 0.2,
     ) -> List[str]:
         """Generate one markdown planning doc per node using NodePlanner."""
 
@@ -263,6 +365,77 @@ class AgentBuilder:
         self.node_docs_dir = output_dir
         self.node_doc_paths = [str(path) for path in node_doc_paths]
         return self.node_doc_paths
+
+    def generate_node_html(
+        self,
+        requirement_md_path: str,
+        graph_plan_path: str,
+        output_dirname: str = "node_ui",
+        temperature: float = 0.3,
+    ) -> List[str]:
+        """Generate one HTML interaction file per node using NodePlanner."""
+
+        output_dir = os.path.join(self.root_dir, output_dirname)
+        print(f"Generating per-node HTML UIs -> {output_dir}")
+        node_html_paths = self.node_planner.plan_each_ui_from_files(
+            requirement_md_path=requirement_md_path,
+            graph_plan_json_path=graph_plan_path,
+            output_dir=output_dir,
+            overwrite=True,
+            temperature=temperature,
+        )
+        self.node_html_dir = output_dir
+        self.node_html_paths = [str(path) for path in node_html_paths]
+        return self.node_html_paths
+
+    def amend_node_ui(
+        self,
+        node_name: str,
+        amendment: str,
+        existing_html_path: Optional[str] = None,
+        requirement_md_path: Optional[str] = None,
+        graph_plan_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 12000,
+        overwrite: bool = True,
+    ) -> str:
+        """Amend a single node UI HTML file using file-based planner wrapper."""
+        if not isinstance(node_name, str) or not node_name.strip():
+            raise ValueError("node_name must be a non-empty string.")
+        if not isinstance(amendment, str) or not amendment.strip():
+            raise ValueError("amendment must be a non-empty string.")
+
+        if requirement_md_path:
+            self.requirement_md_path = requirement_md_path
+        if graph_plan_path:
+            self.graph_plan_path = graph_plan_path
+
+        if not self.requirement_md_path:
+            raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
+        if not self.graph_plan_path:
+            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
+
+        target_html_path = existing_html_path
+        if target_html_path is None:
+            target_html_path = os.path.join(self.root_dir, "node_ui", f"{node_name}.html")
+
+        print(f"Amending node UI '{node_name}' -> {target_html_path}")
+        amended_path = self.node_planner.amend_node_ui_from_files(
+            node_name=node_name,
+            user_prompt=amendment,
+            existing_html_path=target_html_path,
+            requirement_md_path=self.requirement_md_path,
+            graph_plan_json_path=self.graph_plan_path,
+            output_path=output_path,
+            overwrite=overwrite,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        final_path = str(amended_path)
+        self.last_amended_node_ui_path = final_path
+        return final_path
 
     def _build_steps_meta(self) -> List[Dict[str, Any]]:
         """Build step metadata for frontend generation from planned graph."""
@@ -319,7 +492,7 @@ class AgentBuilder:
                     "extData": {
                         "type": ext_type,
                         "desc": ext_desc,
-                        "inputs_format": normalized_inputs_format if ext_type == "user_input" else {},
+                        "inputs_format": normalized_inputs_format if ext_type in ("user_input", "chat_input", "skill") else {},
                     },
                 }
             )
@@ -328,8 +501,9 @@ class AgentBuilder:
     def generate_frontend(
         self,
         output_filename: str = "frontend.html",
-        temperature: float = 0.0,
+        temperature: float = 0.3,
         frontend_style_prompt: Optional[str] = None,
+        context_base_dir: Optional[str] = None,
         run_all_cron_endpoint: Optional[str] = "/api/run-all-cron",
     ) -> str:
         """Generate and audit frontend.html."""
@@ -346,6 +520,7 @@ class AgentBuilder:
         self.frontend_writer.write_frontend_html(
             steps_meta=steps_meta,
             output_path=frontend_path,
+            context_base_dir=context_base_dir,
             run_step_endpoint="/api/run-step",
             run_all_cron_endpoint=run_all_cron_endpoint,
             reset_session_endpoint="/api/reset-session",
@@ -520,9 +695,10 @@ class AgentBuilder:
                         target_path,
                         detail,
                         graph_plan_path=self.graph_plan_path or "",
+                        requirement_md_path=self.requirement_md_path or "",
                         current_node_name=current_node_name,
                         language="python",
-                        temperature=0.2,
+                        temperature=0.3,
                     )
                 except Exception as e:
                     print(f"Failed to amend {fname}: {e}")
@@ -534,7 +710,9 @@ class AgentBuilder:
         requirement_file: Optional[str] = None,
         test_after_generation: bool = True,
         generate_node_docs: bool = True,
+        generate_node_html: bool = True,
         frontend_style_prompt: Optional[str] = None,
+        context_base_dir: Optional[str] = None,
         crontab_expression: Optional[str] = None,
         run_all_cron_endpoint: Optional[str] = "/api/run-all-cron",
     ) -> None:
@@ -545,12 +723,16 @@ class AgentBuilder:
             requirement_file: Path to an existing requirement file (takes precedence).
             test_after_generation: Whether to test generated main.py after generation.
             generate_node_docs: Whether to generate per-node markdown planning docs.
+            generate_node_html: Whether to generate per-node HTML interaction files for node writing context.
             frontend_style_prompt: Optional style guidance for generated frontend.html.
+            context_base_dir: Optional base directory for loading graph_plan.json and node_ui/*.html used as frontend generation context.
             crontab_expression: Optional cron expression; when set, generated main.py should include /api/run-all-cron using this preset schedule.
             run_all_cron_endpoint: Optional frontend endpoint path for cron streaming; pass None to disable cron controls in generated frontend.
         """
         total_steps = 5
         if generate_node_docs:
+            total_steps += 1
+        if generate_node_html:
             total_steps += 1
         if test_after_generation:
             total_steps += 1
@@ -574,6 +756,15 @@ class AgentBuilder:
             )
             self._advance_progress("Per-node markdown plans generated")
 
+        if generate_node_html:
+            self.generate_node_html(
+                requirement_md_path=req_path,
+                graph_plan_path=self.graph_plan_path,
+                output_dirname="node_ui",
+                temperature=0.0,
+            )
+            self._advance_progress("Per-node HTML interaction files generated")
+
         print("Starting node generation and audit...")
         self.generate_nodes(language="python", temperature=0.0)
         print("All nodes generated and audited successfully.")
@@ -585,6 +776,7 @@ class AgentBuilder:
             output_filename="frontend.html",
             temperature=0.0,
             frontend_style_prompt=self.frontend_style_prompt,
+            context_base_dir=context_base_dir,
             run_all_cron_endpoint=effective_run_all_cron_endpoint,
         )
         self._advance_progress("frontend.html generated and audited")
@@ -617,6 +809,8 @@ class AgentBuilder:
         print(f"- graph_plan_path.json: {self.graph_plan_path}")
         if generate_node_docs:
             print(f"- node_docs/: {getattr(self, 'node_docs_dir', '')}")
+        if generate_node_html:
+            print(f"- node_ui/: {getattr(self, 'node_html_dir', '')}")
         print(f"- frontend.html: {self.frontend_output_path}")
         print(f"- main.py: {self.main_output_path}")
 

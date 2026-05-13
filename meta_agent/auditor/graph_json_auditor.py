@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Set
 
-from architect.graph import Graph
-from auditor.base_json_auditor import BaseJsonAuditor
-from auditor.data import JsonRuleViolation
+from meta_agent.architect.graph import Graph
+from meta_agent.auditor.base_json_auditor import BaseJsonAuditor
+from meta_agent.auditor.data import JsonRuleViolation
 
 
 class GraphJsonAuditor(BaseJsonAuditor):

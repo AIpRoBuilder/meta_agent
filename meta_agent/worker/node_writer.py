@@ -1,20 +1,27 @@
 import sys
 import json
 import ast
+import importlib.util
 import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-# Ensure repository root is on sys.path when run as a script
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+# Resolve package root consistently for both source checkout and pip-installed layouts.
+_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
+if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
+    ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
+else:
+    ROOT_DIR = _DEFAULT_PACKAGE_ROOT
 
-from llm_client.coder import Coder
-from context_builder.context import Context, GraphContextBuilder
-from architect.graph import Graph, NodeMeta
-from tools.file_tools import compile_node_file_and_get_derived_keys
+if str(ROOT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR.parent))
+
+from meta_agent.llm_client.coder import Coder
+from meta_agent.context_builder.context import Context, GraphContextBuilder
+from meta_agent.architect.graph import Graph, NodeMeta
+from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
 
 
 def grep_ext_data(node_spec: Mapping) -> Any:
@@ -181,6 +188,67 @@ def _read_node_markdown_reference(
         if candidate.is_file():
             return candidate.read_text(encoding="utf-8").strip()
     return ""
+
+
+def _read_node_html_reference(
+    node_name: str,
+    output_or_code_path: Path,
+    *,
+    requirement_md_path: Path | None = None,
+    root_dir_path: str = "",
+) -> str:
+    # Read generated node HTML reference if available.
+
+    # Search order (first existing file is used):
+    # 1) <requirement_dir>/node_ui/<node_name>.html
+    # 2) <requirement_dir>/node_html/<node_name>.html
+    # 3) <requirement_dir>/<node_name>.html
+    # 4) <output_parent>/node_ui/<node_name>.html
+    # 5) <output_parent>/node_html/<node_name>.html
+    # 6) <output_parent>/<node_name>.html
+    # 7) <root_dir>/node_ui/<node_name>.html
+    # 8) <root_dir>/node_html/<node_name>.html
+
+    filename = f"{node_name}.html"
+    output_parent = output_or_code_path.expanduser().resolve().parent
+
+    candidates: list[Path] = []
+
+    if requirement_md_path:
+        requirement_dir = requirement_md_path.expanduser().resolve().parent
+        candidates.extend(
+            [
+                requirement_dir / "node_ui" / filename,
+                requirement_dir / "node_html" / filename,
+                requirement_dir / filename,
+            ]
+        )
+
+    candidates.extend(
+        [
+            output_parent / "node_ui" / filename,
+            output_parent / "node_html" / filename,
+            output_parent / filename,
+        ]
+    )
+
+    if root_dir_path:
+        root_dir = Path(root_dir_path).expanduser().resolve()
+        candidates.extend(
+            [
+                root_dir / "node_ui" / filename,
+                root_dir / "node_html" / filename,
+            ]
+        )
+
+    visited: set[Path] = set()
+    for candidate in candidates:
+        if candidate in visited:
+            continue
+        visited.add(candidate)
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8").strip()
+    return ""
     
 
 @dataclass
@@ -262,12 +330,23 @@ class PromptNodeFileCoderBase(Coder):
                 normalized[field_name] = field_type
         return json.dumps(normalized, ensure_ascii=False) if normalized else "none"
 
+    @staticmethod
+    def _has_default_config_audit_rule(amendment: str) -> bool:
+        if not amendment:
+            return False
+        text = amendment.lower()
+        return (
+            "dependency_results_missing_dependency_keys" in text
+            or "session_state_ancestor_key_invalid" in text
+        )
+
     def _build_requirement_prompt(
         self,
         node_name: str,
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
+        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -293,7 +372,9 @@ class PromptNodeFileCoderBase(Coder):
             "State routing policy (authoritative):\n"
             "- If a value should be shared globally or reused across non-immediate downstream steps, store/update it in session_state.\n"
             "- If a value is only intended for downstream child-step passing, put it in StepRunOutput.derived.\n"
-            "- Do not store child-step-only transit values in session_state unless long-lived/global reuse is explicitly required.\n\n"
+            "- Do not store child-step-only transit values in session_state unless long-lived/global reuse is explicitly required.\n"
+            "- For values not found in session_state and dependency_results[dep].derived, apply safe fallback handling with explicit validation.\n"
+            "- If a required value is still missing/invalid after fallback, return an explicit validation error.\n\n"
         )
 
         user_prompt = (
@@ -316,12 +397,18 @@ class PromptNodeFileCoderBase(Coder):
 
         ext_data = node_meta.ext_data if isinstance(node_meta.ext_data, Mapping) else {}
         ext_type = str(ext_data.get("type", "none")).strip().lower()
-        if ext_type == "user_input" and inputs_format_text != "none":
+        if ext_type in ("user_input", "chat_input", "skill") and inputs_format_text != "none":
+            handler_map = {
+                "user_input": ("user_input", "process_input"),
+                "chat_input": ("chat_input", "process_chat / build_user_prompt"),
+                "skill": ("process_operation", "process_skill / run"),
+            }
+            _, handler_fn = handler_map.get(ext_type, (ext_type, "process_input"))
             user_prompt += (
-                "User-input schema constraints (authoritative):\n"
-                "- This node is ext_data.type='user_input' with explicit inputs_format.\n"
+                "Input schema constraints (authoritative):\n"
+                f"- This node is ext_data.type='{ext_type}' with explicit inputs_format.\n"
                 f"- inputs_format: {inputs_format_text}\n"
-                "- In process_input, parse/validate user_input against this schema and produce structured derived fields using the same keys when reasonable.\n\n"
+                f"- In {handler_fn}, parse/validate user_input against this schema and produce structured derived fields using the same keys when reasonable.\n\n"
             )
 
         if self.reference_excerpt_text.strip():
@@ -336,6 +423,14 @@ class PromptNodeFileCoderBase(Coder):
                 f"{node_markdown_reference}\n\n"
             )
 
+        if node_html_reference:
+            user_prompt += (
+                "Node-specific HTML interaction reference (authoritative for user interaction expectations):\n"
+                "- Use this as context for expected user-facing input/output shape and UI intent.\n"
+                "- Keep node backend logic aligned with the referenced interaction model where applicable.\n"
+                f"{node_html_reference}\n\n"
+            )
+
         self.context_text = ""
         self.ancestor_session_state_context_text = ""
 
@@ -348,6 +443,8 @@ class PromptNodeFileCoderBase(Coder):
                 "\n\nDependency derived keys from existing dependency files "
                 "(parsed via compile_node_file_and_get_derived_keys, authoritative):\n"
                 f"{dependency_context}\n"
+                "- Strict rule: any key read from dependency_results[dep].derived must come only from the keys listed in this dependency_context.\n"
+                "- Never access or invent dependency derived keys outside this dependency_context.\n"
             )
 
         ancestor_session_state_context = _build_ancestor_session_state_context(
@@ -360,8 +457,9 @@ class PromptNodeFileCoderBase(Coder):
                 "\n\nAncestor session_state keys from node files "
                 "(via get_ancestor_session_state_keys, authoritative):\n"
                 f"{ancestor_session_state_context}\n"
-                "- Only read/write session_state keys that are required by the node logic and consistent with this context.\n"
-                "- Avoid inventing unrelated session_state key names; use safe fallback handling when keys may be absent.\n"
+                "- Strict rule: any key read/write in session_state must come only from this ancestor_session_state_context.\n"
+                "- Never read/write or invent session_state keys outside this ancestor_session_state_context.\n"
+                "- For missing allowed keys, use safe fallback handling and explicit validation errors when still unresolved.\n"
             )
 
         if graph_plan_path:
@@ -376,7 +474,7 @@ class PromptNodeFileCoderBase(Coder):
                     "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
                     "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
                     "- In process_input/process_chat/process_images_prompts/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
-                    "- Do not initialize required upstream fields with hardcoded empty defaults (for example '', [], {}); instead read from dependency_results and fail fast with a clear error when required values are missing.\n"
+                    "- First resolve required values from dependency_results/session_state; if still unresolved, use safe fallback handling and then validate/fail clearly when still missing.\n"
                     "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
                     f"{context_text}"
                 )
@@ -412,6 +510,12 @@ class PromptNodeFileCoderBase(Coder):
             requirement_md_path=requirement_path,
             output_path=Path(output_path),
         )
+        node_html_reference = _read_node_html_reference(
+            node_name=node_name,
+            output_or_code_path=Path(output_path),
+            requirement_md_path=requirement_path,
+            root_dir_path=self.root_dir_path,
+        )
 
         language_clean = language.strip().lower() if language else "python"
         target_ext = self._language_extension(language_clean)
@@ -421,6 +525,7 @@ class PromptNodeFileCoderBase(Coder):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
+            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -451,7 +556,8 @@ class PromptNodeFileCoderBase(Coder):
             "State routing policy (authoritative):\n"
             "- If a value should be shared globally or reused across non-immediate downstream steps, store/update it in session_state.\n"
             "- If a value is only intended for downstream child-step passing, put it in StepRunOutput.derived.\n"
-            "- Do not store child-step-only transit values in session_state unless long-lived/global reuse is explicitly required.\n\n"
+            "- Do not store child-step-only transit values in session_state unless long-lived/global reuse is explicitly required.\n"
+            "- If a required value is missing/invalid after resolution attempts, return an explicit validation error.\n\n"
         )
 
         user_prompt = (
@@ -470,6 +576,14 @@ class PromptNodeFileCoderBase(Coder):
             f"{amendment}\n"
         )
 
+        if self._has_default_config_audit_rule(amendment):
+            user_prompt += (
+                "\nAudit remediation rule (authoritative):\n"
+                "- If audit reports dependency_results_missing_dependency_keys or session_state_ancestor_key_invalid, treat missing variables as potential config variables.\n"
+                "- Add/ensure class-level DEFAULT_CONFIG = { ... } in the node file with placeholders for those missing keys.\n"
+                "- If the value is still missing/invalid after resolution attempts, return an explicit validation error.\n"
+            )
+
         return user_prompt
 
     def amend_code_with_feedback(
@@ -478,14 +592,16 @@ class PromptNodeFileCoderBase(Coder):
         amendment: str,
         *,
         graph_plan_path: str = "",
+        requirement_md_path: str = "",
         current_node_name: str = "",
         language: str = "python",
         overwrite: bool = True,
-        temperature: float = 0.2,
+        temperature: float = 0.3,
         max_tokens: int = 20000,
     ) -> Path:
         language_clean = language.strip().lower() if language else "python"
         target_path = Path(code_path)
+        inferred_node_name = current_node_name.strip() if current_node_name else target_path.stem
         target_ext = self._language_extension(language_clean)
         if target_path.suffix.lower() != target_ext:
             target_path = target_path.with_suffix(target_ext)
@@ -503,6 +619,22 @@ class PromptNodeFileCoderBase(Coder):
             contract_text=contract_text,
         )
 
+        requirement_path = Path(requirement_md_path).expanduser() if requirement_md_path else None
+        if requirement_path and not requirement_path.exists():
+            requirement_path = None
+        node_html_reference = _read_node_html_reference(
+            node_name=inferred_node_name,
+            output_or_code_path=target_path,
+            requirement_md_path=requirement_path,
+            root_dir_path=self.root_dir_path,
+        )
+        if node_html_reference:
+            user_prompt += (
+                "\n\nNode-specific HTML interaction reference (authoritative for user interaction expectations):\n"
+                "- Keep amendments consistent with this interaction context where applicable.\n"
+                f"{node_html_reference}\n"
+            )
+
         dependency_names = _extract_declared_dependencies_from_code(original_code)
         dependency_context = _build_dependency_derived_context(
             node_dir=target_path.parent.resolve(),
@@ -515,19 +647,24 @@ class PromptNodeFileCoderBase(Coder):
                 f"{dependency_context}\n"
             )
 
+        if graph_plan_path:
+            context_builder = GraphContextBuilder(root_path=self.root_dir_path, language=language_clean)
+            context_builder.search(current_node_name=inferred_node_name, graph_plan_path=graph_plan_path)
+            self.context_text = context_builder.build(limit=5) or ""
+
         if self.context_text.strip():
             user_prompt += (
                 "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                 "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
                 "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
-                "- In process_input/process_chat/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
-                "- Do not initialize required upstream fields with hardcoded empty defaults (for example '', [], {}); instead read from dependency_results and fail fast with a clear error when required values are missing.\n"
+                "- In process_input/process_chat/process_images_prompts/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                "- Strict rule: node's get keys from derived must strictly come from dependency_context; do not access derived keys outside dependency_context.\n"
+                "- First resolve required values from dependency_results/session_state; if still unresolved, use safe fallback handling and then validate/fail clearly when still missing.\n"
                 "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
                 f"{self.context_text}\n"
             )
 
-        if not self.ancestor_session_state_context_text.strip():
-            inferred_node_name = current_node_name.strip() if current_node_name else target_path.stem
+        if graph_plan_path:
             self.ancestor_session_state_context_text = _build_ancestor_session_state_context(
                 graph_plan_path=graph_plan_path,
                 node_name=inferred_node_name,
@@ -538,7 +675,8 @@ class PromptNodeFileCoderBase(Coder):
                 "\n\nAncestor session_state keys from node files "
                 "(via get_ancestor_session_state_keys, authoritative):\n"
                 f"{self.ancestor_session_state_context_text}\n"
-                "- Keep session_state usage aligned with these established keys unless amendment explicitly requires a new key.\n"
+                "- Strict rule: node's get keys from session_state must strictly come from ancestor_session_state_context.\n"
+                "- Never read/write session_state keys outside ancestor_session_state_context unless amendment explicitly adds and justifies a new key.\n"
             )
 
         return self.code_to_file(
@@ -569,7 +707,7 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
             "If SERVICES is non-empty, call self.use_service(session_state) in process_operation before service-dependent logic.\n"
             "If process_operation needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from meta_agent.ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
-            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
+            "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
@@ -595,7 +733,7 @@ class WorkflowChatNodeCoder(PromptNodeFileCoderBase):
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Use dependency_results and user_input together as context for chat responses.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
-            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
+            "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
@@ -619,6 +757,7 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
+        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -630,6 +769,7 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
+            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -690,7 +830,7 @@ class WorkflowImageNodeCoder(PromptNodeFileCoderBase):
             "image_refs is a list of uploaded file/image references and may contain multiple files.\n"
             "Use dependency_results and user-provided image/file list together as context for vision-language responses.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
-            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
+            "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
@@ -718,7 +858,7 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
             "If SERVICES is non-empty, call self.use_service(session_state) in process_input before service-dependent logic.\n"
             "If process_input needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from meta_agent.ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
-            "Do not use placeholder defaults for required upstream inputs (for example '', [], {}); load them from dependency_results and return explicit validation errors when missing.\n"
+            "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n\n"
@@ -736,8 +876,13 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
 class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
     node_base_class: str = "WorkflowServiceNode"
     default_services_dirname: str = "agent_services"
+    services_root_path: str = ""
 
     def _default_services_root(self) -> Path:
+        if self.services_root_path:
+            configured = Path(self.services_root_path).expanduser().resolve()
+            if configured.is_dir():
+                return configured
         if self.root_dir_path:
             root_dir = Path(self.root_dir_path).expanduser().resolve()
             direct = root_dir / self.default_services_dirname
@@ -810,6 +955,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
+        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -821,6 +967,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
+            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -957,8 +1104,13 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
 class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
     node_base_class: str = "WorkflowSkillNode"
     default_skills_dirname: str = "skills"
+    skills_root_path: str = ""
 
     def _default_skills_root(self) -> Path:
+        if self.skills_root_path:
+            configured = Path(self.skills_root_path).expanduser().resolve()
+            if configured.is_dir():
+                return configured
         if self.root_dir_path:
             root_dir = Path(self.root_dir_path).expanduser().resolve()
             direct = root_dir / self.default_skills_dirname
@@ -1000,6 +1152,7 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
+        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -1011,6 +1164,7 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
+            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -1056,8 +1210,9 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
                 "- Subclass WorkflowSkillNode.",
                 "- Set SKILL_DIR to the exact skill directory path shown above.",
                 "- Set SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md') so the base class parses the skill doc on init.",
-                "- Implement process_operation(dependency_results, session_state) -> StepRunOutput.",
+                "- Implement process_operation(user_input, dependency_results, session_state) -> StepRunOutput.",
                 "- In process_operation, invoke the skill using the pattern described in the ## Using section; use self.skill_using and self.skill_examples for inline reference if needed.",
+                "- Use user_input when present; keep robust fallback behavior if user_input is empty.",
                 "- Read upstream values from dependency_results[step_id].derived as needed.",
                 "- Do not hardcode skill logic that contradicts skill.md ## Using; follow it exactly.",
                 "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
@@ -1072,14 +1227,15 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
             "Set SKILL_DIR to the absolute path of the chosen skill directory.\n"
             "Set SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md') — the base class reads and parses it on __init__.\n"
             "After __init__, self.skill_description, self.skill_using, self.skill_examples are available as strings parsed from skill.md.\n"
-            "Implement skill invocation in process_operation(dependency_results, session_state) and return StepRunOutput.\n"
+            "Implement skill invocation in process_operation(user_input, dependency_results, session_state) and return StepRunOutput.\n"
+            "Use user_input when meaningful for the skill behavior; tolerate empty user_input when the step does not require it.\n"
             "Invoke the skill according to the ## Using section of skill.md; do not invent an invocation pattern.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state when needed.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
             "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
-            "This node should not require direct user input.\n\n"
+            "This node can consume direct user input when the workflow step is configured with inputRequired=true.\n\n"
         )
 
     def get_feedback_contract_text(self) -> str:

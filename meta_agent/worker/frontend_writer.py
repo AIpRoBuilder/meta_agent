@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import sys
 import json
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-# Ensure repository root is importable when executed as a script
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-	sys.path.insert(0, str(ROOT_DIR))
+# Resolve package root consistently for both source checkout and pip-installed layouts.
+_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
+if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
+	ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
+else:
+	ROOT_DIR = _DEFAULT_PACKAGE_ROOT
 
-from llm_client.coder import Coder
+if str(ROOT_DIR.parent) not in sys.path:
+	sys.path.insert(0, str(ROOT_DIR.parent))
+
+from meta_agent.llm_client.coder import Coder
 
 
 @dataclass
@@ -126,8 +133,9 @@ class PromptFrontendCoder(Coder):
 		run_step_endpoint: str,
 		run_all_cron_endpoint: str | None,
 		reset_session_endpoint: str,
-		page_title: str,
 		reference_frontend: str,
+		node_ui_context: str,
+		graph_plan_context: str,
 		frontend_style_prompt: str | None = None,
 	) -> str:
 		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
@@ -143,10 +151,13 @@ class PromptFrontendCoder(Coder):
 			"Use plain HTML + CSS + browser JavaScript (no frameworks).\n"
 			"Use the provided reference HTML style and behavior as the baseline.\n\n"
 			f"{style_block}"
-			f"Page title text: {page_title}\n"
 			f"run-step endpoint: {run_step_endpoint}\n"
 			f"run-all-cron endpoint: {run_all_cron_endpoint or '(disabled)'}\n"
 			f"reset-session endpoint: {reset_session_endpoint}\n\n"
+			"Graph plan JSON context:\n"
+			f"{graph_plan_context}\n\n"
+			"Node UI HTML context loaded from default node_ui folder:\n"
+			f"{node_ui_context}\n\n"
 			"The backend emits SSE AG-UI events, including CUSTOM event name='step_card'.\n"
 			"Each step returns StepRunOutput (input nodes via process_input, file nodes via build_step_output after persistence, chat nodes via build_step_output, image nodes via build_step_output, operation nodes via process_operation) with fields:\n"
 			"- summary: string\n"
@@ -173,9 +184,9 @@ class PromptFrontendCoder(Coder):
 			"10) If step extData.type == 'image' (or nodeKind='image'), treat it as dependency-driven WorkflowImageNode step: do not require or render direct user image/file inputs for this step.\n"
 			"11) For image nodes, submit without manual input payload and rely on image file locations from dependency_results upstream.\n"
 			"12) If only one file is selected in file-upload nodes, still use the same files array shape with one item for consistency.\n"
-			"13) For extData.type == 'user_input': if extData.inputs_format is non-empty, render structured form controls by field type (string/number/boolean), then stringify the collected object (e.g., JSON.stringify) and submit that serialized value as input string; if inputs_format is empty, keep plain text input behavior.\n"
+			"13) For extData.type == 'user_input', 'chat_input', or 'skill': if extData.inputs_format is non-empty, render structured form controls by field type (string/number/boolean), then stringify the collected object (e.g., JSON.stringify) and submit that serialized value as input string; if inputs_format is empty, keep plain text input behavior.\n"
 			"13.0) Concrete example: extData.inputs_format={'email_address':'string','password':'number','remember_me':'boolean'} => render text/number/checkbox controls, build {'email_address':'user@example.com','password':123456,'remember_me':true}, then submit input='{\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}'.\n"
-			"13.1) For extData.type == 'chat_input' (or nodeKind='chat'), keep plain text input submission behavior.\n"
+			"13.1) For extData.type == 'chat_input' (or nodeKind='chat') with no inputs_format, keep plain text input submission behavior.\n"
 			"14) For nodeKind='chat', render labels/status as chat-oriented, keep the same step-card event flow and payload handling, and surface progressive LLM text as chunks arrive over SSE.\n"
 			"15) For nodeKind='file', render labels/status as file-upload/storage oriented; for nodeKind='image', render labels/status as image-analysis oriented; for nodeKind='service', render labels/status as service startup/orchestration oriented; for nodeKind='skill', render labels/status as skill-execution oriented; keep the same step-card event flow and payload handling.\n"
 			"15.1) For auto-run steps, show non-interactive UI (informational text only) and rely on card running indicator/state rather than clickable run controls.\n"
@@ -191,15 +202,52 @@ class PromptFrontendCoder(Coder):
 			f"{reference_frontend}\n"
 		)
 
+	def _load_default_frontend_context(
+		self,
+		output_path: Path,
+		base_dir: str | Path | None = None,
+	) -> tuple[str, str]:
+		"""Load workflow.json and node_ui/*.html from a user-provided or default base dir."""
+
+		if base_dir is None:
+			resolved_base_dir = output_path.parent.resolve()
+		else:
+			resolved_base_dir = Path(base_dir).expanduser().resolve()
+		graph_plan_path = resolved_base_dir / "workflow.json"
+		node_ui_dir = resolved_base_dir / "node_ui"
+
+		if graph_plan_path.exists():
+			graph_plan_context = graph_plan_path.read_text(encoding="utf-8")
+		else:
+			graph_plan_context = f"[missing] workflow.json not found at: {graph_plan_path}"
+
+		node_html_chunks: list[str] = []
+		if node_ui_dir.exists() and node_ui_dir.is_dir():
+			for html_file in sorted(node_ui_dir.glob("*.html")):
+				try:
+					html_text = html_file.read_text(encoding="utf-8")
+				except UnicodeDecodeError:
+					html_text = html_file.read_text(encoding="utf-8", errors="replace")
+				node_html_chunks.append(
+					f"\n=== {html_file.name} ===\n{html_text}\n"
+				)
+
+		if node_html_chunks:
+			node_ui_context = "\n".join(node_html_chunks)
+		else:
+			node_ui_context = f"[missing] no *.html files found under: {node_ui_dir}"
+
+		return node_ui_context, graph_plan_context
+
 	def write_frontend_html(
 		self,
 		*,
 		steps_meta: Sequence[Mapping[str, Any]],
 		output_path: str,
+		context_base_dir: str | None = None,
 		run_step_endpoint: str = "/api/run-step",
 		run_all_cron_endpoint: str | None = "/api/run-all-cron",
 		reset_session_endpoint: str = "/api/reset-session",
-		page_title: str = "AG-UI Lifecycle Events + GPipeline DAG",
 		reference_frontend_path: str | None = None,
 		frontend_style_prompt: str | None = None,
 		overwrite: bool = True,
@@ -222,14 +270,19 @@ class PromptFrontendCoder(Coder):
 		if target_path.suffix.lower() != ".html":
 			target_path = target_path.with_suffix(".html")
 		target_path.parent.mkdir(parents=True, exist_ok=True)
+		node_ui_context, graph_plan_context = self._load_default_frontend_context(
+			target_path,
+			base_dir=context_base_dir,
+		)
 
 		user_prompt = self._build_user_prompt(
 			steps_meta=normalized_steps,
 			run_step_endpoint=run_step_endpoint,
 			run_all_cron_endpoint=run_all_cron_endpoint,
 			reset_session_endpoint=reset_session_endpoint,
-			page_title=page_title,
 			reference_frontend=reference_frontend,
+			node_ui_context=node_ui_context,
+			graph_plan_context=graph_plan_context,
 			frontend_style_prompt=frontend_style_prompt,
 		)
 

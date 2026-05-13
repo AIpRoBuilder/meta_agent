@@ -383,28 +383,53 @@ def _find_method(cls: ast.ClassDef, method_name: str) -> ast.FunctionDef | ast.A
 
 def _extract_derived_keys_from_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
 	keys: set[str] = set()
-	derived_bindings: set[str] = set()
+	derived_bindings: dict[str, set[str]] = {}
+
+	def _assign_binding(name: str, binding_keys: set[str]) -> None:
+		derived_bindings[name] = set(binding_keys)
+
+	def _extract_keys_from_expr(expr: ast.AST) -> set[str]:
+		dict_keys = _dict_literal_string_keys(expr)
+		if dict_keys:
+			return dict_keys
+
+		if isinstance(expr, ast.Name):
+			return set(derived_bindings.get(expr.id, set()))
+
+		return set()
 
 	for node in ast.walk(method):
 		if isinstance(node, ast.Assign):
-			dict_keys = _dict_literal_string_keys(node.value)
+			dict_keys = _extract_keys_from_expr(node.value)
 			for target in node.targets:
-				if isinstance(target, ast.Name) and target.id == "derived":
-					derived_bindings.add("derived")
-					keys.update(dict_keys)
+				if isinstance(target, ast.Name):
+					if dict_keys:
+						_assign_binding(target.id, dict_keys)
+						keys.update(dict_keys)
 
 				if isinstance(target, ast.Subscript):
 					if isinstance(target.value, ast.Name) and target.value.id in derived_bindings:
 						sub_key = target.slice
 						if isinstance(sub_key, ast.Constant) and isinstance(sub_key.value, str):
 							keys.add(sub_key.value)
+							derived_bindings[target.value.id].add(sub_key.value)
+
+		if isinstance(node, ast.AnnAssign):
+			if isinstance(node.target, ast.Name) and node.value is not None:
+				dict_keys = _extract_keys_from_expr(node.value)
+				if dict_keys:
+					_assign_binding(node.target.id, dict_keys)
+					keys.update(dict_keys)
 
 		if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
 			call = node.value
 			if isinstance(call.func, ast.Attribute):
 				if isinstance(call.func.value, ast.Name) and call.func.value.id in derived_bindings:
 					if call.func.attr == "update" and call.args:
-						keys.update(_dict_literal_string_keys(call.args[0]))
+						update_keys = _dict_literal_string_keys(call.args[0])
+						if update_keys:
+							keys.update(update_keys)
+							derived_bindings[call.func.value.id].update(update_keys)
 
 		if isinstance(node, ast.Return) and isinstance(node.value, ast.Call):
 			call = node.value
@@ -418,7 +443,7 @@ def _extract_derived_keys_from_method(method: ast.FunctionDef | ast.AsyncFunctio
 			for kw in call.keywords:
 				if kw.arg != "derived":
 					continue
-				keys.update(_dict_literal_string_keys(kw.value))
+				keys.update(_extract_keys_from_expr(kw.value))
 
 	return keys
 

@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 from typing import List, Union
 
-from auditor.data import RuleViolation
+from meta_agent.auditor.data import RuleViolation
 from meta_agent.tools.file_tools import check_registered_class_imports, find_registered_classes
 
 

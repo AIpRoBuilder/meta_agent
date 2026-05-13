@@ -1,14 +1,21 @@
 import sys
 import json
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-	sys.path.insert(0, str(ROOT_DIR))
+_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
+if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
+	ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
+else:
+	ROOT_DIR = _DEFAULT_PACKAGE_ROOT
 
-from llm_client.coder import Coder
+if str(ROOT_DIR.parent) not in sys.path:
+	sys.path.insert(0, str(ROOT_DIR.parent))
+
+from meta_agent.llm_client.coder import Coder
 
 
 @dataclass
@@ -32,7 +39,7 @@ class GraphPlanner(Coder):
 	]
 
 	Use `{"type": "user_input", ...}` for nodes that require user input.
-	For user_input nodes, include `inputs_format` as an object describing expected
+	For user_input, chat_input, and skill nodes, include `inputs_format` as an object describing expected
 	user input fields and primitive types, e.g.:
 	{"email_address": "string", "password": "number"}. 
 	Use `{"type": "chat_input", ...}` for nodes that should be implemented as WorkflowChatNode.
@@ -49,6 +56,8 @@ class GraphPlanner(Coder):
 	workflow_nodes_reference_path: str = "library/workflow_nodes_reference_excerpts.md"
 	default_services_dirname: str = "agent_services"
 	default_skills_dirname: str = "skills"
+	services_root_path: str = ""
+	skills_root_path: str = ""
 	NONE_EXT_DESC: str = "no need for ext data"
 	SERVICE_EXT_DESC: str = "service bootstrap node"
 	SKILL_EXT_DESC: str = "skill node"
@@ -76,6 +85,10 @@ class GraphPlanner(Coder):
 		super().__post_init__()
 
 	def _default_services_root(self) -> Path:
+		if self.services_root_path:
+			configured = Path(self.services_root_path).expanduser().resolve()
+			if configured.is_dir():
+				return configured
 		root_dir = ROOT_DIR.parent
 		direct = root_dir / self.default_services_dirname
 		if direct.is_dir():
@@ -221,6 +234,10 @@ class GraphPlanner(Coder):
 	# ------------------------------------------------------------------
 
 	def _default_skills_root(self) -> Path:
+		if self.skills_root_path:
+			configured = Path(self.skills_root_path).expanduser().resolve()
+			if configured.is_dir():
+				return configured
 		root_dir = ROOT_DIR.parent
 		direct = root_dir / self.default_skills_dirname
 		if direct.is_dir():
@@ -560,7 +577,6 @@ class GraphPlanner(Coder):
 			skill_name = str(ext_data.get("skill_name", "")).strip()
 			if ext_type == "skill" or skill_name:
 				ext_data["type"] = "skill"
-				node.pop("inputs_format", None)
 				resolved_skill = self._resolve_skill_name(node, available_skills)
 				ext_data["skill_name"] = resolved_skill
 				desc = str(ext_data.get("desc", "")).strip()
@@ -568,6 +584,19 @@ class GraphPlanner(Coder):
 					resolved_skill,
 					skill_descriptions,
 				)
+				# normalize inputs_format for skill nodes
+				raw_inputs_format = node.get("inputs_format", {})
+				normalized_inputs_format: dict[str, str] = {}
+				if isinstance(raw_inputs_format, dict):
+					for key, value in raw_inputs_format.items():
+						input_key = str(key).strip()
+						input_type = str(value).strip().lower()
+						if input_key and input_type:
+							normalized_inputs_format[input_key] = input_type
+				if normalized_inputs_format:
+					node["inputs_format"] = normalized_inputs_format
+				else:
+					node.pop("inputs_format", None)
 				continue
 
 			# ---- service node normalisation ----
@@ -584,7 +613,7 @@ class GraphPlanner(Coder):
 				)
 				continue
 
-			if ext_type == "user_input":
+			if ext_type in ("user_input", "chat_input"):
 				raw_inputs_format = node.get("inputs_format", {})
 				normalized_inputs_format: dict[str, str] = {}
 				if isinstance(raw_inputs_format, dict):
@@ -593,7 +622,10 @@ class GraphPlanner(Coder):
 						input_type = str(value).strip().lower()
 						if input_key and input_type:
 							normalized_inputs_format[input_key] = input_type
-				node["inputs_format"] = normalized_inputs_format
+				if normalized_inputs_format:
+					node["inputs_format"] = normalized_inputs_format
+				else:
+					node.pop("inputs_format", None)
 			else:
 				node.pop("inputs_format", None)
 
@@ -752,8 +784,8 @@ class GraphPlanner(Coder):
 			"- Do not invent node categories outside Step/Operation/Chat/File/Image/Service/Skill capabilities defined in the workflow reference\n"
 			"Schema requirements for each node:\n"
 			"- Required fields: name, type, desc, enable, depends, ext_data\n"
-			"- For nodes where ext_data.type='user_input', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
-			"- Do not include inputs_format for non-user_input nodes\n"
+			"- For nodes where ext_data.type='user_input', 'chat_input', or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
+			"- Do not include inputs_format for nodes other than user_input, chat_input, and skill\n"
 			"- Only include node.services when a node actually uses one or more upstream services\n"
 			"- Do not include services for nodes that do not use services, even if they are downstream of a service node\n"
 			"- When node.services is present, service_name must be selected from service nodes in that node's direct/transitive ancestors\n"
@@ -799,7 +831,7 @@ class GraphPlanner(Coder):
 		amendment: str,
 		*,
 		overwrite: bool = True,
-		temperature: float = 0.05,
+		temperature: float = 0.2,
 		max_tokens: int = 20000,
 	) -> Path:
 		"""Amend an existing graph JSON plan using feedback."""
@@ -826,8 +858,8 @@ class GraphPlanner(Coder):
 			"- WorkflowImageNode has no direct upload handler: if user-uploaded images are needed, create an upstream user_file_input node and set the image node depends on it\n"
 			"- Do not invent node categories outside Step/Operation/Chat/File/Image/Service/Skill capabilities defined in the workflow reference\n"
 			"Preserve the graph schema (top-level nodes list with name, type, desc, depends, ext_data).\n"
-			"For nodes where ext_data.type='user_input', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
-			"Do not include inputs_format for non-user_input nodes.\n"
+			"For nodes where ext_data.type='user_input', 'chat_input', or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
+			"Do not include inputs_format for nodes other than user_input, chat_input, and skill.\n"
 			"Only include node.services when a node actually uses one or more upstream services.\n"
 			"Do not include services for nodes that do not use services, even if they are downstream of a service node.\n"
 			"When node.services is present, service_name must be selected from service nodes in that node's direct/transitive ancestors.\n"

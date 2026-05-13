@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from auditor.base_auditor import BaseAuditor
-from auditor.data import RuleViolation
+from meta_agent.auditor.base_auditor import BaseAuditor
+from meta_agent.auditor.data import RuleViolation
 
 
 class FrontendAuditor(BaseAuditor):

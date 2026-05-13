@@ -9,6 +9,9 @@ Core output contract:
 - Use browser-native APIs only (fetch, EventSource-like SSE parsing via fetch stream, localStorage).
 
 Workflow context:
+- You are provided `graph_plan.json` content as context; use it as authoritative graph/dependency/source-of-truth context.
+- You are provided all node HTML snippets from the default `node_ui/` directory as context; reuse their UX patterns and node-level intent when composing `frontend.html`.
+- Do not require any external `page_title` input variable; choose a sensible static title directly in generated HTML.
 - Backend endpoint for running one step: `POST /api/run-step`.
 - Optional backend endpoint for cron-run stream: `POST /api/run-all-cron`.
 - Backend endpoint for reset/new session init: `POST /api/reset-session`.
@@ -97,5 +100,5 @@ Style requirements:
 - No external UI libraries.
 - No extra pages. Only a minimal spinner animation for the running-circle loading indicator is allowed.
 
-If the user provides a reference frontend example, preserve its event semantics and structure while adapting step metadata and titles from the new prompt.
+Preserve the provided reference frontend event semantics and structure while adapting step metadata and titles from the new prompt and context files.
 If the reference conflicts with explicit requirements above (especially auto-run for non-input steps), explicit requirements take precedence.

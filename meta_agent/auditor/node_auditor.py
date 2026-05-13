@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Dict, List, Set, Optional, Tuple
 from pydaograph import GParam
 
-from auditor.data import RuleViolation
-from auditor.base_auditor import BaseAuditor
-from architect.graph import Graph, NodeMeta
-from tools.file_tools import compile_node_file_and_get_derived_keys
+from meta_agent.auditor.data import RuleViolation
+from meta_agent.auditor.base_auditor import BaseAuditor
+from meta_agent.architect.graph import Graph, NodeMeta
+from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
 
 
 class NodeAuditor(BaseAuditor):
@@ -218,13 +218,16 @@ class NodeAuditor(BaseAuditor):
         step_id_value: ast.expr | None = None
         step_id_lineno = cls.lineno
         for node in cls.body:
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "STEP_ID":
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "STEP_ID":
+                        step_id_value = node.value
+                        step_id_lineno = node.lineno
+                        break
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name) and node.target.id == "STEP_ID":
                     step_id_value = node.value
                     step_id_lineno = node.lineno
-                    break
             if step_id_value is not None:
                 break
 
@@ -409,16 +412,22 @@ class NodeAuditor(BaseAuditor):
         expected: List[str] = list(node_meta.depends) if node_meta.depends else []
 
         # Locate DEPENDENCIES assignment in the class body.
+        # Support both:
+        #   DEPENDENCIES = [...]
+        #   DEPENDENCIES: list[str] = [...]
         deps_value: ast.expr | None = None
         deps_lineno: int = cls.lineno
         for node in cls.body:
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "DEPENDENCIES":
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "DEPENDENCIES":
+                        deps_value = node.value
+                        deps_lineno = node.lineno
+                        break
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name) and node.target.id == "DEPENDENCIES":
                     deps_value = node.value
                     deps_lineno = node.lineno
-                    break
             if deps_value is not None:
                 break
 
@@ -935,7 +944,7 @@ class NodeAuditor(BaseAuditor):
                             rule="dependency_results_derived_key_invalid",
                             detail=(
                                 f"{method_name} uses dependency_results[*].derived['{derived_name}'], "
-                                f"but '{derived_name}' is not declared in any dependency derived keys."
+                                f"but '{derived_name}' is not declared in any dependency derived keys. Do not use derived key '{derived_name}' that are not declared in the dependency."
                             ),
                             lineno=lineno,
                         )
@@ -954,7 +963,7 @@ class NodeAuditor(BaseAuditor):
                         rule="dependency_results_derived_key_invalid",
                         detail=(
                             f"{method_name} uses dependency_results['{dep_name}'].derived['{derived_name}'], "
-                            f"but '{derived_name}' is not declared in {dep_name}'s derived keys."
+                            f"but '{derived_name}' is not declared in {dep_name}'s derived keys. Do not use derived key '{derived_name}' that are not declared in the dependency."
                         ),
                         lineno=lineno,
                     )
@@ -967,6 +976,10 @@ class NodeAuditor(BaseAuditor):
                     if isinstance(target, ast.Name) and target.id == "DEPENDENCIES":
                         values = self._extract_string_list_literal(node.value)
                         return values, node.lineno
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name) and node.target.id == "DEPENDENCIES":
+                    values = self._extract_string_list_literal(node.value)
+                    return values, node.lineno
         return [], cls.lineno
 
     def _extract_string_list_literal(self, expr: ast.expr) -> List[str]:
@@ -1254,7 +1267,7 @@ class NodeAuditor(BaseAuditor):
                         rule="session_state_ancestor_key_invalid",
                         detail=(
                             f"Method '{method.name}' reads session_state['{key_name}'], "
-                            f"but this key is not declared in ancestor nodes."
+                            f"but this key is not declared in ancestor nodes. Do not use session_state key '{key_name}' that are not from ancestors."
                         ),
                         lineno=lineno,
                     )

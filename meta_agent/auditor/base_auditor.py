@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-from auditor.data import RuleViolation
+from meta_agent.auditor.data import RuleViolation
 
 
 class BaseAuditor:

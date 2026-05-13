@@ -5,16 +5,23 @@ from __future__ import annotations
 import sys
 import json
 import re
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-# Ensure repository root is importable when executed as a script
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+# Resolve package root consistently for both source checkout and pip-installed layouts.
+_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
+if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
+    ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
+else:
+    ROOT_DIR = _DEFAULT_PACKAGE_ROOT
 
-from llm_client.coder import Coder
+if str(ROOT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR.parent))
+
+from meta_agent.llm_client.coder import Coder
 
 
 def _format_field_lines(fields: Mapping[str, object]) -> str:

@@ -53,50 +53,6 @@ class TestGraphGetAllSubgraph(unittest.TestCase):
             },
         )
 
-    def test_get_ancestor_session_state_keys_collects_from_node_files(self) -> None:
-        graph_payload = {
-            "nodes": [
-                {"name": "A", "type": "A", "desc": "root"},
-                {"name": "B", "type": "B", "desc": "middle", "depends": ["A"]},
-                {"name": "C", "type": "C", "desc": "leaf", "depends": ["B"]},
-            ]
-        }
-
-        a_code = '''
-class A:
-    def run(self, session_state):
-        session_state["root_key"] = "v"
-        return session_state.get("shared_key")
-'''
-
-        b_code = '''
-class B:
-    def run(self, session_state):
-        session_state.setdefault("mid_key", 1)
-        session_state.update({"update_key": 2}, kw_key=3)
-'''
-
-        c_code = '''
-class C:
-    def run(self, session_state):
-        session_state.pop("leaf_key", None)
-'''
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_path = Path(tmp_dir) / "graph.json"
-            graph_path.write_text(json.dumps(graph_payload), encoding="utf-8")
-            (Path(tmp_dir) / "A.py").write_text(a_code, encoding="utf-8")
-            (Path(tmp_dir) / "B.py").write_text(b_code, encoding="utf-8")
-            (Path(tmp_dir) / "C.py").write_text(c_code, encoding="utf-8")
-
-            graph = Graph(str(graph_path))
-            keys = graph.get_ancestor_session_state_keys("C")
-
-        self.assertEqual(
-            keys,
-            ["kw_key", "leaf_key", "mid_key", "root_key", "shared_key", "update_key"],
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

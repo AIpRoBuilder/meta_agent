@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import json
 import sys
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-# Ensure repository root is importable so we can reach llm_client.coder when executed
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+# Resolve package root consistently for both source checkout and pip-installed layouts.
+_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
+if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
+    ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
+else:
+    ROOT_DIR = _DEFAULT_PACKAGE_ROOT
 
-from llm_client.coder import Coder
+if str(ROOT_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR.parent))
+
+from meta_agent.llm_client.coder import Coder
 
 
 def _stringify_modules(module_names: Optional[Sequence[str]]) -> str:
@@ -83,6 +90,7 @@ class PromptMainFileCoder(Coder):
             "- Import all node classes from the package root named above (for example `from example_agent_output import StepA, StepB`) and do NOT import from `.step_nodes`.",
             "- Do not use relative node imports such as `from . import ...`; use `from <root_package_name> import ...` directly.",
             "- Ensure node imports work when executed as script (`python main.py`) and avoid try/except import blocks.",
+            "- In generated main.py, include `sys.path.insert(0, str(Path(__file__).resolve().parent.parent))` before importing node classes.",
             "- Define app-level constants for pipeline json path, engine cache map, and ordered STEP_CHAIN built from each node's step_meta().",
             "- Implement RunStepInput, ResetSessionInput, and ResetSessionOutput pydantic models with camelCase fields.",
             "- In RunStepInput include: sessionId, stepId, input, and optional file_path.",

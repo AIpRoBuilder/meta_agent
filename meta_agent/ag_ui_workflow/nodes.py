@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import inspect
 import tempfile
 from urllib.request import Request, urlopen
 import uuid
@@ -674,7 +675,7 @@ class WorkflowSkillNode(GNode):
     Subclasses set ``SKILL_DIR`` to the directory containing ``skill.md`` (or
     ``SKILL_MD_PATH`` to point directly at the file).  On instantiation the
     skill's ``## Installation`` block is executed so that the required packages
-    are available.  Subclasses must override :meth:`implement_skill` to call the
+    are available.  Subclasses must override :meth:`process_operation` to call the
     skill and return a :class:`StepRunOutput`.
 
     Parsed sections from the skill document are exposed as:
@@ -707,6 +708,8 @@ class WorkflowSkillNode(GNode):
         super().__init__()
         self.setName(self.STEP_ID)
         self.setWaitForInput(False)
+        self.setInputPrompt(self.PROMPT)
+        self.setInputHandler(self._input_handler)
 
         # Resolve the path to skill.md
         skill_md_path = self._resolve_skill_md_path()
@@ -730,6 +733,11 @@ class WorkflowSkillNode(GNode):
             name=f"skill-install-{self.STEP_ID}",
         )
         self._install_thread.start()
+
+    def _input_handler(self, user_input: str) -> CStatus:
+        session = get_bound_workflow_session()
+        session.pending_inputs[self.STEP_ID] = user_input
+        return CStatus()
 
     # ---------------------------------------------------------------------------
     # Path resolution
@@ -806,6 +814,10 @@ class WorkflowSkillNode(GNode):
     def run(self) -> CStatus:
         session = get_bound_workflow_session()
         self._set_state("running")
+        raw_input = _normalize_step_input(session.pending_inputs.get(self.STEP_ID, ""))
+        if self.INPUT_REQUIRED and not raw_input:
+            self._set_state("awaiting_input")
+            return CStatus(1003, f"input required for step {self.STEP_ID}")
 
         # Wait for background package installation before executing the skill.
         install_status = self._wait_for_installation()
@@ -819,15 +831,24 @@ class WorkflowSkillNode(GNode):
             if dep in session.step_outputs
         }
         try:
-            output = self.process_operation(
-                dependency_results,
-                session.state,
-            )
+            params = inspect.signature(self.process_operation).parameters.values()
+            accepts_user_input = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params) or len(list(params)) >= 3
+            if accepts_user_input:
+                output = self.process_operation(
+                    raw_input,
+                    dependency_results,
+                    session.state,
+                )
+            else:
+                output = self.process_operation(
+                    dependency_results,
+                    session.state,
+                )
             if not isinstance(output, StepRunOutput):
                 self._set_state("failed")
                 return CStatus(
                     1001,
-                    f"step {self.STEP_ID} failed: implement_skill must return StepRunOutput",
+                    f"step {self.STEP_ID} failed: process_operation must return StepRunOutput",
                 )
         except Exception as exc:
             self._set_state("failed")
@@ -854,6 +875,7 @@ class WorkflowSkillNode(GNode):
 
     def process_operation(
         self,
+        user_input: str,
         dependency_results: dict[str, "StepRunOutput"],
         session_state: dict[str, Any],
     ) -> "StepRunOutput":
@@ -873,7 +895,7 @@ class WorkflowSkillNode(GNode):
             A :class:`StepRunOutput` containing the skill result.
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__}.implement_skill() must be implemented by the user.\n"
+            f"{self.__class__.__name__}.process_operation() must be implemented by the user.\n"
             f"Refer to self.skill_using and self.skill_examples for usage guidance.\n"
             f"skill_using:\n{self.skill_using}\n\nskill_examples:\n{self.skill_examples}"
         )

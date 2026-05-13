@@ -1,5 +1,5 @@
 
-from auditor.base_auditor import BaseAuditor
+from meta_agent.auditor.base_auditor import BaseAuditor
 
 
 class BaseJsonAuditor(BaseAuditor):
