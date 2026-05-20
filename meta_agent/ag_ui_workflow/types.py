@@ -19,3 +19,13 @@ class WorkflowStepDefinition(Protocol):
     services: list[dict[str, str]]
     inputRequired: bool
     nodeKind: str
+
+
+class WorkflowConditionDefinition(Protocol):
+    id: str
+    title: str
+    prompt: str
+    dependencies: list[str]
+    branches: list[str]
+    inputRequired: bool
+    nodeKind: str

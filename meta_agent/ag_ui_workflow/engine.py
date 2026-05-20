@@ -18,6 +18,7 @@ from ag_ui.core import (
 from .types import StepRunOutput
 from .session import WorkflowSession, bind_workflow_session, unbind_workflow_session
 from .streaming import to_sse_payload
+from .condition import WorkflowConditionNode
 from .nodes import WorkflowImageNode, WorkflowOperationNode, WorkflowStepNode
 
 

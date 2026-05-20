@@ -33,6 +33,13 @@
     - 若 type 为 "none"，desc 必须为 "no need for ext data"。
     - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"image","desc":"analyze images from dependency file node outputs"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。
+  - meta_type: 字符串，标识节点对应的 pydaograph 元素基类，默认为 "node"，可省略（归一化时会自动填入）。
+    - "node"：默认值，对应 GNode，适用于所有标准节点（user_input、chat_input、user_file_input、image、service、skill、none 等）。
+    - "condition"：对应 GCondition，用于分支路由节点（根据条件选择不同下游执行路径）。
+    - "parallel_condition"：对应 GParallelMultiCondition，并行多条件路由节点。
+    - "serial_condition"：对应 GSerialMultiCondition，串行多条件路由节点。
+    - "cluster"：对应 GCluster，分组/集群容器节点。
+    - 若无特殊路由需求，使用默认值 "node" 或不填写。
   - loop: 整数，默认 1；若未提及循环可省略。
     - 若某节点需要执行多次以更新节点状态，必须显式设置 loop > 1。
     - 示例：
@@ -62,6 +69,7 @@
       "name": "OtherNode",
       "type": "OtherNode",
       "desc": "calculate the result of 2+2",
+      "meta_type": "node",
       "ext_data": {"type": "none", "desc": "no need for ext data"},
       "enable": true
     },

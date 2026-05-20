@@ -1,4 +1,5 @@
 from .engine import WorkflowEngine
+from .condition import WorkflowConditionNode
 from .nodes import (
     WorkflowChatNode,
     WorkflowFileNode,
@@ -11,10 +12,12 @@ from .nodes import (
 from .session import WorkflowSession
 from .services import WorkflowServiceRecord, WorkflowServiceRegistryCenter, workflow_service_registry
 from .streaming import event_to_dict, to_sse_payload
-from .types import StepRunOutput, WorkflowStepDefinition
+from .types import StepRunOutput, WorkflowConditionDefinition, WorkflowStepDefinition
 
 __all__ = [
     "StepRunOutput",
+    "WorkflowConditionDefinition",
+    "WorkflowConditionNode",
     "WorkflowEngine",
     "WorkflowSession",
     "WorkflowServiceRecord",
