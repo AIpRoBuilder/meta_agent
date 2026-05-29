@@ -11,8 +11,9 @@
   - WorkflowFileNode（nodeKind=file）：通用文件上传/存储节点，对应 ext_data.type="user_file_input"。
   - WorkflowImageNode（nodeKind=image）：依赖驱动的视觉/图片分析节点，对应 ext_data.type="image"，不直接承载上传控件。
   - WorkflowServiceNode（nodeKind=service）：服务启动/探测类节点，对应 ext_data.type="service"，且应填写 ext_data.service_name（服务目录名）。
+  - WorkflowSkillNode（nodeKind=skill）：技能封装类节点，对应 ext_data.type="skill"，且应填写 ext_data.skill_name（技能目录名）。
   - 若需求中包含“用户上传图片”，必须先规划 WorkflowFileNode（ext_data.type="user_file_input"）收集文件，再让 WorkflowImageNode 通过 depends 消费其产物。
-  - 不得虚构上述六类之外的节点能力模型。
+  - 不得虚构上述七类之外的节点能力模型。
 - 顶层结构必须是：
   {
     "nodes": [ ... ]
@@ -27,19 +28,13 @@
     - 若节点是通用文件上传/存储，type 使用 "user_file_input"。
     - 若节点是依赖驱动的视觉/图片分析，type 使用 "image"。
     - 若节点是服务启动/探测节点，type 使用 "service"，并填写 service_name（值为默认服务目录中的子目录名）。
+    - 若节点是技能封装节点，type 使用 "skill"，并填写 skill_name（值为默认技能目录中的子目录名）。
     - 若需要用户上传图片，必须单独使用 "user_file_input" 节点承接上传，"image" 节点通过 depends 读取上游文件位置。
-    - 映射关系："user_input" -> WorkflowStepNode；"chat_input" -> WorkflowChatNode；"user_file_input" -> WorkflowFileNode；"image" -> WorkflowImageNode；"service" -> WorkflowServiceNode。
+    - 映射关系："user_input" -> WorkflowStepNode；"chat_input" -> WorkflowChatNode；"user_file_input" -> WorkflowFileNode；"image" -> WorkflowImageNode；"service" -> WorkflowServiceNode；"skill" -> WorkflowSkillNode。
     - 其他示例 type："url"、"file"、"db"、"none"。
     - 若 type 为 "none"，desc 必须为 "no need for ext data"。
-    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"image","desc":"analyze images from dependency file node outputs"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"url","desc":"image generator api"}。
+    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"image","desc":"analyze images from dependency file node outputs"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"skill","skill_name":"baidu_search","desc":"search baidu for query results"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。
-  - meta_type: 字符串，标识节点对应的 pydaograph 元素基类，默认为 "node"，可省略（归一化时会自动填入）。
-    - "node"：默认值，对应 GNode，适用于所有标准节点（user_input、chat_input、user_file_input、image、service、skill、none 等）。
-    - "condition"：对应 GCondition，用于分支路由节点（根据条件选择不同下游执行路径）。
-    - "parallel_condition"：对应 GParallelMultiCondition，并行多条件路由节点。
-    - "serial_condition"：对应 GSerialMultiCondition，串行多条件路由节点。
-    - "cluster"：对应 GCluster，分组/集群容器节点。
-    - 若无特殊路由需求，使用默认值 "node" 或不填写。
   - loop: 整数，默认 1；若未提及循环可省略。
     - 若某节点需要执行多次以更新节点状态，必须显式设置 loop > 1。
     - 示例：
@@ -55,6 +50,7 @@
         "enable": true
       }
   - depends: 数组，依赖节点名称；无依赖时可省略。
+  - inputs_format: 当 ext_data.type 为 "user_input"、"chat_input" 或 "skill" 时可填写，值为对象，描述输入字段及其原始类型（string/number/boolean/object/array）。
   - services: 可选数组；若该节点直接或间接依赖某个 ext_data.type="service" 的节点，则必须填写，但是如果不使用services可以为空列表。
     - 格式固定为：[{"service_name":"","use_desc":""}]。
     - service_name 必须是上游服务节点的 ext_data.service_name。
@@ -69,7 +65,6 @@
       "name": "OtherNode",
       "type": "OtherNode",
       "desc": "calculate the result of 2+2",
-      "meta_type": "node",
       "ext_data": {"type": "none", "desc": "no need for ext data"},
       "enable": true
     },

@@ -40,7 +40,7 @@ def _strip_code_fence(text: str) -> str:
 class Coder:
     """Use a language model to generate code and write it to a file."""
 
-    provider: str = "openai"  # "openai", "zhipu", "deepseek", or "qwen"
+    provider: str = "openai"  # "openai", "zhipu", "deepseek", "qwen", or "111api"
     model: str = "gpt-4.1-mini"
     api_key: Optional[str] = None
     system_prompt: str = (
@@ -50,6 +50,7 @@ class Coder:
     zhipu_thinking: Optional[dict] = None
     deepseek_base_url: str = "https://api.deepseek.com"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    oneoneoneapi_base_url: str = "https://111api.chat/v1"
     client: Optional[object] = None
 
     def __post_init__(self) -> None:
@@ -97,6 +98,16 @@ class Coder:
                 if not resolved_key:
                     raise ValueError("Missing DASHSCOPE_API_KEY; set env or pass api_key.")
                 self.client = OpenAI(api_key=resolved_key, base_url=self.qwen_base_url)
+            elif self.provider == "111api":
+                if OpenAI is None:
+                    raise ImportError(
+                        "openai is not installed and no client was provided. "
+                        "Install `openai` to use 111api provider."
+                    )
+                resolved_key = self.api_key or os.getenv("ONEONEONEAPI_API_KEY")
+                if not resolved_key:
+                    raise ValueError("Missing ONEONEONEAPI_API_KEY; set env or pass api_key.")
+                self.client = OpenAI(api_key=resolved_key, base_url=self.oneoneoneapi_base_url)
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 

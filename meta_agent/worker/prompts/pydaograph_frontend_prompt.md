@@ -10,7 +10,7 @@ Core output contract:
 
 Workflow context:
 - You are provided `graph_plan.json` content as context; use it as authoritative graph/dependency/source-of-truth context.
-- You are provided all node HTML snippets from the default `node_ui/` directory as context; reuse their UX patterns and node-level intent when composing `frontend.html`.
+- You are provided all node HTML snippets from the default `node_ui/` directory as context; for each step card, **faithfully reproduce** the matching node snippet's HTML structure, CSS classes, color palette, spacing values, and component shapes (chips, pills, tags, keyword-grids, dependency-context boxes, param-groups, etc.) inside that step's card body — copy them as closely as possible rather than inventing a new design. If no matching snippet exists for a step, fall back to the global card style.
 - Do not require any external `page_title` input variable; choose a sensible static title directly in generated HTML.
 - Backend endpoint for running one step: `POST /api/run-step`.
 - Optional backend endpoint for cron-run stream: `POST /api/run-all-cron`.
@@ -86,6 +86,21 @@ Structured user-input schema example (must support):
     "input": "{\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}"
   }
 - If `extData.inputs_format` is empty/missing, fall back to plain text input behavior.
+
+Node UI fidelity rules:
+- Match each step to its node HTML snippet by step id or title (case-insensitive substring match is acceptable).
+- When a matching snippet is found: copy its card layout, CSS rules (colors, border-radius, padding, font sizes, transition values), and interactive component markup (keyword-chip grids, pill rows, dependency-context boxes, param-group blocks, tag lists, etc.) directly into the generated step card body.
+- Also copy the snippet's JS interaction logic for those components (e.g. click-to-toggle chip selection, add/remove tag handlers) and adapt it to the AG-UI submit flow.
+- Do not redesign a component that is already defined in the node snippet; preserve every visual and behavioral detail that does not conflict with the AG-UI event requirements.
+
+Input serialization rules for complex UI controls:
+- Before calling the run-step API, **always** serialize the user's collected value into a single string for the `input` field — never send raw JS arrays or objects.
+- Multi-select chips / keyword-grid: collect selected labels into an array; submit `JSON.stringify({ <field_name>: selectedArray })` where `<field_name>` matches the node's `inputs_format` key (or `"selected_items"` if unspecified).
+- Bullet-point / line-list editors (textarea where each line is one item): split by `\n`, filter blank lines, submit `JSON.stringify({ <field_name>: lines })`.
+- Tag / pill lists (dynamic add-remove): collect tag strings into an array; submit `JSON.stringify({ <field_name>: tags })`.
+- Checkboxes / boolean toggles not already covered by `inputs_format`: include them in the same JSON object alongside other fields.
+- If the node renders multiple complex controls (e.g. a chip grid + a text field), merge all values into one JSON object and submit that as the `input` string.
+- Plain single-value text areas with no complex control: submit the `.value` string directly (no JSON wrapping needed unless `inputs_format` dictates otherwise).
 
 Style requirements:
 - Keep styling clean and lightweight, but visually polished.
