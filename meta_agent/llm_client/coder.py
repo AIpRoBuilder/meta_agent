@@ -4,6 +4,9 @@ The `Coder` class wraps a chat model call and writes the generated code
 to disk. By default it uses the `openai` Python client but you can supply
 any drop-in client exposing a `chat.completions.create` method that
 returns a response with `choices[0].message.content`.
+
+For OpenAI-compatible gateways such as D-API, set ``openai_base_url`` or
+the ``OPENAI_BASE_URL`` environment variable.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ class Coder:
     provider: str = "openai"  # "openai", "zhipu", "deepseek", "qwen", or "111api"
     model: str = "gpt-4.1-mini"
     api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
     system_prompt: str = (
         "You are a careful software engineer. Return only runnable code "
         "without extra commentary."
@@ -63,11 +67,15 @@ class Coder:
                         "Install `openai` or pass a compatible client instance."
                     )
                 resolved_key = self.api_key or os.getenv("OPENAI_API_KEY")
+                resolved_base_url = self.openai_base_url or os.getenv("OPENAI_BASE_URL")
                 if not resolved_key:
                     raise ValueError(
                         "Missing OpenAI API key; set OPENAI_API_KEY or pass api_key."
                     )
-                self.client = OpenAI(api_key=resolved_key)
+                client_kwargs = {"api_key": resolved_key}
+                if resolved_base_url:
+                    client_kwargs["base_url"] = resolved_base_url
+                self.client = OpenAI(**client_kwargs)
             elif self.provider == "zhipu":
                 if ZhipuAiClient is None:
                     raise ImportError(
