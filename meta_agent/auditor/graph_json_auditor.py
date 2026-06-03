@@ -102,25 +102,17 @@ class GraphJsonAuditor(BaseJsonAuditor):
 
 			ext_type = self._extract_ext_type(node)
 			if ext_type == "image":
-				upstream_nodes = self._collect_transitive_dependencies(name, node_by_name)
-				has_user_file_input_source = any(
-					self._extract_ext_type(node_by_name[dep_name]) == "user_file_input"
-					for dep_name in upstream_nodes
-					if dep_name in node_by_name
-				)
-
-				if not has_user_file_input_source:
-					violations.append(
-						JsonRuleViolation(
-							parts_name="graph",
-							rule="image_missing_user_file_input_dependency",
-							detail=(
-								f"Node '{name or '<empty>'}' has ext_data.type='image' but has no upstream dependency "
-								"(including transitive dependencies) with ext_data.type='user_file_input'."
-							),
-							lineno=index,
-						)
+				violations.append(
+					JsonRuleViolation(
+						parts_name="graph",
+						rule="image_ext_type_unsupported",
+						detail=(
+							f"Node '{name or '<empty>'}' uses deprecated ext_data.type='image'. "
+							"Use supported node kinds such as user_file_input, user_input, chat_input, service, skill, or none."
+						),
+						lineno=index,
 					)
+				)
 
 		# Check for cycles
 		is_acyclic, cycle_path = graph.is_dag()

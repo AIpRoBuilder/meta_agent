@@ -9,8 +9,6 @@
   - `none`（或无法识别时默认）-> `WorkflowOperationNode`
   - `chat_input` -> `WorkflowChatNode`
   - `user_file_input` -> `WorkflowFileNode`
-  - `image` -> `WorkflowImageNode`
-- `WorkflowImageNode` 本身不直接处理上传；图片来源应来自依赖节点产物（通常来自 file 节点）。
 
 ## 输出风格
 - 只输出 Markdown。

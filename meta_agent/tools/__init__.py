@@ -1,4 +1,13 @@
-from .graph_tools import _load_graph_json, graph_to_nodes, is_dag, is_weakly_connected
+from .graph_tools import (
+	PIPELINE_ID_GPARAM_KEY,
+	PipelineIdParam,
+	_load_graph_json,
+	get_pipeline_id,
+	graph_to_nodes,
+	is_dag,
+	is_weakly_connected,
+	set_pipeline_id,
+)
 from .file_tools import (
 	compile_node_file_and_get_derived_keys,
 	filter_merge_python_imports,
@@ -6,7 +15,11 @@ from .file_tools import (
 )
 
 __all__ = [
+	"PIPELINE_ID_GPARAM_KEY",
+	"PipelineIdParam",
 	"_load_graph_json",
+	"set_pipeline_id",
+	"get_pipeline_id",
 	"graph_to_nodes",
 	"is_dag",
 	"is_weakly_connected",

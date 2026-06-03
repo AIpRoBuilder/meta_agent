@@ -278,14 +278,6 @@ class NodePlanner:
 				"primaryFunctions": ["build_step_output(optional)", "save_files_remote(optional)"],
 				"note": "File-upload node: persists uploaded files and can optionally customize StepRunOutput via build_step_output.",
 			}
-		if ext_type == "image":
-			return {
-				"extType": ext_type,
-				"nodeKind": "image",
-				"baseClass": "WorkflowImageNode",
-				"primaryFunctions": ["process_images_prompts", "process_image_prompts"],
-				"note": "Vision node: consumes image refs from dependencies; no direct upload handler.",
-			}
 		if ext_type == "user_input":
 			return {
 				"extType": ext_type,

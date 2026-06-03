@@ -53,9 +53,6 @@ Required functions and endpoints:
     - For `extData.type == "user_file_input"` (WorkflowFileNode):
         - If `payload.file_path` is provided, use `{"file_path": payload.file_path}` as step input.
         - Else pass `payload.input` through.
-    - For `extData.type == "image"` (WorkflowImageNode):
-        - Do not accept direct user image/file payload or `file_path` for this step.
-        - Call `engine._run_step_events(payload.stepId, None)` (or empty input), because images come from `dependency_results` upstream.
     - For all other step types, pass `payload.input` through to `engine._run_step_events(...)`.
     - Return `StreamingResponse(engine._run_step_events(step_id, normalized_input), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})`
 - `POST /api/reset-session` with `response_model=ResetSessionOutput`

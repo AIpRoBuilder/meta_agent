@@ -6,6 +6,49 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Set, Tuple
 
+from pydaograph import GPipeline, GParam, register_class
+
+
+PIPELINE_ID_GPARAM_KEY = "pipeline.id"
+
+
+@register_class
+class PipelineIdParam(GParam):
+    """Shared pipeline identifier stored as a PyDaoGraph ``GParam``."""
+
+    def __init__(self, value: str = "") -> None:
+        super().__init__()
+        self.value = str(value)
+
+
+def set_pipeline_id(
+    pipeline: GPipeline,
+    pipeline_id: str,
+    key: str = PIPELINE_ID_GPARAM_KEY,
+):
+    """Attach a pipeline identifier that every node can read at runtime.
+
+    The identifier is stored as a pipeline-scoped ``GParam``. Nodes can then
+    access it during ``run()`` with ``self.getGParam(key)`` or the convenience
+    helper :func:`get_pipeline_id`.
+    """
+
+    return pipeline.createGParam(PipelineIdParam(pipeline_id), key)
+
+
+def get_pipeline_id(owner: Any, key: str = PIPELINE_ID_GPARAM_KEY) -> str | None:
+    """Read the shared pipeline identifier from a pipeline or node object."""
+
+    if not hasattr(owner, "hasGParam") or not owner.hasGParam(key):
+        return None
+
+    param = owner.getGParam(key)
+    value = getattr(param, "value", None)
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
 
 def _load_graph_json(source: Any) -> MutableMapping[str, Any]:
     """Load a graph JSON object from a mapping, JSON string, or file path."""
@@ -158,4 +201,12 @@ def is_weakly_connected(graph_json: Any) -> Tuple[bool, List[List[str]]]:
     return len(components) == 1, components
 
 
-__all__ = ["graph_to_nodes", "is_dag", "is_weakly_connected"]
+__all__ = [
+    "PIPELINE_ID_GPARAM_KEY",
+    "PipelineIdParam",
+    "set_pipeline_id",
+    "get_pipeline_id",
+    "graph_to_nodes",
+    "is_dag",
+    "is_weakly_connected",
+]

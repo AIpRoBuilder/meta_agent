@@ -9,11 +9,9 @@
   - WorkflowOperationNode（nodeKind=operation）：纯处理/计算节点，不直接向用户索取输入，通常对应 ext_data.type="none"。
   - WorkflowChatNode（nodeKind=chat）：对话问答类助手节点，对应 ext_data.type="chat_input"。
   - WorkflowFileNode（nodeKind=file）：通用文件上传/存储节点，对应 ext_data.type="user_file_input"。
-  - WorkflowImageNode（nodeKind=image）：依赖驱动的视觉/图片分析节点，对应 ext_data.type="image"，不直接承载上传控件。
   - WorkflowServiceNode（nodeKind=service）：服务启动/探测类节点，对应 ext_data.type="service"，且应填写 ext_data.service_name（服务目录名）。
   - WorkflowSkillNode（nodeKind=skill）：技能封装类节点，对应 ext_data.type="skill"，且应填写 ext_data.skill_name（技能目录名）。
-  - 若需求中包含“用户上传图片”，必须先规划 WorkflowFileNode（ext_data.type="user_file_input"）收集文件，再让 WorkflowImageNode 通过 depends 消费其产物。
-  - 不得虚构上述七类之外的节点能力模型。
+  - 不得虚构上述六类之外的节点能力模型。
 - 顶层结构必须是：
   {
     "nodes": [ ... ]
@@ -26,14 +24,12 @@
     - 若节点需要用户输入，type 必须为 "user_input"。
     - 若节点是对话/问答助手节点，type 使用 "chat_input"。
     - 若节点是通用文件上传/存储，type 使用 "user_file_input"。
-    - 若节点是依赖驱动的视觉/图片分析，type 使用 "image"。
     - 若节点是服务启动/探测节点，type 使用 "service"，并填写 service_name（值为默认服务目录中的子目录名）。
     - 若节点是技能封装节点，type 使用 "skill"，并填写 skill_name（值为默认技能目录中的子目录名）。
-    - 若需要用户上传图片，必须单独使用 "user_file_input" 节点承接上传，"image" 节点通过 depends 读取上游文件位置。
-    - 映射关系："user_input" -> WorkflowStepNode；"chat_input" -> WorkflowChatNode；"user_file_input" -> WorkflowFileNode；"image" -> WorkflowImageNode；"service" -> WorkflowServiceNode；"skill" -> WorkflowSkillNode。
+    - 映射关系："user_input" -> WorkflowStepNode；"chat_input" -> WorkflowChatNode；"user_file_input" -> WorkflowFileNode；"service" -> WorkflowServiceNode；"skill" -> WorkflowSkillNode。
     - 其他示例 type："url"、"file"、"db"、"none"。
     - 若 type 为 "none"，desc 必须为 "no need for ext data"。
-    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"image","desc":"analyze images from dependency file node outputs"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"skill","skill_name":"baidu_search","desc":"search baidu for query results"}、{"type":"url","desc":"image generator api"}。
+    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"chat_input","desc":"chat with assistant using previous step outputs"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"skill","skill_name":"baidu_search","desc":"search baidu for query results"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。
   - loop: 整数，默认 1；若未提及循环可省略。
     - 若某节点需要执行多次以更新节点状态，必须显式设置 loop > 1。

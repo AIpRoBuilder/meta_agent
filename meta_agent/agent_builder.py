@@ -17,14 +17,12 @@ from meta_agent.worker.node_writer import (
     WorkflowSkillNodeCoder,
     WorkflowChatNodeCoder,
     WorkflowFileNodeCoder,
-    WorkflowImageNodeCoder,
     WorkflowStepNodeCoder,
     is_none_ext_data,
     is_service_ext_data,
     is_skill_ext_data,
     is_chat_ext_data,
     is_file_ext_data,
-    is_image_ext_data,
 )
 from meta_agent.worker.frontend_writer import PromptFrontendCoder
 from meta_agent.demand_analyzer import RequirementDisector
@@ -168,13 +166,6 @@ class AgentBuilder:
             )
         if is_file_ext_data(ext_data):
             return WorkflowFileNodeCoder(
-                api_key=self.api_key,
-                model=self.model,
-                provider=self.provider,
-                root_dir_path=self.root_dir,
-            )
-        if is_image_ext_data(ext_data):
-            return WorkflowImageNodeCoder(
                 api_key=self.api_key,
                 model=self.model,
                 provider=self.provider,
@@ -470,8 +461,6 @@ class AgentBuilder:
                 node_kind = "chat"
             elif ext_type == "user_file_input":
                 node_kind = "file"
-            elif ext_type == "image":
-                node_kind = "image"
             elif ext_type == "service" or service_name:
                 node_kind = "service"
             elif ext_type == "skill" or str(ext_data.get("skill_name", "") if isinstance(ext_data, Mapping) else "").strip():

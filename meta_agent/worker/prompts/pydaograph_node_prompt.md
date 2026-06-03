@@ -16,7 +16,6 @@ Guidelines:
     - If `ext_data.type == "none"`, generate a Python class that inherits from `WorkflowOperationNode`.
     - If `ext_data.type == "chat_input"`, generate a Python class that inherits from `WorkflowChatNode`.
     - If `ext_data.type == "user_file_input"`, generate a Python class that inherits from `WorkflowFileNode`.
-    - If `ext_data.type == "image"`, generate a Python class that inherits from `WorkflowImageNode`.
     - Otherwise, generate a Python class that inherits from `WorkflowStepNode`.
 - Base class definitions:
     - `WorkflowStepNode`: Interactive workflow step that collects and validates explicit user input, then returns structured `StepRunOutput` via `process_input(...)`.
@@ -25,11 +24,10 @@ Guidelines:
     - `WorkflowServiceNode`: Non-interactive service lifecycle step that executes two phases in order: `install_environment(...)` (Phase 1 — install packages/deps from service.md `## 1. Installation`), `start_service(...)` (Phase 2 — launch background process from `## 2. Start Service`, return PID and mark `workflow_service_registry` as running). The base class orchestrates install + start automatically; do **not** override `process_operation`.
     - `WorkflowSkillNode`: Non-interactive skill-library step that wraps a pre-built skill (defined by `skill.md`). Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc and exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`. Implement `process_operation(...)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
     - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via `build_step_output(saved_files)` + `StepRunOutput.derived`.
-    - `WorkflowImageNode`: Dependency-driven vision workflow step that reads image file locations from `dependency_results`, loads/encodes local or remote images, and analyzes them via `process_images_prompts(...)`. It returns a prompt `str` for built-in VLM execution.
 
 Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
 
-- Prefer `WorkflowServiceNode` for service startup/bootstrap flows driven by service run guides, `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowChatNode` for conversational nodes that combine user prompt + dependency context, `WorkflowFileNode` for generic multi-file upload/storage, `WorkflowImageNode` for image-driven analysis, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
+- Prefer `WorkflowServiceNode` for service startup/bootstrap flows driven by service run guides, `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowChatNode` for conversational nodes that combine user prompt + dependency context, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
 - Import `register_class` from `pydaograph`, workflow node base class(es) from `meta_agent.ag_ui_workflow.nodes`, and `StepRunOutput` from `meta_agent.ag_ui_workflow.types`.
 - For `WorkflowServiceNode`, always import `workflow_service_registry` from `meta_agent.ag_ui_workflow.services`.
 - For `WorkflowStepNode` / `WorkflowOperationNode`, import `workflow_service_registry` only when node logic needs direct service registry access beyond `self.use_service(session_state)`.
@@ -56,7 +54,6 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
         - In `process_operation`, invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
         - Return `StepRunOutput(summary=..., card=..., derived=...)` with results from the skill invocation.
         - `saved_files` contains persisted files with original `fileName` and saved `location` from local/remote storage.
-    - `WorkflowImageNode`: implement `process_images_prompts(self, request_text, dependency_results, session_state) -> str`.
 - Use `dependency_results[<step_id>].derived[...]` to read prerequisite outputs.
 - Extract upstream variables only from dependency nodes listed in `DEPENDENCIES`.
 - When dependency context is provided (for example, GraphContextBuilder context), treat it as authoritative for upstream `STEP_ID` and `derived` keys.
@@ -74,7 +71,7 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
 
 Minimality checklist (must follow):
 - Keep imports minimal; only import symbols actually used.
-- Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation` / `build_instance_spec` / `build_step_output` / `process_images_prompts`).
+- Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation` / `build_instance_spec` / `build_step_output`).
 - Do not add helper methods unless they remove duplicated logic used at least twice.
 - Do not include mocked/sample/simulated runtime data in business logic.
 - Do not add logging, debug prints, test stubs, or markdown/comments beyond concise TODOs.
@@ -92,7 +89,7 @@ from typing import Any
 
 from pydaograph import register_class, CStatus
 
-from meta_agent.ag_ui_workflow.nodes import WorkflowChatNode, WorkflowFileNode, WorkflowImageNode, WorkflowOperationNode, WorkflowServiceNode, WorkflowStepNode
+from meta_agent.ag_ui_workflow.nodes import WorkflowChatNode, WorkflowFileNode, WorkflowOperationNode, WorkflowServiceNode, WorkflowStepNode
 from meta_agent.ag_ui_workflow.services import workflow_service_registry
 from meta_agent.ag_ui_workflow.types import StepRunOutput
 
@@ -266,33 +263,6 @@ class MediaCrawlerServiceNode(WorkflowServiceNode):
             installed=True,
         )
         return proc.pid
-
-
-@register_class
-class ReceiptImageNode(WorkflowImageNode):
-    STEP_ID = "ReceiptImageNode"
-    TITLE = "Step 4 · Receipt Image Analysis"
-    PROMPT = ""
-    DEPENDENCIES = ["ExpenseNode"]
-
-    def process_images_prompts(
-        self,
-        image_refs: list[str],
-        request_text: str,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> str:
-        monthly_expense = dependency_results["ExpenseNode"].derived.get("monthlyExpense", 0.0)
-        session_state["lastReceiptImage"] = image_refs[0] if image_refs else ""
-
-        effective_request = request_text.strip() or "Extract key amounts and classify expense category from dependency-provided receipt image files."
-        return (
-            "Analyze the dependency-provided receipt image(s) and return concise structured findings.\n"
-            f"Image count: {len(image_refs)}\n"
-            f"User request: {effective_request}\n"
-            f"Known monthlyExpense from dependencies: {monthly_expense:.2f}\n"
-            "Return: merchant, date, total_amount, currency, guessed_category, and confidence."
-        )
 ```
 
-When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `none -> WorkflowOperationNode`, `chat_input -> WorkflowChatNode`, `user_file_input -> WorkflowFileNode`, `image -> WorkflowImageNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` (or prompt `str` for `WorkflowImageNode`; service nodes implement two phases `install_environment -> bool`, `start_service -> int PID` and mark `workflow_service_registry` running state in `start_service`, without overriding `process_operation`; skill nodes provide `process_operation`).
+When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `none -> WorkflowOperationNode`, `chat_input -> WorkflowChatNode`, `user_file_input -> WorkflowFileNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` (service nodes implement two phases `install_environment -> bool`, `start_service -> int PID` and mark `workflow_service_registry` running state in `start_service`, without overriding `process_operation`; skill nodes provide `process_operation`).

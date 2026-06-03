@@ -43,9 +43,9 @@ def is_none_ext_data(ext_data: Any) -> bool:
     """Return True when ext_data indicates no external input/source is needed."""
     if isinstance(ext_data, Mapping):
         ext_type = str(ext_data.get("type", "")).strip().lower()
-        return ext_type in {"none", "image"}
+        return ext_type == "none"
     if isinstance(ext_data, str):
-        return ext_data.strip().lower() in {"none", "image"}
+        return ext_data.strip().lower() == "none"
     return False
 
 
@@ -57,17 +57,6 @@ def is_chat_ext_data(ext_data: Any) -> bool:
     if isinstance(ext_data, str):
         return ext_data.strip().lower() == "chat_input"
     return False
-
-
-def is_image_ext_data(ext_data: Any) -> bool:
-    """Return True when ext_data indicates image input is needed."""
-    if isinstance(ext_data, Mapping):
-        ext_type = str(ext_data.get("type", "")).strip().lower()
-        return ext_type == "image"
-    if isinstance(ext_data, str):
-        return ext_data.strip().lower() == "image"
-    return False
-
 
 def is_file_ext_data(ext_data: Any) -> bool:
     """Return True when ext_data indicates generic file upload input is needed."""
@@ -473,7 +462,7 @@ class PromptNodeFileCoderBase(Coder):
                     "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                     "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
                     "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
-                    "- In process_input/process_chat/process_images_prompts/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                    "- In process_input/process_chat/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
                     "- First resolve required values from dependency_results/session_state; if still unresolved, use safe fallback handling and then validate/fail clearly when still missing.\n"
                     "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
                     f"{context_text}"
@@ -657,7 +646,7 @@ class PromptNodeFileCoderBase(Coder):
                 "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                 "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
                 "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
-                "- In process_input/process_chat/process_images_prompts/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                "- In process_input/process_chat/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
                 "- Strict rule: node's get keys from derived must strictly come from dependency_context; do not access derived keys outside dependency_context.\n"
                 "- First resolve required values from dependency_results/session_state; if still unresolved, use safe fallback handling and then validate/fail clearly when still missing.\n"
                 "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
@@ -816,34 +805,6 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
             "(STEP_ID/TITLE/PROMPT/DEPENDENCIES). "
             "Default to no custom methods; only override save_files_remote(files, session_state) when remote storage behavior is explicitly required (e.g., ext_data.remote_desc).\n"
         )
-
-
-@dataclass
-class WorkflowImageNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "WorkflowImageNode"
-
-    def get_node_contract_text(self) -> str:
-        return (
-            "Generate a WorkflowImageNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Implement vision behavior in process_images_prompts(image_refs, request_text, dependency_results, session_state) and return a prompt string.\n"
-            "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
-            "image_refs is a list of uploaded file/image references and may contain multiple files.\n"
-            "Use dependency_results and user-provided image/file list together as context for vision-language responses.\n"
-            "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
-            "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
-            "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
-            "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
-            "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
-            "Ensure this node expects user file/image input and supports multiple uploaded files.\n\n"
-        )
-
-    def get_feedback_contract_text(self) -> str:
-        return (
-            "Preserve the WorkflowImageNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_images_prompts returning prompt string; process_image_prompts may be kept for backward compatibility).\n"
-        )
-
-
 @dataclass
 class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
     node_base_class: str = "WorkflowStepNode"

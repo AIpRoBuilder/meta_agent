@@ -83,7 +83,6 @@ class NodeAuditor(BaseAuditor):
             self._check_step_id_matches_class_name(cls, violations)
             self._check_step_node_dependency_results(cls, path, violations)
             self._check_chat_node_dependency_results(cls, path, violations)
-            self._check_image_node_dependency_results(cls, path, violations)
             self._check_file_node_no_build_step_output(cls, violations)
             self._check_operation_node_dependency_results(cls, path, violations)
             self._check_service_node_dependency_results(cls, path, violations)
@@ -265,9 +264,9 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_step_node_subclass(self, cls: ast.ClassDef) -> bool:
         for base in cls.bases:
-            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowImageNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowFileNode", "WorkflowSkillNode"}:
                 return True
-            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowImageNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowFileNode", "WorkflowSkillNode"}:
                 return True
         return False
 
@@ -282,9 +281,6 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_chat_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowChatNode"})
-
-    def _is_workflow_image_node_subclass(self, cls: ast.ClassDef) -> bool:
-        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowImageNode"})
 
     def _is_workflow_file_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowFileNode"})
@@ -515,7 +511,6 @@ class NodeAuditor(BaseAuditor):
         - ext_data.type == "user_input" => class must subclass WorkflowStepNode
         - ext_data.type == "chat_input" => class must subclass WorkflowChatNode
         - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
-        - ext_data.type == "image" => class must subclass WorkflowImageNode
         - ext_data.type == "service" or ext_data.service_name exists => class must subclass WorkflowServiceNode
         - ext_data.type == "none" => class must subclass WorkflowOperationNode
         """
@@ -564,15 +559,14 @@ class NodeAuditor(BaseAuditor):
                     )
                 )
         elif ext_type == "image":
-            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowImageNode"}):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_image_requires_image_node",
-                        detail="When ext_data.type is 'image', the node class must subclass WorkflowImageNode.",
-                        lineno=cls.lineno,
-                    )
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="ext_data_image_unsupported",
+                    detail="ext_data.type='image' is no longer supported.",
+                    lineno=cls.lineno,
                 )
+            )
         elif ext_type == "service" or service_name:
             if not self._is_workflow_service_node_subclass(cls):
                 violations.append(
@@ -802,29 +796,6 @@ class NodeAuditor(BaseAuditor):
             method=method,
             violations=violations,
             method_name="process_chat",
-        )
-
-    def _check_image_node_dependency_results(
-        self,
-        cls: ast.ClassDef,
-        node_file_path: Path,
-        violations: List[RuleViolation],
-    ) -> None:
-        if not self._is_registered_class(cls):
-            return
-        if not self._is_workflow_image_node_subclass(cls):
-            return
-
-        method = self._get_method(cls, "_collect_image_locations_from_dependencies")
-        if method is None:
-            return
-
-        self._check_dependency_results_usage(
-            cls=cls,
-            node_file_path=node_file_path,
-            method=method,
-            violations=violations,
-            method_name="_collect_image_locations_from_dependencies",
         )
 
     def _check_service_node_dependency_results(
