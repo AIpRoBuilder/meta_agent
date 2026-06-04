@@ -69,12 +69,12 @@ class MainEntryPointAuditor:
 				)
 			)
 
-		if not self._has_import_from_with_names(tree, "meta_agent.ag_ui_workflow", {"WorkflowEngine"}):
+		if not self._has_import_from_with_names(tree, "ag_ui_workflow", {"WorkflowEngine"}):
 			violations.append(
 				RuleViolation(
 					class_name="(file)",
 					rule="workflow_engine_import_missing",
-					detail="Missing 'from meta_agent.ag_ui_workflow import WorkflowEngine'.",
+					detail="Missing 'from ag_ui_workflow import WorkflowEngine'.",
 					lineno=1,
 				)
 			)

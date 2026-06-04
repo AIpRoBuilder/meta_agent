@@ -334,7 +334,7 @@ _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
 
 def _get_workflow_base_class_objects() -> dict[str, type]:
 	"""Return a mapping of base class name -> class, imported lazily to avoid circular imports."""
-	from meta_agent.ag_ui_workflow.nodes import (  # noqa: PLC0415
+	from ag_ui_workflow.nodes import (  # noqa: PLC0415
 		WorkflowChatNode,
 		WorkflowFileNode,
 		WorkflowOperationNode,

@@ -694,7 +694,7 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
             "If SERVICES is non-empty, call self.use_service(session_state) in process_operation before service-dependent logic.\n"
-            "If process_operation needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from meta_agent.ag_ui_workflow.services and use it.\n"
+            "If process_operation needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
             "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
@@ -817,7 +817,7 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
             "If SERVICES is non-empty, call self.use_service(session_state) in process_input before service-dependent logic.\n"
-            "If process_input needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from meta_agent.ag_ui_workflow.services and use it.\n"
+            "If process_input needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
             "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
@@ -984,7 +984,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
                 "",
                 "Implementation constraints for this service node:",
                 "- Subclass WorkflowServiceNode.",
-                "- Import workflow_service_registry from meta_agent.ag_ui_workflow.services.",
+                "- Import workflow_service_registry from ag_ui_workflow.services.",
                 "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
                 "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
                 "- In start_service, after successful launch, call workflow_service_registry.update_service_status(..., status='running', is_running=True, pid=proc.pid, installed=True).",
@@ -997,7 +997,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
                 "",
                 "Implementation constraints for this service node:",
                 "- Subclass WorkflowServiceNode.",
-                "- Import workflow_service_registry from meta_agent.ag_ui_workflow.services.",
+                "- Import workflow_service_registry from ag_ui_workflow.services.",
                 "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
                 "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
                 "- In start_service, after successful launch, call workflow_service_registry.update_service_status(..., status='running', is_running=True, pid=proc.pid, installed=True).",
@@ -1026,7 +1026,7 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
     def get_node_contract_text(self) -> str:
         return (
             "Generate a WorkflowServiceNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Import workflow_service_registry from meta_agent.ag_ui_workflow.services.\n"
+            "Import workflow_service_registry from ag_ui_workflow.services.\n"
             "Implement the two-phase execution pattern by overriding these methods:\n"
             "\n"
             "Phase 1 — install_environment(self, dependency_results, session_state) -> bool:\n"

@@ -3,7 +3,7 @@ Use this system prompt whenever you need a runnable FastAPI backend for the AG-U
 
 Target architecture:
 - The generated file must follow the lifecycle backend style used in the reference example.
-- Use `WorkflowEngine` from `meta_agent.ag_ui_workflow` (not `GPipeline`-style CLI architecture).
+- Use `WorkflowEngine` from `ag_ui_workflow` (not `GPipeline`-style CLI architecture).
 - Keep the implementation session-centric with one engine per `sessionId`.
 
 Required imports:
@@ -13,7 +13,7 @@ Required imports:
 - `from fastapi import FastAPI, HTTPException`
 - `from fastapi.responses import HTMLResponse, StreamingResponse`
 - `from pydantic import BaseModel`
-- `from meta_agent.ag_ui_workflow import WorkflowEngine`
+- `from ag_ui_workflow import WorkflowEngine`
 - Import node classes from the generated root package (for example `from example_agent_output import StepA, StepB`)
 
 Required globals and setup:
