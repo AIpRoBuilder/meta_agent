@@ -21,6 +21,7 @@ if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
 from meta_agent.llm_client.coder import Coder
+from meta_agent.tools.text_tools import normalize_requirement_analysis_result
 
 
 @dataclass
@@ -128,19 +129,31 @@ class PromptFrontendCoder(Coder):
 		*,
 		steps_meta: list[dict[str, Any]],
 		run_step_endpoint: str,
-		run_all_cron_endpoint: str | None,
 		reset_session_endpoint: str,
+		requirement_analysis_result: Mapping[str, Any] | None,
 		reference_frontend: str,
 		node_ui_context: str,
 		graph_plan_context: str,
 		frontend_style_prompt: str | None = None,
 	) -> str:
 		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
+		cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
 		style_block = ""
 		if frontend_style_prompt and frontend_style_prompt.strip():
 			style_block = (
 				"User-defined frontend style guidance (must follow while preserving required behavior and event semantics):\n"
 				f"{frontend_style_prompt.strip()}\n\n"
+			)
+		cron_block = ""
+		if cron_meta and cron_meta["is_cron_task"]:
+			cron_expression = cron_meta["crontab_expression"] or "TBD"
+			cron_block = (
+				"Cron workflow requirements:\n"
+				f"- requirement_analysis_result says this is a cron workflow with task_type={cron_meta['task_type'] or 'cron'} and crontab_expression={cron_expression}.\n"
+				"- Add a dedicated Cron tab in the main navigation/header tabs alongside the workflow view.\n"
+				"- The Cron tab must fetch GET /api/cron-config on load and display task type, crontab expression, and cron status clearly.\n"
+				"- In the Cron tab, provide a small preview form for a crontab expression that calls POST /api/cron-preview and renders validation errors or the next five run times.\n"
+				"- Keep the cron tab visually consistent with the rest of the frontend and do not remove the existing workflow step cards.\n\n"
 			)
 
 		return (
@@ -148,8 +161,8 @@ class PromptFrontendCoder(Coder):
 			"Use plain HTML + CSS + browser JavaScript (no frameworks).\n"
 			"Use the provided reference HTML style and behavior as the baseline.\n\n"
 			f"{style_block}"
+			f"{cron_block}"
 			f"run-step endpoint: {run_step_endpoint}\n"
-			f"run-all-cron endpoint: {run_all_cron_endpoint or '(disabled)'}\n"
 			f"reset-session endpoint: {reset_session_endpoint}\n\n"
 			"Graph plan JSON context:\n"
 			f"{graph_plan_context}\n\n"
@@ -170,10 +183,6 @@ class PromptFrontendCoder(Coder):
 			"4) Render step_card.state, step_card.summary, step_card.card.rows, and step_card.card.actions into the matching step card.\n"
 			"5) Maintain sessionId in localStorage and show it in a badge.\n"
 			"6) Include New Session + Reset Session actions that call reset-session endpoint.\n"
-			"6.1) If run-all-cron endpoint is provided (not '(disabled)'), include Start Cron and Stop Cron controls.\n"
-			"6.2) Start Cron should POST to run-all-cron with payload at least {sessionId, resetBeforeEachRun}; consume SSE continuously using the same event handler as run-step events.\n"
-			"6.3) Stop Cron should cancel the active cron stream (for example via AbortController) and update UI state to idle.\n"
-			"6.4) Ensure only one cron stream is active at a time and disable Start Cron while running.\n"
 			"7) If step metadata includes inputRequired=false or nodeKind in ('operation','service','skill'), do not require text input for submission.\n"
 			"7.1) For any step that does not require direct user input (for example operation/service/skill/dependency-driven steps), auto-submit it immediately when it becomes unlocked and visible; do not require a click on a Run button.\n"
 			"8) If step extData.type == 'user_file_input' (or nodeKind='file'), treat it as WorkflowFileNode input: render a multi-file upload control (allow selecting multiple files).\n"
@@ -243,8 +252,8 @@ class PromptFrontendCoder(Coder):
 		output_path: str,
 		context_base_dir: str | None = None,
 		run_step_endpoint: str = "/api/run-step",
-		run_all_cron_endpoint: str | None = "/api/run-all-cron",
 		reset_session_endpoint: str = "/api/reset-session",
+		requirement_analysis_result: Mapping[str, Any] | None = None,
 		reference_frontend_path: str | None = None,
 		frontend_style_prompt: str | None = None,
 		overwrite: bool = True,
@@ -275,8 +284,8 @@ class PromptFrontendCoder(Coder):
 		user_prompt = self._build_user_prompt(
 			steps_meta=normalized_steps,
 			run_step_endpoint=run_step_endpoint,
-			run_all_cron_endpoint=run_all_cron_endpoint,
 			reset_session_endpoint=reset_session_endpoint,
+			requirement_analysis_result=requirement_analysis_result,
 			reference_frontend=reference_frontend,
 			node_ui_context=node_ui_context,
 			graph_plan_context=graph_plan_context,

@@ -13,7 +13,6 @@ Workflow context:
 - You are provided all node HTML snippets from the default `node_ui/` directory as context; for each step card, **faithfully reproduce** the matching node snippet's HTML structure, CSS classes, color palette, spacing values, and component shapes (chips, pills, tags, keyword-grids, dependency-context boxes, param-groups, etc.) inside that step's card body — copy them as closely as possible rather than inventing a new design. If no matching snippet exists for a step, fall back to the global card style.
 - Do not require any external `page_title` input variable; choose a sensible static title directly in generated HTML.
 - Backend endpoint for running one step: `POST /api/run-step`.
-- Optional backend endpoint for cron-run stream: `POST /api/run-all-cron`.
 - Backend endpoint for reset/new session init: `POST /api/reset-session`.
 - Input step nodes run `process_input(...)`, file nodes build results via `build_step_output(...)` after persistence, chat nodes run `process_chat(...)`, and operation nodes run `process_operation(...)`.
 - Operation nodes do not require user text input and should be submitted without an input payload.
@@ -48,11 +47,6 @@ UI behavior requirements:
 - Render each step card summary, `card.rows` key/value table, and `card.actions` list when available.
 - Persist `sessionId` in localStorage and display it in the page.
 - Include `New Session` and `Reset Session` buttons wired to `/api/reset-session`.
-- If `/api/run-all-cron` endpoint is provided, include `Start Cron` and `Stop Cron` controls.
-- `Start Cron` must open one SSE stream via `POST /api/run-all-cron` using payload with at least `sessionId` and `resetBeforeEachRun`.
-- Reuse the same SSE parsing/event handling pipeline for both `/api/run-step` and `/api/run-all-cron` streams.
-- `Stop Cron` must terminate the active cron stream (for example with `AbortController`) and restore UI state.
-- Ensure at most one cron stream is active at a time; disable `Start Cron` while cron stream is running.
 - Disable/enable submit controls to prevent duplicate submissions while waiting.
 - For the currently running step card, show a visible running-circle loading indicator while waiting for result events, and hide the indicator when that step completes or errors.
 - For input-required steps, include a file input (`type="file"`) near the text input.

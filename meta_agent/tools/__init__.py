@@ -13,6 +13,7 @@ from .file_tools import (
 	filter_merge_python_imports,
 	merge_text_files,
 )
+from .text_tools import normalize_requirement_analysis_result
 
 __all__ = [
 	"PIPELINE_ID_GPARAM_KEY",
@@ -26,4 +27,5 @@ __all__ = [
 	"merge_text_files",
 	"filter_merge_python_imports",
 	"compile_node_file_and_get_derived_keys",
+	"normalize_requirement_analysis_result",
 ]

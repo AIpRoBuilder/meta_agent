@@ -21,6 +21,7 @@ if str(ROOT_DIR.parent) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR.parent))
 
 from meta_agent.llm_client.coder import Coder
+from meta_agent.tools.text_tools import normalize_requirement_analysis_result
 
 
 def _stringify_modules(module_names: Optional[Sequence[str]]) -> str:
@@ -71,18 +72,26 @@ class PromptMainFileCoder(Coder):
         fastapi_host: str,
         fastapi_port: int,
         uvicorn_reload: bool,
-        crontab_expression: str | None,
+        requirement_analysis_result: Mapping[str, Any] | None = None,
     ) -> str:
         class_chain = ", ".join(node_class_names) if node_class_names else "none"
-        cron_value = (crontab_expression or "").strip()
-        cron_hint = cron_value if cron_value else "(none)"
+        cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
+        cron_lines: list[str] = []
+        if cron_meta and cron_meta["is_cron_task"]:
+            cron_expression = cron_meta["crontab_expression"] or "TBD"
+            cron_lines = [
+                "- This workflow is a cron task according to requirement_analysis_result.",
+                f"- Cron metadata: task_type={cron_meta['task_type'] or 'cron'}, crontab_expression={cron_expression}.",
+                "- Import croniter and add a read-only cron config API GET /api/cron-config that returns isCronTask, taskType, and crontabExpression from the analyzed requirement.",
+                "- Add a POST /api/cron-preview endpoint that accepts a crontabExpression and returns validation result plus the next five scheduled run times in ISO format.",
+                "- Keep the cron API lightweight and self-contained in main.py; do not add persistence, auth, or unrelated scheduling infrastructure.",
+            ]
         template_lines: Iterable[str] = (
             "Generate a single Python backend file that matches the AG-UI lifecycle workflow backend pattern.",
             f"Project root path: {project_root_path}",
             f"Workflow pipeline JSON path: {graph_plan_json_path}",
             f"Node classes in graph-plan order: {class_chain}",
             f"Node package root name: {nodes_package_name}",
-            f"Crontab expression parameter for run-all-cron: {cron_hint}",
             "The file must:",
             "- Use imports and module layout aligned with the lifecycle example: FastAPI, HTMLResponse, StreamingResponse, BaseModel, WorkflowEngine, and node imports from the root package.",
             "- Automatically load environment variables from a .env file on startup (prefer `from dotenv import load_dotenv`) before app/engine initialization.",
@@ -104,13 +113,9 @@ class PromptMainFileCoder(Coder):
 			"- Read ext type via mapping-safe logic equivalent to: `ext_data = _meta_field(step_meta, \"extData\"); ext_type = ext_data.get(\"type\") if isinstance(ext_data, Mapping) else None`.",
             "- Only for extData.type == 'user_file_input', if payload.file_path is provided pass {'file_path': payload.file_path}; otherwise pass payload.input.",
             "- Provide POST /api/reset-session returning ResetSessionOutput with ok/sessionId/threadId/runId.",
-            "- If the crontab expression parameter is provided (not '(none)'), also add POST /api/run-all-cron.",
-            "- For /api/run-all-cron, do not accept cron expression from payload; use a preset module-level constant named RUN_ALL_CRON_EXPRESSION set to the provided crontab expression value.",
-            "- /api/run-all-cron must continuously trigger engine._run_all_steps_events(step_inputs=payload.inputs) on the crontab schedule and stream SSE events.",
-            "- For /api/run-all-cron request model, include sessionId, optional inputs, and resetBeforeEachRun (default True).",
-            "- Validate RUN_ALL_CRON_EXPRESSION with croniter; if invalid, return HTTPException with clear error.",
             "- Keep naming and endpoint shapes consistent with the lifecycle example and avoid adding unrelated routes.",
             f"- If adding a local server launcher helper, default host to {fastapi_host} and port to {fastapi_port}; reload default is {uvicorn_reload}.",
+            *cron_lines,
             "- Only output runnable Python code; no Markdown fences or commentary.",
         )
         return "\n".join(template_lines)
@@ -172,7 +177,7 @@ class PromptMainFileCoder(Coder):
         project_root_path: str,
         graph_plan_json_path: str,
         output_path: str,
-        crontab_expression: str | None = None,
+        requirement_analysis_result: Mapping[str, Any] | None = None,
         fastapi_host: str = "0.0.0.0",
         fastapi_port: int = 8000,
         uvicorn_reload: bool = False,
@@ -211,7 +216,7 @@ class PromptMainFileCoder(Coder):
             fastapi_host=fastapi_host,
             fastapi_port=fastapi_port,
             uvicorn_reload=uvicorn_reload,
-            crontab_expression=crontab_expression,
+            requirement_analysis_result=requirement_analysis_result,
         )
 
         return self.code_to_file(

@@ -109,6 +109,7 @@ class AgentBuilder:
         self._progress_current = 0
         self._progress_width = 28
         self.requirement_md_path: Optional[str] = None
+        self.requirement_analysis_result: Optional[Dict[str, Any]] = None
         self.graph_plan_path: Optional[str] = None
 
         self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
@@ -210,13 +211,20 @@ class AgentBuilder:
         """
         if requirement_file:
             self.requirement_md_path = requirement_file
+            self.requirement_analysis_result = None
             return requirement_file
 
         out_path = os.path.join(self.root_dir, out_file)
         print(f"Analyzing requirement -> {out_path}")
-        self.analyzer.code_to_file(requirement_text or "", out_path)
-        self.requirement_md_path = out_path
-        return out_path
+        result = self.analyzer.analyze(requirement_text or "", out_path)
+        self.requirement_md_path = str(result.output_path)
+        self.requirement_analysis_result = {
+            "output_path": str(result.output_path),
+            "is_cron_task": result.is_cron_task,
+            "task_type": result.task_type,
+            "crontab_expression": result.crontab_expression,
+        }
+        return self.requirement_md_path
 
     def plan_graph(
         self,
@@ -493,7 +501,6 @@ class AgentBuilder:
         temperature: float = 0.3,
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
-        run_all_cron_endpoint: Optional[str] = "/api/run-all-cron",
     ) -> str:
         """Generate and audit frontend.html."""
         frontend_path = os.path.join(self.root_dir, output_filename)
@@ -511,8 +518,8 @@ class AgentBuilder:
             output_path=frontend_path,
             context_base_dir=context_base_dir,
             run_step_endpoint="/api/run-step",
-            run_all_cron_endpoint=run_all_cron_endpoint,
             reset_session_endpoint="/api/reset-session",
+            requirement_analysis_result=self.requirement_analysis_result,
             frontend_style_prompt=effective_style_prompt,
             overwrite=True,
             temperature=temperature,
@@ -536,7 +543,6 @@ class AgentBuilder:
         output_filename: str = "main.py",
         fastapi_host: str = "0.0.0.0",
         temperature: float = 0.0,
-        crontab_expression: Optional[str] = None,
     ) -> str:
         self.main_output_path = os.path.join(self.root_dir, output_filename)
         print(f"Generating main entrypoint -> {self.main_output_path}")
@@ -544,8 +550,8 @@ class AgentBuilder:
             project_root_path=self.root_dir,
             graph_plan_json_path=graph_plan_path,
             output_path=self.main_output_path,
+            requirement_analysis_result=self.requirement_analysis_result,
             fastapi_host=fastapi_host,
-            crontab_expression=crontab_expression,
             temperature=temperature,
         )
 
@@ -702,8 +708,6 @@ class AgentBuilder:
         generate_node_html: bool = True,
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
-        crontab_expression: Optional[str] = None,
-        run_all_cron_endpoint: Optional[str] = "/api/run-all-cron",
     ) -> None:
         """Run full build pipeline and generate AG-UI deliverables.
 
@@ -715,8 +719,6 @@ class AgentBuilder:
             generate_node_html: Whether to generate per-node HTML interaction files for node writing context.
             frontend_style_prompt: Optional style guidance for generated frontend.html.
             context_base_dir: Optional base directory for loading graph_plan.json and node_ui/*.html used as frontend generation context.
-            crontab_expression: Optional cron expression; when set, generated main.py should include /api/run-all-cron using this preset schedule.
-            run_all_cron_endpoint: Optional frontend endpoint path for cron streaming; pass None to disable cron controls in generated frontend.
         """
         total_steps = 5
         if generate_node_docs:
@@ -760,13 +762,11 @@ class AgentBuilder:
         self._advance_progress("Node files generated and audited")
 
         print("Generating frontend...")
-        effective_run_all_cron_endpoint = run_all_cron_endpoint if crontab_expression is not None else None
         self.generate_frontend(
             output_filename="frontend.html",
             temperature=0.0,
             frontend_style_prompt=self.frontend_style_prompt,
             context_base_dir=context_base_dir,
-            run_all_cron_endpoint=effective_run_all_cron_endpoint,
         )
         self._advance_progress("frontend.html generated and audited")
 
@@ -775,7 +775,6 @@ class AgentBuilder:
             self.graph_plan_path,
             output_filename="main.py",
             temperature=0.0,
-            crontab_expression=crontab_expression,
         )
         self._advance_progress("main.py generated and audited")
 

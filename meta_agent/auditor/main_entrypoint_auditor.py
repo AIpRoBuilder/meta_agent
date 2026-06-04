@@ -274,19 +274,6 @@ class MainEntryPointAuditor:
 					)
 				)
 
-		run_all_cron_fn = self._find_route_function(tree, method="post", path="/api/run-all-cron")
-		if run_all_cron_fn is not None:
-			async_for_lineno = self._find_async_for_attr_call_lineno(run_all_cron_fn, "_run_all_steps_events")
-			if async_for_lineno is not None:
-				violations.append(
-					RuleViolation(
-						class_name="(file)",
-						rule="run_all_steps_events_async_for_forbidden",
-						detail="Use 'for ... in engine._run_all_steps_events(...)' (not 'async for') because _run_all_steps_events returns a synchronous generator.",
-						lineno=async_for_lineno,
-					)
-				)
-
 		# Optional: check that the main entrypoint imports all registered node classes
 		if nodes_root:
 			nodes_root_path = Path(nodes_root).expanduser().resolve()

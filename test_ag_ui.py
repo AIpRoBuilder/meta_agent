@@ -2,7 +2,7 @@ from __future__ import annotations
 from unittest import result
 
 from example_agent import TableOutput
-from meta_agent.ag_ui_workflow.types import StepRunOutput
+from ag_ui_workflow.types import StepRunOutput
 
 
 node = TableOutput()
