@@ -19,11 +19,11 @@ Guidelines:
     - Otherwise, generate a Python class that inherits from `WorkflowStepNode`.
 - Base class definitions:
     - `WorkflowStepNode`: Interactive workflow step that collects and validates explicit user input, then returns structured `StepRunOutput` via `process_input(...)`.
-    - `WorkflowChatNode`: Conversational workflow step that combines user message + dependency context, then returns It returns a prompt `str` for built-in VLM execution via `process_chat(...)`.
+    - `WorkflowChatNode`: Conversational workflow step that combines user message + dependency context. `process_chat(...)` may return either a prompt `str` for built-in LLM execution or a fully constructed `StepRunOutput`.
     - `WorkflowOperationNode`: Non-interactive workflow step for deterministic/derived computation from dependencies and session state, returning `StepRunOutput` via `process_operation(...)`.
     - `WorkflowServiceNode`: Non-interactive service lifecycle step that executes two phases in order: `install_environment(...)` (Phase 1 — install packages/deps from service.md `## 1. Installation`), `start_service(...)` (Phase 2 — launch background process from `## 2. Start Service`, return PID and mark `workflow_service_registry` as running). The base class orchestrates install + start automatically; do **not** override `process_operation`.
-    - `WorkflowSkillNode`: Non-interactive skill-library step that wraps a pre-built skill (defined by `skill.md`). Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc and exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`. Implement `process_operation(...)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
-    - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via `build_step_output(saved_files)` + `StepRunOutput.derived`.
+    - `WorkflowSkillNode`: Skill-library step backed by `skill.md`. Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc, exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`, and may accept direct user input. Implement `process_operation(user_input, dependency_results, session_state)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
+    - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via the base `build_step_output(saved_files)` unless a specialized override is explicitly required.
 
 Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
 
@@ -42,18 +42,18 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
     - `WorkflowStepNode`: implement `process_input(self, user_input, dependency_results, session_state) -> StepRunOutput`.
         - If `SERVICES` is non-empty, call `self.use_service(session_state)` before service-dependent logic.
         - If direct service status/record lookup is required, import/use `workflow_service_registry`.
-    - `WorkflowChatNode`: implement `process_chat(self, user_input, dependency_results, session_state) -> str`.
+    - `WorkflowChatNode`: implement `process_chat(self, user_input, dependency_results, session_state) -> str | StepRunOutput`.
     - `WorkflowOperationNode`: implement `process_operation(self, dependency_results, session_state) -> StepRunOutput`.
         - If `SERVICES` is non-empty, call `self.use_service(session_state)` before service-dependent logic.
         - If direct service status/record lookup is required, import/use `workflow_service_registry`.
     - `WorkflowServiceNode`: implement two phase methods (do **not** override `process_operation`):
         - `install_environment(self, dependency_results, session_state) -> bool`: Phase 1 based on service.md `## 1. Installation`. Run install commands (e.g. `git clone`, `uv sync`, `pip install`) via `subprocess.run`. Return `True` on success, `False` on failure. Skip if already installed (idempotent check).
         - `start_service(self, dependency_results, session_state) -> int`: Phase 2 based on service.md `## 2. Start Service`. Launch the service as a background process using `subprocess.Popen`. Return the integer PID (`proc.pid`); `<= 0` signals failure. Use `session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR` as working directory. The generated command must be valid for the current OS. After successful launch, call `workflow_service_registry.update_service_status(..., status="running", is_running=True, pid=proc.pid, installed=True)`.
-    - `WorkflowSkillNode`: set `SKILL_DIR` (absolute path to skill directory) and `SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md')` as class constants. Implement `process_operation(self, dependency_results, session_state) -> StepRunOutput`.
+    - `WorkflowSkillNode`: set `SKILL_DIR` (absolute path to skill directory) and `SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md')` as class constants. Implement `process_operation(self, user_input, dependency_results, session_state) -> StepRunOutput`.
         - The base class __init__ reads `skill.md` and populates `self.skill_description`, `self.skill_using`, `self.skill_examples`.
         - In `process_operation`, invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
-        - Return `StepRunOutput(summary=..., card=..., derived=...)` with results from the skill invocation.
-        - `saved_files` contains persisted files with original `fileName` and saved `location` from local/remote storage.
+        - Use `user_input` when the step collects input; tolerate empty input when the skill can run from dependencies alone.
+        - Return `StepRunOutput(card=..., derived=...)` with results from the skill invocation.
 - Use `dependency_results[<step_id>].derived[...]` to read prerequisite outputs.
 - Extract upstream variables only from dependency nodes listed in `DEPENDENCIES`.
 - When dependency context is provided (for example, GraphContextBuilder context), treat it as authoritative for upstream `STEP_ID` and `derived` keys.
@@ -61,7 +61,7 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
 - Do not assign hardcoded empty placeholders (for example `""`, `[]`, `{}`) to required upstream values; read from dependency outputs and fail fast with a clear validation error when required values are missing.
 - If a required upstream key cannot be confirmed from provided dependency context, use safe fallback handling with minimal branching and add one concise TODO only when necessary.
 - Persist mutable cross-step values in `session_state`.
-- Return `StepRunOutput(summary=..., card=..., derived=...)`.
+- Return `StepRunOutput(card=..., derived=...)`.
 - Keep `card` JSON-serializable and practical for frontend rendering.
 - Keep `derived` as structured values for downstream step computation.
 - Do not override `run` unless explicitly required; base class `run` orchestrates flow.
@@ -71,7 +71,7 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
 
 Minimality checklist (must follow):
 - Keep imports minimal; only import symbols actually used.
-- Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation` / `build_instance_spec` / `build_step_output`).
+- Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation`).
 - Do not add helper methods unless they remove duplicated logic used at least twice.
 - Do not include mocked/sample/simulated runtime data in business logic.
 - Do not add logging, debug prints, test stubs, or markdown/comments beyond concise TODOs.
@@ -129,8 +129,6 @@ class ExpenseNode(WorkflowStepNode):
         session_state["expenses"] = expenses
         session_state["savings"] = savings
         session_state["savingsRate"] = savings_rate
-
-        summary = f"Computed savings: {savings:.2f} ({savings_rate:.2f}% of income)"
         card = {
             "label": "Expense + savings result",
             "rows": [
@@ -144,7 +142,7 @@ class ExpenseNode(WorkflowStepNode):
             "monthlySavings": savings,
             "savingsRate": savings_rate,
         }
-        return StepRunOutput(summary=summary, card=card, derived=derived)
+        return StepRunOutput(card=card, derived=derived)
 
 
 @register_class
@@ -200,7 +198,6 @@ class SavingsPlanNode(WorkflowOperationNode):
         session_state["monthlySavings"] = monthly_savings
         session_state["annualSavings"] = annual_savings
 
-        summary = f"Projected annual savings: {annual_savings:.2f}"
         card = {
             "label": "Savings plan projection",
             "rows": [
@@ -214,7 +211,7 @@ class SavingsPlanNode(WorkflowOperationNode):
             "monthlySavings": monthly_savings,
             "annualSavings": annual_savings,
         }
-        return StepRunOutput(summary=summary, card=card, derived=derived)
+        return StepRunOutput(card=card, derived=derived)
 
 
 @register_class

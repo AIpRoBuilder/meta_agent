@@ -1063,7 +1063,7 @@ class NodeAuditor(BaseAuditor):
         for node in ast.walk(method):
             if not isinstance(node, ast.Attribute):
                 continue
-            if node.attr not in {"summary", "card"}:
+            if node.attr not in {"card"}:
                 continue
 
             dep_name: Optional[str] = None

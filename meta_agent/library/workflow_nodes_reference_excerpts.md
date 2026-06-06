@@ -142,6 +142,7 @@ class WorkflowOperationNode(GNode):
     TITLE = ""
     PROMPT = ""
     DEPENDENCIES: list[str] = []
+    SERVICES: list[dict[str, str]] = []
     NODE_KIND = "operation"
 
     def __init__(self) -> None:
@@ -172,6 +173,7 @@ class WorkflowOperationNode(GNode):
             "title": cls.TITLE,
             "prompt": cls.PROMPT,
             "dependencies": list(cls.DEPENDENCIES),
+            "services": list(cls.SERVICES),
             "inputRequired": cls.INPUT_REQUIRED,
             "nodeKind": cls.NODE_KIND,
         }
@@ -191,6 +193,7 @@ class WorkflowServiceNode(GNode):
     PROMPT = ""
     DEPENDENCIES: list[str] = []
     NODE_KIND = "service"
+    DEFAULT_WORKDIR = str(Path.cwd())
 
     def __init__(self) -> None:
         super().__init__()
@@ -199,11 +202,10 @@ class WorkflowServiceNode(GNode):
 
     def run(self) -> CStatus:
         # Same non-interactive lifecycle pattern as WorkflowOperationNode,
-        # but intended for service startup/probe execution.
-        # Calls process_operation(...), which by default:
-        # - builds execution spec via build_instance_spec(...)
-        # - runs command(s) via run_in_sandbox(...)
-        # - formats final StepRunOutput via build_step_output(...)
+        # but process_operation is implemented by the base class.
+        # The base class orchestrates install_environment(...) and start_service(...),
+        # then registers the service in workflow_service_registry and returns a
+        # StepRunOutput describing running status, pid, and installation state.
         ...
 
     def install_environment(
@@ -231,25 +233,20 @@ class WorkflowServiceNode(GNode):
         # Do not hardcode absolute paths; define DEFAULT_WORKDIR as a class constant if needed.
         raise NotImplementedError
 
-    def use_service(
+    def process_operation(
         self,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        # Phase 3 – Use the running service (runs after start_service returns a valid PID).
-        # Implement based on service.md ## 3. Using section.
-        # Interact with the service (read output files, send HTTP requests, parse results, etc.)
-        # Return StepRunOutput(summary=..., card=..., derived=...) with service results.
-        # Keep card JSON-serializable and derived structured for downstream nodes.
-        raise NotImplementedError
-
-    # process_operation is NOT meant to be overridden.
-    # The base class implementation calls install_environment → start_service → use_service in order.
-    # Each phase must succeed before the next is attempted.
+        # Do not override in generated subclasses.
+        # The base implementation calls install_environment(...) and start_service(...),
+        # validates return types, updates workflow_service_registry, and returns a
+        # StepRunOutput(card={service/status/pid/...}, derived={service_name/...}).
+        ...
 
 
 class WorkflowSkillNode(GNode):
-    INPUT_REQUIRED = False
+    INPUT_REQUIRED = True
     STEP_ID = ""
     TITLE = ""
     PROMPT = ""
@@ -276,19 +273,22 @@ class WorkflowSkillNode(GNode):
 
     def run(self) -> CStatus:
         # Waits for background package installation (up to INSTALL_TIMEOUT seconds),
-        # then calls process_operation(...) – identical non-interactive lifecycle to
-        # WorkflowOperationNode.
+        # gathers normalized user input + dependency outputs, then calls
+        # process_operation(...). Subclasses may accept either
+        # (user_input, dependency_results, session_state) or
+        # (dependency_results, session_state); the base class adapts at runtime.
         ...
 
     def process_operation(
         self,
+        user_input: str,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
         # Main customization point for subclasses.
         # Invoke the skill following the ## Using section of skill.md.
         # Use self.skill_using / self.skill_examples for inline reference.
-        # Return StepRunOutput(summary=..., card=..., derived=...) with skill results.
+        # Return StepRunOutput(card=..., derived=...) with skill results.
         raise NotImplementedError
 
 
@@ -304,7 +304,7 @@ class WorkflowChatNode(GNode):
     MODEL_ENV = "META_AGENT_LLM_MODEL"
     BASE_URL_ENV = "META_AGENT_LLM_BASE_URL"
 
-    DEFAULT_PROVIDER = "openai"
+    DEFAULT_PROVIDER = "deepseek"
     DEFAULT_MODEL_BY_PROVIDER = {
         "openai": "gpt-4.1-mini",
         "deepseek": "deepseek-chat",
@@ -341,8 +341,8 @@ class WorkflowChatNode(GNode):
         # - read/normalize user input (required unless INPUT_REQUIRED=False)
         # - gather dependency outputs
         # - call process_chat(...)
-        #     * must return a non-empty prompt string
-        #     * then call _request_llm(prompt), then build_step_output(...)
+        #     * may return a StepRunOutput directly, or a non-empty prompt string
+        #     * when a string is returned, call _request_llm(prompt), then build_step_output(...)
         # - validate StepRunOutput and persist output/card/state/callback cleanup
         # - on exceptions mark failed and return CStatus(1001, ...)
         ...
@@ -358,7 +358,7 @@ class WorkflowChatNode(GNode):
         self,
         dependency_results: dict[str, StepRunOutput],
     ) -> dict[str, Any]:
-        # Converts each dependency output into {summary, card, derived}.
+        # Converts each dependency output into {card, derived}.
         ...
 
     def build_user_prompt(
@@ -372,7 +372,7 @@ class WorkflowChatNode(GNode):
         ...
 
     def _resolve_provider(self) -> str:
-        # Reads env META_AGENT_LLM_PROVIDER, defaults to openai.
+        # Reads env META_AGENT_LLM_PROVIDER, defaults to deepseek.
         ...
 
     def _resolve_model(self, provider: str) -> str:
@@ -392,8 +392,9 @@ class WorkflowChatNode(GNode):
         user_input: str,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
-    ) -> str:
+    ) -> str | StepRunOutput:
         # Default: produce a prompt from inputs + context.
+        # Returning StepRunOutput directly is also allowed.
         return self.build_user_prompt(user_input, dependency_results, session_state)
 
     def _request_llm(self, user_prompt: str) -> str:
@@ -402,7 +403,7 @@ class WorkflowChatNode(GNode):
         ...
 
     def build_step_output(self, content: str) -> StepRunOutput:
-        # summary/content + card/derived containing provider/model/response.
+        # card/derived containing provider/model/response.
         ...
 
     def clone(self):
@@ -431,6 +432,6 @@ class WorkflowChatNode(GNode):
 ## Preserved Semantics
 
 - Same node taxonomy and interfaces: input, operation, service, chat, file, skill.
-- Same required override points: `process_input`, `process_operation` (and for service nodes usually `build_instance_spec`), optional `build_step_output` for file nodes, optional chat processors.
+- Same required override points: `process_input`, `process_operation`, `process_chat`, and for service nodes the two-phase `install_environment` / `start_service` pair.
 - Same `StepRunOutput` contract and error semantics (`1001` for execution/type failures, `1003` for missing required input).
 - Same runtime persistence behavior into workflow session maps (`step_outputs`, `step_cards`, `step_states`, `pending_inputs`, callbacks).

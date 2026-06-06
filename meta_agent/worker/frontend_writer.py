@@ -21,6 +21,7 @@ if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
 from meta_agent.llm_client.coder import Coder
+from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
 from meta_agent.tools.text_tools import normalize_requirement_analysis_result
 
 
@@ -29,6 +30,10 @@ class PromptFrontendCoder(Coder):
 	"""Coder that emits AG-UI lifecycle frontend HTML from step metadata."""
 
 	prompt_path: str = "worker/prompts/pydaograph_frontend_prompt.md"
+	reference_frontend_max_chars: int = 12000
+	node_ui_context_max_chars: int = 18000
+	graph_plan_context_max_chars: int = 12000
+	step_output_card_context_max_chars: int = 12000
 
 	def __post_init__(self) -> None:
 		prompt_file = ROOT_DIR / self.prompt_path
@@ -134,10 +139,33 @@ class PromptFrontendCoder(Coder):
 		reference_frontend: str,
 		node_ui_context: str,
 		graph_plan_context: str,
+		step_output_card_context: str,
 		frontend_style_prompt: str | None = None,
 	) -> str:
 		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
+		reference_frontend = self._truncate_context(
+			reference_frontend,
+			label="reference_frontend",
+			max_chars=self.reference_frontend_max_chars,
+		)
+		node_ui_context = self._truncate_context(
+			node_ui_context,
+			label="node_ui_context",
+			max_chars=self.node_ui_context_max_chars,
+		)
+		graph_plan_context = self._truncate_context(
+			graph_plan_context,
+			label="graph_plan_context",
+			max_chars=self.graph_plan_context_max_chars,
+		)
+		step_output_card_context = self._truncate_context(
+			step_output_card_context,
+			label="step_output_card_context",
+			max_chars=self.step_output_card_context_max_chars,
+		)
 		cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
+		is_cron_task = bool(cron_meta and cron_meta["is_cron_task"])
+		effective_run_step_endpoint = "/cron/start" if is_cron_task else run_step_endpoint
 		style_block = ""
 		if frontend_style_prompt and frontend_style_prompt.strip():
 			style_block = (
@@ -145,15 +173,35 @@ class PromptFrontendCoder(Coder):
 				f"{frontend_style_prompt.strip()}\n\n"
 			)
 		cron_block = ""
-		if cron_meta and cron_meta["is_cron_task"]:
+		execution_behavior = (
+			"3) Stream SSE from the execution endpoint and react to STEP_STARTED, STEP_FINISHED, TEXT_MESSAGE_CONTENT, CUSTOM(step_card), RUN_ERROR, RUN_FINISHED when the endpoint is stream-based. TEXT_MESSAGE_CONTENT is streamed in multiple chunks for chat nodes; append chunks in order and render live.\n"
+		)
+		input_behavior = (
+			"7) If step metadata includes inputRequired=false or nodeKind in ('operation','service','skill'), do not require text input for submission.\n"
+			"7.1) For any step that does not require direct user input (for example operation/service/skill/dependency-driven steps), auto-submit it immediately when it becomes unlocked and visible; do not require a click on a Run button.\n"
+			"8) If step extData.type == 'user_file_input' (or nodeKind='file'), treat it as WorkflowFileNode input: render a multi-file upload control (allow selecting multiple files).\n"
+			"9) For file upload nodes, read selected files as encoded byte strings and submit input as {'files':[{'fileName','fileBytes'}, ...]} where fileBytes is a data-url/byte-string derived from each uploaded file.\n"
+			"10) If only one file is selected in file-upload nodes, still use the same files array shape with one item for consistency.\n"
+			"11) If step extData.type == 'user_input', 'chat_input', or 'skill': if extData.inputs_format is non-empty, render structured form controls by field type (string/number/boolean), then stringify the collected object (e.g., JSON.stringify) and submit that serialized value as input string; if inputs_format is empty, keep plain text input behavior.\n"
+			"11.0) Concrete example: extData.inputs_format={'email_address':'string','password':'number','remember_me':'boolean'} => render text/number/checkbox controls, build {'email_address':'user@example.com','password':123456,'remember_me':true}, then submit input='{'\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}'.\n"
+			"11.1) For extData.type == 'chat_input' (or nodeKind='chat') with no inputs_format, keep plain text input submission behavior.\n"
+		)
+		if is_cron_task:
 			cron_expression = cron_meta["crontab_expression"] or "TBD"
 			cron_block = (
 				"Cron workflow requirements:\n"
 				f"- requirement_analysis_result says this is a cron workflow with task_type={cron_meta['task_type'] or 'cron'} and crontab_expression={cron_expression}.\n"
-				"- Add a dedicated Cron tab in the main navigation/header tabs alongside the workflow view.\n"
-				"- The Cron tab must fetch GET /api/cron-config on load and display task type, crontab expression, and cron status clearly.\n"
-				"- In the Cron tab, provide a small preview form for a crontab expression that calls POST /api/cron-preview and renders validation errors or the next five run times.\n"
-				"- Keep the cron tab visually consistent with the rest of the frontend and do not remove the existing workflow step cards.\n\n"
+				"- Replace any per-step POST /api/run-step flow with a single Start Cron button that calls POST /cron/start.\n"
+				"- Reuse sessionId from localStorage when calling POST /cron/start and show the returned running state, sessionId, taskType, and crontabExpression inline.\n"
+				"- Keep the workflow step cards visible as read-only overview cards, but do not render per-step Run buttons, text inputs, or upload forms in cron mode.\n"
+				"- Keep the cron controls visually consistent with the rest of the frontend and leave Reset Session available.\n\n"
+			)
+			execution_behavior = (
+				"3) In cron mode, do not submit individual steps to /api/run-step. Render one prominent Start Cron button that calls POST /cron/start with fetch.\n"
+				"3.1) After POST /cron/start returns, render the response inline and preserve the workflow cards as a read-only execution overview.\n"
+			)
+			input_behavior = (
+				"7) In cron mode, do not render direct per-step submission controls. The only execution trigger is the Start Cron button wired to POST /cron/start.\n"
 			)
 
 		return (
@@ -162,41 +210,36 @@ class PromptFrontendCoder(Coder):
 			"Use the provided reference HTML style and behavior as the baseline.\n\n"
 			f"{style_block}"
 			f"{cron_block}"
-			f"run-step endpoint: {run_step_endpoint}\n"
+			f"execution endpoint: {effective_run_step_endpoint}\n"
 			f"reset-session endpoint: {reset_session_endpoint}\n\n"
 			"Graph plan JSON context:\n"
 			f"{graph_plan_context}\n\n"
+			"Per-step StepRunOutput.card format context parsed from generated node files (authoritative when available; use these shapes to design each response/result card before falling back to generic rows/actions rendering):\n"
+			f"{step_output_card_context}\n\n"
 			"Node UI HTML context loaded from default node_ui folder (copy these HTML/CSS/JS patterns as closely as possible for each matching step card):\n"
 			f"{node_ui_context}\n\n"
-			"The backend emits SSE AG-UI events, including CUSTOM event name='step_card'.\n"
+			"The backend may emit AG-UI events, including CUSTOM event name='step_card'.\n"
 			"Each step returns StepRunOutput (input nodes via process_input, file nodes via build_step_output after persistence, chat nodes via build_step_output, operation nodes via process_operation) with fields:\n"
-			"- summary: string\n"
 			"- card: object (render rows from card.rows where each row has name/value; also render card.actions when present)\n"
 			"- derived: object (for backend chaining and possible final display)\n\n"
 			"step_card event payload shape:\n"
-			"- stepId, title, prompt, state, summary, card, derived, unlocked, isFinal\n\n"
+			"- stepId, title, prompt, state, card, derived, unlocked, isFinal\n\n"
 			"Required UI behavior:\n"
 			"1) Build one step card per step from this metadata.\n"
 			"2) Enforce dependency-gated input enabling (only unlocked step can submit).\n"
 			"2.1) For the card of the currently running step, show a visible running-circle loading indicator while waiting for backend result events, then hide it when the step finishes or errors.\n"
-			"3) Stream SSE from run-step endpoint and react to STEP_STARTED, STEP_FINISHED, TEXT_MESSAGE_CONTENT, CUSTOM(step_card), RUN_ERROR, RUN_FINISHED. TEXT_MESSAGE_CONTENT is streamed in multiple chunks for chat nodes; append chunks in order and render live.\n"
-			"4) Render step_card.state, step_card.summary, step_card.card.rows, and step_card.card.actions into the matching step card.\n"
+			f"{execution_behavior}"
+			"4) Render step_card.state and the full step_card.card payload into the matching step card. Use the per-step StepRunOutput.card format context above to shape the response UI for each step; when that context is missing, fall back to generic rendering for card.rows and card.actions.\n"
+			"4.1) When per-step StepRunOutput.card format context is available, implement and use a dedicated helper named renderCardSchemaSections to render schema-aware response/result sections for the matching step card.\n"
 			"5) Maintain sessionId in localStorage and show it in a badge.\n"
 			"6) Include New Session + Reset Session actions that call reset-session endpoint.\n"
-			"7) If step metadata includes inputRequired=false or nodeKind in ('operation','service','skill'), do not require text input for submission.\n"
-			"7.1) For any step that does not require direct user input (for example operation/service/skill/dependency-driven steps), auto-submit it immediately when it becomes unlocked and visible; do not require a click on a Run button.\n"
-			"8) If step extData.type == 'user_file_input' (or nodeKind='file'), treat it as WorkflowFileNode input: render a multi-file upload control (allow selecting multiple files).\n"
-			"9) For file upload nodes, read selected files as encoded byte strings and submit input as {'files':[{'fileName','fileBytes'}, ...]} where fileBytes is a data-url/byte-string derived from each uploaded file.\n"
-			"10) If only one file is selected in file-upload nodes, still use the same files array shape with one item for consistency.\n"
-			"11) For extData.type == 'user_input', 'chat_input', or 'skill': if extData.inputs_format is non-empty, render structured form controls by field type (string/number/boolean), then stringify the collected object (e.g., JSON.stringify) and submit that serialized value as input string; if inputs_format is empty, keep plain text input behavior.\n"
-			"11.0) Concrete example: extData.inputs_format={'email_address':'string','password':'number','remember_me':'boolean'} => render text/number/checkbox controls, build {'email_address':'user@example.com','password':123456,'remember_me':true}, then submit input='{'\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}'.\n"
-			"11.1) For extData.type == 'chat_input' (or nodeKind='chat') with no inputs_format, keep plain text input submission behavior.\n"
+			f"{input_behavior}"
 			"12) For nodeKind='chat', render labels/status as chat-oriented, keep the same step-card event flow and payload handling, and surface progressive LLM text as chunks arrive over SSE.\n"
 			"13) For nodeKind='file', render labels/status as file-upload/storage oriented; for nodeKind='service', render labels/status as service startup/orchestration oriented; for nodeKind='skill', render labels/status as skill-execution oriented; keep the same step-card event flow and payload handling.\n"
 			"13.1) For auto-run steps, show non-interactive UI (informational text only) and rely on card running indicator/state rather than clickable run controls.\n"
-			"14) Render step cards progressively in metadata order: show only the first card initially, and reveal each next card only after the previous card has finished.\n"
+			"14) Render step cards progressively in metadata order: show only the first card initially, and reveal each later card only when that card becomes unlocked. Do not gate card visibility on the previous card's STEP_FINISHED event alone.\n"
 			"15) Make step cards visually polished and modern: clear hierarchy, elegant spacing, subtle gradients/shadows, rounded card shells, and compact status/meta chips.\n"
-			"16) Treat step card sections distinctly (header/body/input/results) and improve readability for summary, rows, and actions without changing backend event semantics.\n"
+			"16) Treat step card sections distinctly (header/body/input/results) and improve readability for rows, and actions without changing backend event semantics.\n"
 			"17) For nodeKind='chat', use chat-oriented labels; for nodeKind='file', use upload/storage labels.\n"
 			"18) Keep implementation minimal and robust; no extra features beyond the polished card styling and required behavior.\n"
 			"19) For each step, find the matching node_ui HTML snippet (by step id or title substring) and faithfully copy its CSS rules, component markup (chip grids, pill rows, tag lists, param-groups, dependency-context boxes), and interaction JS (click-to-toggle, add/remove handlers) into that step's card body. Do not redesign what is already defined in the node snippet.\n"
@@ -206,6 +249,20 @@ class PromptFrontendCoder(Coder):
 			f"{steps_json}\n\n"
 			"Reference frontend example (adapt this structure and event handling):\n"
 			f"{reference_frontend}\n"
+		)
+
+	@staticmethod
+	def _truncate_context(text: str, *, label: str, max_chars: int) -> str:
+		if max_chars <= 0 or len(text) <= max_chars:
+			return text
+
+		head_chars = max_chars // 2
+		tail_chars = max_chars - head_chars
+		omitted = len(text) - max_chars
+		return (
+			f"{text[:head_chars]}\n\n"
+			f"[truncated {label}: omitted {omitted} characters to keep the frontend generation request bounded]\n\n"
+			f"{text[-tail_chars:]}"
 		)
 
 	def _load_default_frontend_context(
@@ -245,6 +302,49 @@ class PromptFrontendCoder(Coder):
 
 		return node_ui_context, graph_plan_context
 
+	def _load_step_output_card_context(
+		self,
+		*,
+		steps_meta: Sequence[Mapping[str, Any]],
+		output_path: Path,
+		base_dir: str | Path | None = None,
+	) -> str:
+		if base_dir is None:
+			resolved_base_dir = output_path.parent.resolve()
+		else:
+			resolved_base_dir = Path(base_dir).expanduser().resolve()
+
+		card_schemas: list[dict[str, Any]] = []
+		for step in steps_meta:
+			step_id = str(step.get("id", "")).strip()
+			if not step_id:
+				continue
+
+			node_file = resolved_base_dir / f"{step_id}.py"
+			if not node_file.exists():
+				matches = sorted(resolved_base_dir.rglob(f"{step_id}.py"))
+				node_file = matches[0] if matches else None
+			if node_file is None or not node_file.exists():
+				continue
+
+			schema = compile_node_file_and_get_step_output_card_schema(str(node_file))
+			if not schema:
+				continue
+
+			card_schemas.append(
+				{
+					"stepId": step_id,
+					"title": schema.get("title") or str(step.get("title", "")).strip(),
+					"source": str(node_file),
+					"card": schema.get("card", {}),
+				}
+			)
+
+		if not card_schemas:
+			return f"[missing] no StepRunOutput card schemas found under: {resolved_base_dir}"
+
+		return json.dumps(card_schemas, ensure_ascii=False, indent=2)
+
 	def write_frontend_html(
 		self,
 		*,
@@ -258,7 +358,7 @@ class PromptFrontendCoder(Coder):
 		frontend_style_prompt: str | None = None,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 20000,
+		max_tokens: int = 10000,
 	) -> Path:
 		normalized_steps = self._normalize_steps(steps_meta)
 
@@ -280,6 +380,11 @@ class PromptFrontendCoder(Coder):
 			target_path,
 			base_dir=context_base_dir,
 		)
+		step_output_card_context = self._load_step_output_card_context(
+			steps_meta=normalized_steps,
+			output_path=target_path,
+			base_dir=context_base_dir,
+		)
 
 		user_prompt = self._build_user_prompt(
 			steps_meta=normalized_steps,
@@ -289,6 +394,7 @@ class PromptFrontendCoder(Coder):
 			reference_frontend=reference_frontend,
 			node_ui_context=node_ui_context,
 			graph_plan_context=graph_plan_context,
+			step_output_card_context=step_output_card_context,
 			frontend_style_prompt=frontend_style_prompt,
 		)
 

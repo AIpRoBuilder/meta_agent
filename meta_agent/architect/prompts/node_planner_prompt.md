@@ -20,7 +20,7 @@
 - 需要实现/覆写的关键函数
 - 需要使用的关键工具/数据（dependency_results、session_state、外部api、packages）
 - 输入与依赖处理要点
-- 输出约定（summary/card/derived）
+- 输出约定（card/derived）
 
 ## 禁止项
 - 不要输出源码。

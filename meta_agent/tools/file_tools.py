@@ -462,6 +462,139 @@ def _extract_derived_keys_from_runtime_method(method_obj: Any) -> set[str]:
 	return set()
 
 
+def _extract_class_string_constant(cls: ast.ClassDef, attr_name: str) -> str | None:
+	for stmt in cls.body:
+		if not isinstance(stmt, ast.Assign):
+			continue
+		for target in stmt.targets:
+			if isinstance(target, ast.Name) and target.id == attr_name:
+				if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+					return stmt.value.value
+	return None
+
+
+def _ast_preview_text(expr: ast.AST) -> str:
+	if isinstance(expr, ast.Name):
+		return expr.id
+	if isinstance(expr, ast.Attribute):
+		return f"{_ast_preview_text(expr.value)}.{expr.attr}"
+	if isinstance(expr, ast.Call):
+		return f"call:{_ast_preview_text(expr.func)}"
+	if isinstance(expr, ast.Subscript):
+		return f"{_ast_preview_text(expr.value)}[...]"
+	if isinstance(expr, ast.JoinedStr):
+		return "formatted_string"
+	return expr.__class__.__name__.lower()
+
+
+def _extract_card_preview_from_expr(expr: ast.AST, bindings: Mapping[str, Any]) -> Any:
+	if isinstance(expr, ast.Constant):
+		return expr.value
+
+	if isinstance(expr, ast.Name):
+		return bindings.get(expr.id, f"<{expr.id}>")
+
+	if isinstance(expr, ast.Dict):
+		preview: dict[str, Any] = {}
+		for key_node, value_node in zip(expr.keys, expr.values):
+			if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+				preview[key_node.value] = _extract_card_preview_from_expr(value_node, bindings)
+		return preview
+
+	if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+		return [_extract_card_preview_from_expr(item, bindings) for item in expr.elts]
+
+	if isinstance(expr, ast.JoinedStr):
+		return "<formatted_string>"
+
+	if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub):
+		operand = _extract_card_preview_from_expr(expr.operand, bindings)
+		if isinstance(operand, (int, float)):
+			return -operand
+		return f"<expr:{_ast_preview_text(expr)}>"
+
+	return f"<expr:{_ast_preview_text(expr)}>"
+
+
+def _extract_step_output_card_from_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, Any] | None:
+	bindings: dict[str, Any] = {}
+
+	for node in ast.walk(method):
+		if isinstance(node, ast.Assign):
+			preview = _extract_card_preview_from_expr(node.value, bindings)
+			for target in node.targets:
+				if isinstance(target, ast.Name):
+					bindings[target.id] = preview
+
+		if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+			bindings[node.target.id] = _extract_card_preview_from_expr(node.value, bindings)
+
+		if isinstance(node, ast.Return) and isinstance(node.value, ast.Call):
+			call = node.value
+			is_step_output = (
+				(isinstance(call.func, ast.Name) and call.func.id == "StepRunOutput")
+				or (isinstance(call.func, ast.Attribute) and call.func.attr == "StepRunOutput")
+			)
+			if not is_step_output:
+				continue
+
+			for kw in call.keywords:
+				if kw.arg != "card":
+					continue
+				preview = _extract_card_preview_from_expr(kw.value, bindings)
+				if isinstance(preview, dict):
+					return preview
+				return {"_preview": preview}
+
+	return None
+
+
+def compile_node_file_and_get_step_output_card_schema(node_file_path: str) -> dict[str, Any] | None:
+	"""Parse a node file and return the first StepRunOutput card schema preview.
+
+	The preview is static and AST-based: literal card payload structure is preserved,
+	while dynamic expressions are replaced with placeholder strings.
+	"""
+	path = Path(node_file_path)
+	try:
+		source = path.read_text(encoding="utf-8")
+		tree = ast.parse(source)
+	except Exception:
+		return None
+
+	for node in tree.body:
+		if not isinstance(node, ast.ClassDef):
+			continue
+
+		base_names = {_base_name(base) for base in node.bases}
+		base_names.discard(None)
+		workflow_bases = [base for base in base_names if base in _WORKFLOW_BASE_CLASS_TO_METHODS]
+		if not workflow_bases:
+			continue
+
+		method_candidates: list[str] = []
+		for workflow_base in workflow_bases:
+			for method_name in _WORKFLOW_BASE_CLASS_TO_METHODS[workflow_base]:
+				if method_name not in method_candidates:
+					method_candidates.append(method_name)
+
+		for method_name in method_candidates:
+			method = _find_method(node, method_name)
+			if method is None:
+				continue
+			card_schema = _extract_step_output_card_from_method(method)
+			if card_schema is None:
+				continue
+
+			return {
+				"step_id": _extract_class_string_constant(node, "STEP_ID") or node.name,
+				"title": _extract_class_string_constant(node, "TITLE") or node.name,
+				"card": card_schema,
+			}
+
+	return None
+
+
 def collect_session_state_keys_from_node_file(node_file_path: str, node_class_name: str) -> set[str]:
 	"""Collect string keys accessed on ``session_state`` dict in a node class file.
 

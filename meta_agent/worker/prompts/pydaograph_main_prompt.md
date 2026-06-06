@@ -47,7 +47,7 @@ Required functions and endpoints:
     - Store and return the created engine
 - `GET /` with `response_class=HTMLResponse`
     - Return `frontend.html` content from same directory
-- `POST /api/run-step`
+- For normal workflows, `POST /api/run-step`
     - Resolve engine via `_get_engine(payload.sessionId)`
     - Resolve step metadata by `payload.stepId` (from `STEP_CHAIN`) and branch by `extData.type`.
     - For `extData.type == "user_file_input"` (WorkflowFileNode):
@@ -55,6 +55,11 @@ Required functions and endpoints:
         - Else pass `payload.input` through.
     - For all other step types, pass `payload.input` through to `engine._run_step_events(...)`.
     - Return `StreamingResponse(engine._run_step_events(step_id, normalized_input), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})`
+- For cron workflows, replace `POST /api/run-step` with `POST /cron/start`
+    - Do not generate `/api/run-step` in cron mode.
+    - Start or reuse an in-memory periodic runner for the active session.
+    - Use `asyncio.create_task(...)` for the background loop.
+    - Periodically call `engine._run_all_steps_events(...)` based on the configured cron expression.
 - `POST /api/reset-session` with `response_model=ResetSessionOutput`
     - Resolve engine and call `engine.reset_session()`
     - Return `ResetSessionOutput(ok=True, sessionId=..., threadId=engine.thread_id, runId=engine.session.run_id)`

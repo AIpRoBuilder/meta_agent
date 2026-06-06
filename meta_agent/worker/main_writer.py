@@ -76,14 +76,32 @@ class PromptMainFileCoder(Coder):
     ) -> str:
         class_chain = ", ".join(node_class_names) if node_class_names else "none"
         cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
+        is_cron_task = bool(cron_meta and cron_meta["is_cron_task"])
         cron_lines: list[str] = []
-        if cron_meta and cron_meta["is_cron_task"]:
+        execution_lines = [
+            "- Provide POST /api/run-step returning StreamingResponse(engine._run_step_events(...)) with SSE headers.",
+            "- In /api/run-step, resolve step metadata by payload.stepId and branch by extData.type using dict-safe access from STEP_CHAIN step_meta() (no direct attribute access like `s.id` or `step_meta.extData`).",
+            "- Use metadata lookup shape equivalent to: `next((s for s in STEP_CHAIN if _meta_field(s, \"id\") == payload.stepId), None)`.",
+            "- Read ext type via mapping-safe logic equivalent to: `ext_data = _meta_field(step_meta, \"extData\"); ext_type = ext_data.get(\"type\") if isinstance(ext_data, Mapping) else None`.",
+            "- Only for extData.type == 'user_file_input', if payload.file_path is provided pass {'file_path': payload.file_path}; otherwise pass payload.input.",
+        ]
+        if is_cron_task:
             cron_expression = cron_meta["crontab_expression"] or "TBD"
+            execution_lines = [
+                "- For cron workflows, replace POST /api/run-step with POST /cron/start; do not generate /api/run-step.",
+                "- POST /cron/start should accept or derive a sessionId, start or reuse a lightweight in-memory background cron runner, and return current running state, sessionId, and cron metadata.",
+                "- In /cron/start, reuse the cached WorkflowEngine/session for cron execution and guard against duplicate runners for the same session.",
+                "- The cron runner must periodically trigger WorkflowEngine._run_all_steps_events for the active cron session.",
+            ]
             cron_lines = [
                 "- This workflow is a cron task according to requirement_analysis_result.",
                 f"- Cron metadata: task_type={cron_meta['task_type'] or 'cron'}, crontab_expression={cron_expression}.",
                 "- Import croniter and add a read-only cron config API GET /api/cron-config that returns isCronTask, taskType, and crontabExpression from the analyzed requirement.",
                 "- Add a POST /api/cron-preview endpoint that accepts a crontabExpression and returns validation result plus the next five scheduled run times in ISO format.",
+                "- Implement the cron runner in main.py only: compute future run times from the configured crontab expression, sleep until the next due time, then call ag_ui_flow.engine.WorkflowEngine._run_all_steps_events for the active cron session.",
+                "- Keep cron runner state in memory only (for example a CRON_TASKS map plus last-run metadata); do not add databases, queues, or external schedulers.",
+                "- Reuse the cached engine/session for cron execution, guard against duplicate runners for the same session, and return a clear no-op response when a runner is already active.",
+                "- Use asyncio.create_task for the background loop and keep the /cron/start endpoint non-blocking.",
                 "- Keep the cron API lightweight and self-contained in main.py; do not add persistence, auth, or unrelated scheduling infrastructure.",
             ]
         template_lines: Iterable[str] = (
@@ -107,11 +125,7 @@ class PromptMainFileCoder(Coder):
             "- Add a small helper (for example `_meta_field(meta, key, default=None)`) that reads step metadata from either dict-like or object-like shapes.",
             "- Implement _get_engine(session_id) that lazily creates WorkflowEngine per session and caches it in ENGINES.",
             "- Provide GET / returning frontend.html from the same directory.",
-            "- Provide POST /api/run-step returning StreamingResponse(engine._run_step_events(...)) with SSE headers.",
-			"- In /api/run-step, resolve step metadata by payload.stepId and branch by extData.type using dict-safe access from STEP_CHAIN step_meta() (no direct attribute access like `s.id` or `step_meta.extData`).",
-			"- Use metadata lookup shape equivalent to: `next((s for s in STEP_CHAIN if _meta_field(s, \"id\") == payload.stepId), None)`.",
-			"- Read ext type via mapping-safe logic equivalent to: `ext_data = _meta_field(step_meta, \"extData\"); ext_type = ext_data.get(\"type\") if isinstance(ext_data, Mapping) else None`.",
-            "- Only for extData.type == 'user_file_input', if payload.file_path is provided pass {'file_path': payload.file_path}; otherwise pass payload.input.",
+            *execution_lines,
             "- Provide POST /api/reset-session returning ResetSessionOutput with ok/sessionId/threadId/runId.",
             "- Keep naming and endpoint shapes consistent with the lifecycle example and avoid adding unrelated routes.",
             f"- If adding a local server launcher helper, default host to {fastapi_host} and port to {fastapi_port}; reload default is {uvicorn_reload}.",

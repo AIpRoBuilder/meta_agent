@@ -501,18 +501,22 @@ class AgentBuilder:
         temperature: float = 0.3,
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
+        max_audit_rounds: int = 3,
     ) -> str:
         """Generate and audit frontend.html."""
         frontend_path = os.path.join(self.root_dir, output_filename)
         print(f"Generating frontend -> {frontend_path}")
         steps_meta = self._build_steps_meta()
 
+        if max_audit_rounds < 1:
+            raise ValueError("max_audit_rounds must be at least 1.")
+
         effective_style_prompt = frontend_style_prompt
         if effective_style_prompt is None:
             effective_style_prompt = self.frontend_style_prompt
         if isinstance(effective_style_prompt, str):
             effective_style_prompt = effective_style_prompt.strip() or None
-
+        print("starting frontend generation with style prompt:", repr(effective_style_prompt))
         self.frontend_writer.write_frontend_html(
             steps_meta=steps_meta,
             output_path=frontend_path,
@@ -525,14 +529,27 @@ class AgentBuilder:
             temperature=temperature,
         )
 
-        while True:
+        last_amendment = ""
+        for audit_round in range(1, max_audit_rounds + 1):
             ok, violations = self.frontend_auditor.audit_frontend_file(frontend_path)
             if ok:
                 print("frontend.html audit passed.")
                 break
-            amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-            print("frontend.html audit failed. Applying amendment...")
-            self.frontend_writer._amend_frontend_with_feedback(frontend_path, amendment, temperature=max(0.2, temperature))
+            last_amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+            if audit_round >= max_audit_rounds:
+                raise RuntimeError(
+                    "frontend.html audit did not pass after "
+                    f"{max_audit_rounds} attempt(s). Last feedback:\n{last_amendment}"
+                )
+            print(
+                "frontend.html audit failed. Applying amendment... "
+                f"({audit_round}/{max_audit_rounds})"
+            )
+            self.frontend_writer._amend_frontend_with_feedback(
+                frontend_path,
+                last_amendment,
+                temperature=max(0.2, temperature),
+            )
 
         self.frontend_output_path = frontend_path
         return frontend_path

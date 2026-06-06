@@ -55,6 +55,7 @@ class Coder:
     deepseek_base_url: str = "https://api.deepseek.com"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     oneoneoneapi_base_url: str = "https://111api.chat/v1"
+    request_timeout: float = 180.0
     client: Optional[object] = None
 
     def __post_init__(self) -> None:
@@ -72,7 +73,7 @@ class Coder:
                     raise ValueError(
                         "Missing OpenAI API key; set OPENAI_API_KEY or pass api_key."
                     )
-                client_kwargs = {"api_key": resolved_key}
+                client_kwargs = {"api_key": resolved_key, "timeout": self.request_timeout}
                 if resolved_base_url:
                     client_kwargs["base_url"] = resolved_base_url
                 self.client = OpenAI(**client_kwargs)
@@ -95,7 +96,11 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("DEEPSEEK_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing DEEPSEEK_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(api_key=resolved_key, base_url=self.deepseek_base_url)
+                self.client = OpenAI(
+                    api_key=resolved_key,
+                    base_url=self.deepseek_base_url,
+                    timeout=self.request_timeout,
+                )
             elif self.provider == "qwen":
                 if OpenAI is None:
                     raise ImportError(
@@ -105,7 +110,11 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("DASHSCOPE_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing DASHSCOPE_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(api_key=resolved_key, base_url=self.qwen_base_url)
+                self.client = OpenAI(
+                    api_key=resolved_key,
+                    base_url=self.qwen_base_url,
+                    timeout=self.request_timeout,
+                )
             elif self.provider == "111api":
                 if OpenAI is None:
                     raise ImportError(
@@ -115,7 +124,11 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("ONEONEONEAPI_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing ONEONEONEAPI_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(api_key=resolved_key, base_url=self.oneoneoneapi_base_url)
+                self.client = OpenAI(
+                    api_key=resolved_key,
+                    base_url=self.oneoneoneapi_base_url,
+                    timeout=self.request_timeout,
+                )
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 

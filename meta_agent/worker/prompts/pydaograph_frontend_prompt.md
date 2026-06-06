@@ -10,9 +10,10 @@ Core output contract:
 
 Workflow context:
 - You are provided `graph_plan.json` content as context; use it as authoritative graph/dependency/source-of-truth context.
+- You may be provided per-step `StepRunOutput.card` schema previews parsed from generated node files; treat them as authoritative response-card format guidance for the matching step and mirror those sections/keys in the frontend result card UI.
 - You are provided all node HTML snippets from the default `node_ui/` directory as context; for each step card, **faithfully reproduce** the matching node snippet's HTML structure, CSS classes, color palette, spacing values, and component shapes (chips, pills, tags, keyword-grids, dependency-context boxes, param-groups, etc.) inside that step's card body — copy them as closely as possible rather than inventing a new design. If no matching snippet exists for a step, fall back to the global card style.
 - Do not require any external `page_title` input variable; choose a sensible static title directly in generated HTML.
-- Backend endpoint for running one step: `POST /api/run-step`.
+- Backend execution endpoint: use `POST /api/run-step` for normal workflows, and replace it with `POST /cron/start` for cron workflows.
 - Backend endpoint for reset/new session init: `POST /api/reset-session`.
 - Input step nodes run `process_input(...)`, file nodes build results via `build_step_output(...)` after persistence, chat nodes run `process_chat(...)`, and operation nodes run `process_operation(...)`.
 - Operation nodes do not require user text input and should be submitted without an input payload.
@@ -23,7 +24,6 @@ Workflow context:
 - For `extData.type == "skill"` / `nodeKind='skill'`, treat the step as a `WorkflowSkillNode` (skill-library execution): do not render direct user inputs and auto-submit once unlocked. Show skill-execution oriented status in the card instead of interactive run controls.
 - If only one file is selected in file-upload steps (`nodeKind='file'`), keep the same `files` array shape with one item.
 - Step logic on backend returns `StepRunOutput` with:
-  - `summary: str`
   - `card: dict` (commonly includes `rows: [{name, value}, ...]` and may include `actions` to display)
   - `derived: dict`
 
@@ -34,19 +34,23 @@ Event handling requirements:
   - `STEP_FINISHED` -> mark step as completed and unlock next eligible step.
   - `TEXT_MESSAGE_CONTENT` -> append assistant text deltas in arrival order; these are streamed in multiple chunks for `nodeKind='chat'` responses and must be rendered progressively.
   - `CUSTOM` with `name == "step_card"` -> render/update step card using payload:
-    - `stepId`, `title`, `prompt`, `summary`, `card`, `derived`, `unlocked`, `isFinal`.
+    - `stepId`, `title`, `prompt`, `card`, `derived`, `unlocked`, `isFinal`.
   - `RUN_ERROR` -> show error message and re-enable step submit.
   - `RUN_FINISHED` -> stop stream state for this submit.
 
 UI behavior requirements:
 - Build cards from provided step metadata (id/title/dependencies).
-- Render cards progressively: only show the first card initially, and only reveal a card after the immediately previous card has completed (`STEP_FINISHED`).
+- Render cards progressively: only show the first card initially, and only reveal a later card when that card becomes unlocked.
+- Do not gate card visibility on the immediately previous card's `STEP_FINISHED` event alone; use the unlocked state from step metadata/runtime updates.
 - Only allow input for currently unlocked step(s) whose dependencies are completed.
 - Show a chat area for system/assistant lifecycle text updates.
 - Ensure chat text updates are incremental: do not replace prior assistant text when a new `TEXT_MESSAGE_CONTENT` chunk arrives; append to the current assistant message.
-- Render each step card summary, `card.rows` key/value table, and `card.actions` list when available.
+- Render each step card `card.rows` key/value table, and `card.actions` list when available.
+- When per-step `StepRunOutput.card` schema previews are provided, use them to determine the response-card sections/layout for the matching step before falling back to generic `card.rows` / `card.actions` rendering.
+- When per-step `StepRunOutput.card` schema previews are provided, implement and use a helper named `renderCardSchemaSections` for that schema-aware response-card rendering path.
 - Persist `sessionId` in localStorage and display it in the page.
 - Include `New Session` and `Reset Session` buttons wired to `/api/reset-session`.
+- For cron workflows, do not render per-step submit controls. Render one prominent button that calls `/cron/start` with the current `sessionId` and show the returned cron status inline.
 - Disable/enable submit controls to prevent duplicate submissions while waiting.
 - For the currently running step card, show a visible running-circle loading indicator while waiting for result events, and hide the indicator when that step completes or errors.
 - For input-required steps, include a file input (`type="file"`) near the text input.
@@ -100,7 +104,7 @@ Style requirements:
 - Distinguish card regions (header/body/input/result) with visual rhythm and consistent padding.
 - Add compact status pills and meta chips for step id/dependencies/runtime state.
 - Include a clear circular running indicator in the step header while a step is executing.
-- Improve readability of summary/rows/actions with deliberate typography contrast and spacing.
+- Improve readability of rows/actions with deliberate typography contrast and spacing.
 - Use smooth, minimal transitions for hover/focus/status changes (avoid heavy motion).
 - Keep contrast accessible and preserve responsive behavior on narrow screens.
 - No external UI libraries.
