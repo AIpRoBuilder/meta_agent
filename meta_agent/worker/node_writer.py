@@ -18,7 +18,7 @@ else:
 if str(ROOT_DIR.parent) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR.parent))
 
-from meta_agent.llm_client.coder import Coder
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 from meta_agent.context_builder.context import Context, GraphContextBuilder
 from meta_agent.architect.graph import Graph, NodeMeta
 from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
@@ -353,7 +353,9 @@ class PromptNodeFileCoderBase(Coder):
             "- Keep structure flat and concise; avoid unnecessary helper functions/classes.\n"
             "- Prefer straightforward parsing/validation with simple guard clauses.\n"
             "- Every defined variable must be used; remove dead assignments.\n"
-            "- Do not add demo/example code, logging, tests, or comments unless required.\n"
+            "- Add detailed debug logging that writes to a local file path so node execution can be diagnosed after runs.\n"
+            "- Keep the logging implementation simple and self-contained; prefer a module-local logger, FileHandler, and path creation via pathlib.\n"
+            "- Do not add demo/example code, tests, or comments unless required.\n"
             "- Do not include TODO markers in generated code.\n\n"
         )
 
@@ -487,7 +489,7 @@ class PromptNodeFileCoderBase(Coder):
         language: str = "python",
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 20000,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         requirement_path = Path(requirement_md_path)
         if not requirement_path.exists():
@@ -586,7 +588,7 @@ class PromptNodeFileCoderBase(Coder):
         language: str = "python",
         overwrite: bool = True,
         temperature: float = 0.3,
-        max_tokens: int = 20000,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         language_clean = language.strip().lower() if language else "python"
         target_path = Path(code_path)

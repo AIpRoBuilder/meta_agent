@@ -49,6 +49,16 @@ class MainEntryPointAuditor:
 				)
 			)
 
+		if not self._has_import(tree, "uvicorn"):
+			violations.append(
+				RuleViolation(
+					class_name="(file)",
+					rule="uvicorn_import_missing",
+					detail="Missing import for uvicorn.",
+					lineno=1,
+				)
+			)
+
 		if not self._has_import(tree, "pydantic"):
 			violations.append(
 				RuleViolation(
@@ -254,6 +264,7 @@ class MainEntryPointAuditor:
 						lineno=cron_start_fn.lineno,
 					)
 				)
+		if run_step_fn is not None:
 			if not self._function_calls_attr(run_step_fn, "_run_step_events"):
 				violations.append(
 					RuleViolation(
@@ -293,6 +304,18 @@ class MainEntryPointAuditor:
 						lineno=reset_fn.lineno,
 					)
 				)
+
+		main_guard = self._find_main_guard(tree)
+		if main_guard is None or not self._block_has_uvicorn_run_app(main_guard.body):
+			lineno = getattr(main_guard, "lineno", 1) if main_guard is not None else 1
+			violations.append(
+				RuleViolation(
+					class_name="(file)",
+					rule="uvicorn_launcher_missing",
+					detail="Missing `if __name__ == \"__main__\": uvicorn.run(app, ...)` launcher.",
+					lineno=lineno,
+				)
+			)
 
 		# Optional: check that the main entrypoint imports all registered node classes
 		if nodes_root:
@@ -519,6 +542,53 @@ class MainEntryPointAuditor:
 				return node
 		return None
 
+	def _find_main_guard(self, tree: ast.AST) -> ast.If | None:
+		for node in tree.body:
+			if not isinstance(node, ast.If):
+				continue
+			if self._is_main_guard_test(node.test):
+				return node
+		return None
+
+	def _is_main_guard_test(self, test: ast.AST) -> bool:
+		if not isinstance(test, ast.Compare):
+			return False
+		if len(test.ops) != 1 or len(test.comparators) != 1:
+			return False
+		if not isinstance(test.ops[0], ast.Eq):
+			return False
+		if not isinstance(test.left, ast.Name) or test.left.id != "__name__":
+			return False
+		comparator = test.comparators[0]
+		return isinstance(comparator, ast.Constant) and comparator.value == "__main__"
+
+	def _block_has_uvicorn_run_app(self, statements: list[ast.stmt]) -> bool:
+		for stmt in statements:
+			for node in ast.walk(stmt):
+				if not isinstance(node, ast.Call):
+					continue
+				if not isinstance(node.func, ast.Attribute):
+					continue
+				if node.func.attr != "run":
+					continue
+				if not isinstance(node.func.value, ast.Name) or node.func.value.id != "uvicorn":
+					continue
+				if self._call_uses_app_argument(node):
+					return True
+		return False
+
+	def _call_uses_app_argument(self, call: ast.Call) -> bool:
+		if call.args:
+			first_arg = call.args[0]
+			if isinstance(first_arg, ast.Name) and first_arg.id == "app":
+				return True
+		for keyword in call.keywords:
+			if keyword.arg != "app":
+				continue
+			if isinstance(keyword.value, ast.Name) and keyword.value.id == "app":
+				return True
+		return False
+
 	def _find_route_function(self, tree: ast.AST, *, method: str, path: str) -> RouteFunctionNode | None:
 		for node in tree.body:
 			if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -562,7 +632,9 @@ class MainEntryPointAuditor:
 					return True
 		return False
 
-	def _function_calls_name(self, fn: RouteFunctionNode, callee_name: str) -> bool:
+	def _function_calls_name(self, fn: RouteFunctionNode | None, callee_name: str) -> bool:
+		if fn is None:
+			return False
 		for node in ast.walk(fn):
 			if not isinstance(node, ast.Call):
 				continue
@@ -570,7 +642,9 @@ class MainEntryPointAuditor:
 				return True
 		return False
 
-	def _function_calls_attr(self, fn: RouteFunctionNode, attr_name: str) -> bool:
+	def _function_calls_attr(self, fn: RouteFunctionNode | None, attr_name: str) -> bool:
+		if fn is None:
+			return False
 		for node in ast.walk(fn):
 			if not isinstance(node, ast.Call):
 				continue

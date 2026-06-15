@@ -1,114 +1,79 @@
 PyDaoGraph AG-UI Frontend Prompt
 
-You generate one file: `frontend.html` for AG-UI lifecycle workflow demos.
+You generate Vue frontend source files for AG-UI lifecycle workflow demos.
 
 Core output contract:
-- Output only runnable HTML (with inline CSS/JS as needed).
+- Output only runnable source code for the requested target file.
 - Never include Markdown fences or explanations.
+- Start the response with code on the first line and end immediately after the last code line.
 - Keep the implementation minimal and deterministic.
-- Use browser-native APIs only (fetch, EventSource-like SSE parsing via fetch stream, localStorage).
+- Use browser-native APIs plus Vue runtime APIs already used by the surrounding app.
+- Never use Vue 2-only mutation helpers (`this.$set` or `Vue.set`); use direct assignment, object spread, or `Object.assign` for reactive updates.
 
-Workflow context:
+Vue frontend targets:
+- `frontend/src/api/workflow.js`: framework-agnostic fetch helpers for execution/reset calls and SSE stream parsing.
+- `frontend/src/store/workflow.js`: Vue reactive store that owns workflow/session/event state and backend event handling.
+- `frontend/src/components/AppShell.vue`: main workflow page that operates on the store and renders the user-facing UI.
+
+Shared workflow context:
 - You are provided `graph_plan.json` content as context; use it as authoritative graph/dependency/source-of-truth context.
 - You may be provided per-step `StepRunOutput.card` schema previews parsed from generated node files; treat them as authoritative response-card format guidance for the matching step and mirror those sections/keys in the frontend result card UI.
-- You are provided all node HTML snippets from the default `node_ui/` directory as context; for each step card, **faithfully reproduce** the matching node snippet's HTML structure, CSS classes, color palette, spacing values, and component shapes (chips, pills, tags, keyword-grids, dependency-context boxes, param-groups, etc.) inside that step's card body — copy them as closely as possible rather than inventing a new design. If no matching snippet exists for a step, fall back to the global card style.
-- Do not require any external `page_title` input variable; choose a sensible static title directly in generated HTML.
+- You are provided all node HTML snippets from the default `node_ui/` directory as context; for each step card, faithfully reproduce the matching node snippet's structure, CSS classes, palette, spacing values, and component shapes inside the Vue UI wherever relevant. If no matching snippet exists for a step, fall back to the global card style.
 - Backend execution endpoint: use `POST /api/run-step` for normal workflows, and replace it with `POST /cron/start` for cron workflows.
 - Backend endpoint for reset/new session init: `POST /api/reset-session`.
 - Input step nodes run `process_input(...)`, file nodes build results via `build_step_output(...)` after persistence, chat nodes run `process_chat(...)`, and operation nodes run `process_operation(...)`.
-- Operation nodes do not require user text input and should be submitted without an input payload.
-- Input nodes should support both plain text entry and optional local file upload.
+- Operation, service, and skill nodes do not require direct user text input and should auto-submit once unlocked.
 - For `extData.type == "chat_input"`, treat the step as conversational (`nodeKind='chat'`) and keep plain text input submission behavior.
-- For `extData.type == "user_file_input"` / `nodeKind='file'`, treat the step as `WorkflowFileNode`, render multi-file upload UI (allow multiple selection), and submit `input` with `files` (array of `{fileName, fileBytes}`).
-- For `nodeKind='service'`, treat the step as a service startup/orchestration step: do not render direct user text or file inputs and auto-submit once unlocked. Show service-oriented status in the card instead of interactive run controls.
-- For `extData.type == "skill"` / `nodeKind='skill'`, treat the step as a `WorkflowSkillNode` (skill-library execution): do not render direct user inputs and auto-submit once unlocked. Show skill-execution oriented status in the card instead of interactive run controls.
-- If only one file is selected in file-upload steps (`nodeKind='file'`), keep the same `files` array shape with one item.
-- Step logic on backend returns `StepRunOutput` with:
-  - `card: dict` (commonly includes `rows: [{name, value}, ...]` and may include `actions` to display)
-  - `derived: dict`
+- For `extData.type == "user_file_input"` / `nodeKind='file'`, render multi-file upload UI and submit `input` with `files` (array of `{fileName, fileBytes}`) serialized by the component layer.
 
 Event handling requirements:
-- Parse SSE chunks from fetch response (`data: ...\n\n`).
+- Parse SSE chunks from fetch response (`data: ...\n\n`) when the backend streams events.
 - Handle AG-UI lifecycle events:
-  - `STEP_STARTED` -> append system message.
+  - `STEP_STARTED` -> mark running state and append system/event log entries.
   - `STEP_FINISHED` -> mark step as completed and unlock next eligible step.
   - `TEXT_MESSAGE_CONTENT` -> append assistant text deltas in arrival order; these are streamed in multiple chunks for `nodeKind='chat'` responses and must be rendered progressively.
-  - `CUSTOM` with `name == "step_card"` -> render/update step card using payload:
-    - `stepId`, `title`, `prompt`, `card`, `derived`, `unlocked`, `isFinal`.
-  - `RUN_ERROR` -> show error message and re-enable step submit.
+  - `CUSTOM` with `name == "step_card"` -> render/update step card using payload including `stepId`, `title`, `prompt`, `card`, `derived`, `unlocked`, `isFinal`.
+  - `RUN_ERROR` -> show error state and re-enable the step.
   - `RUN_FINISHED` -> stop stream state for this submit.
 
-UI behavior requirements:
-- Build cards from provided step metadata (id/title/dependencies).
-- Render cards progressively: only show the first card initially, and only reveal a later card when that card becomes unlocked.
-- Do not gate card visibility on the immediately previous card's `STEP_FINISHED` event alone; use the unlocked state from step metadata/runtime updates.
-- Only allow input for currently unlocked step(s) whose dependencies are completed.
-- Show a chat area for system/assistant lifecycle text updates.
-- Ensure chat text updates are incremental: do not replace prior assistant text when a new `TEXT_MESSAGE_CONTENT` chunk arrives; append to the current assistant message.
-- Render each step card `card.rows` key/value table, and `card.actions` list when available.
-- When per-step `StepRunOutput.card` schema previews are provided, use them to determine the response-card sections/layout for the matching step before falling back to generic `card.rows` / `card.actions` rendering.
-- When per-step `StepRunOutput.card` schema previews are provided, implement and use a helper named `renderCardSchemaSections` for that schema-aware response-card rendering path.
-- Persist `sessionId` in localStorage and display it in the page.
-- Include `New Session` and `Reset Session` buttons wired to `/api/reset-session`.
+Store and UI behavior requirements:
+- Build cards from provided step metadata (`id`, `title`, `dependencies`, `nodeKind`, `inputRequired`, `extData`).
+- Render cards progressively: show only the first card initially, and only reveal a later card when that card becomes unlocked.
+- Do not gate card visibility on the immediately previous card's `STEP_FINISHED` event alone; use unlocked state from step metadata/runtime updates.
+- Only allow interactive input for currently unlocked step(s) whose dependencies are completed.
+- Persist `sessionId` in localStorage and display it in the UI.
+- Include `New Session` and `Reset Session` actions wired to `/api/reset-session`.
 - For cron workflows, do not render per-step submit controls. Render one prominent button that calls `/cron/start` with the current `sessionId` and show the returned cron status inline.
-- Disable/enable submit controls to prevent duplicate submissions while waiting.
-- For the currently running step card, show a visible running-circle loading indicator while waiting for result events, and hide the indicator when that step completes or errors.
-- For input-required steps, include a file input (`type="file"`) near the text input.
-- For steps that do not require direct user input (`inputRequired=false`, `nodeKind='operation'`), auto-submit as soon as they become unlocked/visible; do not require clicking a Run button.
-- For those auto-run steps, show non-interactive status text and running-state visuals on the card instead of interactive run controls.
-- For file steps (`nodeKind='file'`), submit uploaded files as `{'files':[{'fileName','fileBytes'}, ...]}`.
+- Disable submit controls while a step is running to prevent duplicate submissions.
+- For the currently running step card, show a visible running-circle loading indicator and hide it when that step completes or errors.
+- For auto-run steps (`inputRequired=false`, `nodeKind in ('operation','service','skill')`), show non-interactive status text and running-state visuals instead of run controls.
+- When per-step `StepRunOutput.card` schema previews are provided, implement and use a helper named `renderCardSchemaSections` for schema-aware response-card rendering before falling back to generic `card.rows` / `card.actions` rendering.
 
 Structured user-input schema example (must support):
-- If a step metadata item contains:
-  {
-    "id": "LoginInput",
-    "nodeKind": "input",
-    "extData": {
-      "type": "user_input",
-      "inputs_format": {
-        "email_address": "string",
-        "password": "number",
-        "remember_me": "boolean"
-      }
-    }
-  }
-- Render one form control per field in `inputs_format`:
+- If a step metadata item contains `extData.inputs_format`, render one form control per field:
   - `string` -> text input
   - `number` -> numeric input
   - `boolean` -> checkbox/toggle
-- On submit, stringify the collected object and send it as an input string (for example via `JSON.stringify(...)`), e.g.:
-  {
-    "input": "{\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}"
-  }
-- If `extData.inputs_format` is empty/missing, fall back to plain text input behavior.
-
-Node UI fidelity rules:
-- Match each step to its node HTML snippet by step id or title (case-insensitive substring match is acceptable).
-- When a matching snippet is found: copy its card layout, CSS rules (colors, border-radius, padding, font sizes, transition values), and interactive component markup (keyword-chip grids, pill rows, dependency-context boxes, param-group blocks, tag lists, etc.) directly into the generated step card body.
-- Also copy the snippet's JS interaction logic for those components (e.g. click-to-toggle chip selection, add/remove tag handlers) and adapt it to the AG-UI submit flow.
-- Do not redesign a component that is already defined in the node snippet; preserve every visual and behavioral detail that does not conflict with the AG-UI event requirements.
+- On submit, stringify the collected object and send it as an input string via `JSON.stringify(...)`.
+- If `extData.inputs_format` is empty or missing, fall back to plain text input behavior.
 
 Input serialization rules for complex UI controls:
-- Before calling the run-step API, **always** serialize the user's collected value into a single string for the `input` field — never send raw JS arrays or objects.
-- Multi-select chips / keyword-grid: collect selected labels into an array; submit `JSON.stringify({ <field_name>: selectedArray })` where `<field_name>` matches the node's `inputs_format` key (or `"selected_items"` if unspecified).
-- Bullet-point / line-list editors (textarea where each line is one item): split by `\n`, filter blank lines, submit `JSON.stringify({ <field_name>: lines })`.
-- Tag / pill lists (dynamic add-remove): collect tag strings into an array; submit `JSON.stringify({ <field_name>: tags })`.
-- Checkboxes / boolean toggles not already covered by `inputs_format`: include them in the same JSON object alongside other fields.
-- If the node renders multiple complex controls (e.g. a chip grid + a text field), merge all values into one JSON object and submit that as the `input` string.
-- Plain single-value text areas with no complex control: submit the `.value` string directly (no JSON wrapping needed unless `inputs_format` dictates otherwise).
+- Before calling the run-step API, always serialize the user's collected value into a single string for the `input` field; never send raw JS arrays or objects.
+- Multi-select chips / keyword-grid: collect selected labels into an array and submit `JSON.stringify({ <field_name>: selectedArray })`.
+- Bullet-point / line-list editors: split by `\n`, filter blank lines, and submit `JSON.stringify({ <field_name>: lines })`.
+- Tag / pill lists: collect tag strings into an array and submit `JSON.stringify({ <field_name>: tags })`.
+- If the node renders multiple complex controls, merge all values into one JSON object and submit that as the `input` string.
+- Plain single-value text inputs with no complex control may submit the raw string unless `inputs_format` dictates otherwise.
 
-Style requirements:
+Style requirements for `AppShell.vue`:
 - Keep styling clean and lightweight, but visually polished.
-- Make step cards the main visual focus: stronger hierarchy, better spacing, and clearer status affordances.
+- Make step cards the main visual focus with stronger hierarchy, better spacing, and clearer status affordances.
 - Use a modern card treatment with subtle gradients, soft shadows, rounded corners, and crisp borders.
-- Distinguish card regions (header/body/input/result) with visual rhythm and consistent padding.
-- Add compact status pills and meta chips for step id/dependencies/runtime state.
-- Include a clear circular running indicator in the step header while a step is executing.
+- Distinguish card regions (header/body/input/result) with consistent padding and visual rhythm.
+- Add compact status pills and meta chips for step id, dependencies, and runtime state.
 - Improve readability of rows/actions with deliberate typography contrast and spacing.
-- Use smooth, minimal transitions for hover/focus/status changes (avoid heavy motion).
+- Use smooth, minimal transitions for hover/focus/status changes.
 - Keep contrast accessible and preserve responsive behavior on narrow screens.
 - No external UI libraries.
-- No extra pages. Only a minimal spinner animation for the running-circle loading indicator is allowed.
 
-Preserve the provided reference frontend event semantics and structure while adapting step metadata and titles from the new prompt and context files.
-If the reference conflicts with explicit requirements above (especially auto-run for non-input steps), explicit requirements take precedence.
+Preserve the provided reference frontend event semantics and structure while adapting the output to the requested Vue target file. If the reference conflicts with explicit requirements above, the explicit requirements take precedence.

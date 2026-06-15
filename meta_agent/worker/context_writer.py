@@ -21,7 +21,7 @@ else:
 if str(ROOT_DIR.parent) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR.parent))
 
-from meta_agent.llm_client.coder import Coder
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 
 
 def _format_field_lines(fields: Mapping[str, object]) -> str:
@@ -117,7 +117,7 @@ class PromptContextParamCoder(Coder):
         reset_behavior: Optional[str] = None,
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         """Generate a GParam subclass file with sensible defaults."""
 
@@ -156,7 +156,7 @@ class PromptContextParamCoder(Coder):
         reset_behavior: Optional[str] = None,
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         """Generate a GParam subclass using context nodes from data-flow JSON and optional graph plan."""
 

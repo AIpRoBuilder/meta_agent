@@ -1,5 +1,6 @@
 from typing import Optional, List, Dict, Any, Mapping
 import os
+import shutil
 import subprocess
 import json
 from datetime import datetime
@@ -9,6 +10,7 @@ from pydaograph import CStatus, GElement, GPipeline
 
 from meta_agent.architect import GraphPlanner, NodePlanner, Graph
 from meta_agent.auditor import GraphJsonAuditor, NodeAuditor, MainEntryPointAuditor, OutputAuditor, FrontendAuditor
+from meta_agent.llm_client.coder import MAX_TOKENS
 from meta_agent.worker.main_writer import PromptMainFileCoder
 from meta_agent.worker.node_writer import (
     PromptNodeFileCoderBase,
@@ -24,6 +26,7 @@ from meta_agent.worker.node_writer import (
     is_chat_ext_data,
     is_file_ext_data,
 )
+from meta_agent.worker.frontend_view_writer import FrontendViewCoder
 from meta_agent.worker.frontend_writer import PromptFrontendCoder
 from meta_agent.demand_analyzer import RequirementDisector
 
@@ -82,6 +85,81 @@ class _NodeGenerateElement(GElement):
             return CStatus()
         except Exception as exc:
             return CStatus(1001, f"node generation failed for {self.node_name}: {exc}")
+
+
+class _FrontendViewGenerateElement(GElement):
+    def __init__(
+        self,
+        builder: "AgentBuilder",
+        node_name: str,
+        total: int,
+        node_index: int,
+        output_base_dir: str,
+        context_base_dir: str,
+        graph_plan_context: str,
+        temperature: float,
+    ) -> None:
+        super().__init__()
+        self.builder = builder
+        self.node_name = node_name
+        self.total = total
+        self.node_index = node_index
+        self.output_base_dir = Path(output_base_dir)
+        self.context_base_dir = Path(context_base_dir)
+        self.graph_plan_context = graph_plan_context
+        self.temperature = temperature
+        self.node_meta = self.builder.planned_graph.get_node_meta(self.node_name)
+        self.coder = self.builder._make_frontend_view_writer(self.node_meta)
+
+    def run(self) -> CStatus:
+        try:
+            if self.node_meta is None:
+                raise ValueError(f"node metadata not found for {self.node_name}")
+
+            node_meta = self.node_meta.to_dict() if hasattr(self.node_meta, "to_dict") else dict(self.node_meta)
+            style_filename = f"{self.node_name}.css"
+            view_path = self.output_base_dir / "views" / f"{self.node_name}.vue"
+            style_path = self.output_base_dir / "styles" / style_filename
+            print(f"[{self.node_index}/{self.total}] Generating frontend view '{self.node_name}' -> {view_path}")
+
+            node_html_context = self.coder._read_context_file(
+                self.context_base_dir,
+                self.node_name,
+                ".html",
+            )
+            node_python_context = self.coder._read_context_file(
+                self.context_base_dir,
+                self.node_name,
+                ".py",
+            )
+
+            self.coder.write_node_vue_file(
+                node_name=self.node_name,
+                node_meta=node_meta,
+                graph_plan_context=self.graph_plan_context,
+                node_html_context=node_html_context,
+                node_python_context=node_python_context,
+                output_path=view_path,
+                style_filename=style_filename,
+                overwrite=True,
+                temperature=self.temperature,
+            )
+            self.coder.write_node_css_file(
+                node_name=self.node_name,
+                node_meta=node_meta,
+                graph_plan_context=self.graph_plan_context,
+                node_html_context=node_html_context,
+                output_path=style_path,
+                overwrite=True,
+                temperature=self.temperature,
+            )
+            self.builder.frontend_view_output_map[self.node_name] = {
+                "view": str(view_path),
+                "style": str(style_path),
+            }
+            return CStatus()
+        except Exception as exc:
+            return CStatus(1002, f"frontend view generation failed for {self.node_name}: {exc}")
                 
 class AgentBuilder:
     """Build AG-UI workflow artifacts with generation, auditing, and progress display."""
@@ -112,9 +190,17 @@ class AgentBuilder:
         self.requirement_analysis_result: Optional[Dict[str, Any]] = None
         self.graph_plan_path: Optional[str] = None
 
-        self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
+        self._reset_llm_components()
+        # initialize auditors for later validation steps
+        self.graph_auditor = GraphJsonAuditor()
+        self.node_auditor = NodeAuditor()
+        self.main_entry_auditor = MainEntryPointAuditor()
+        self.frontend_auditor = FrontendAuditor(base_dir=self.root_dir)
+        # output auditor will inspect test logs and help trigger amendments
+        self.output_auditor = OutputAuditor()
 
-        # initialize a shared GraphPlanner and auditors for later validation steps
+    def _reset_llm_components(self) -> None:
+        self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
         self.planner = GraphPlanner(
             api_key=self.api_key,
             model=self.model,
@@ -125,13 +211,21 @@ class AgentBuilder:
         self.node_planner = NodePlanner(api_key=self.api_key, model=self.model, provider=self.provider)
         self.main_writer = PromptMainFileCoder(api_key=self.api_key, model=self.model, provider=self.provider)
         self.frontend_writer = PromptFrontendCoder(api_key=self.api_key, model=self.model, provider=self.provider)
-        # initialize auditors for later validation steps
-        self.graph_auditor = GraphJsonAuditor()
-        self.node_auditor = NodeAuditor()
-        self.main_entry_auditor = MainEntryPointAuditor()
-        self.frontend_auditor = FrontendAuditor()
-        # output auditor will inspect test logs and help trigger amendments
-        self.output_auditor = OutputAuditor()
+        self.frontend_view_writer = FrontendViewCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+
+    def reset_llm_config(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+    ) -> None:
+        if api_key is not None:
+            self.api_key = api_key
+        if model is not None:
+            self.model = model
+        if provider is not None:
+            self.provider = provider
+        self._reset_llm_components()
 
     def _make_node_coder(self, node_meta: Any) -> PromptNodeFileCoderBase:
         ext_data = node_meta.ext_data if node_meta and hasattr(node_meta, 'ext_data') else None
@@ -177,6 +271,13 @@ class AgentBuilder:
             model=self.model,
             provider=self.provider,
             root_dir_path=self.root_dir,
+        )
+
+    def _make_frontend_view_writer(self, node_meta: Any) -> FrontendViewCoder:
+        return FrontendViewCoder(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
         )
 
     def _set_services_root_path(self, services_root: Optional[str]) -> None:
@@ -314,6 +415,11 @@ class AgentBuilder:
         if not self.requirement_md_path:
             raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
 
+        graph_path = Path(self.graph_plan_path).expanduser().resolve()
+        planned_graph = getattr(self, "planned_graph", None)
+        if planned_graph is None or Path(planned_graph.graph_json_path).resolve() != graph_path:
+            self.planned_graph = Graph(str(graph_path))
+
         # ensure we start with fresh mappings each time
         self.node_coder_map = {}
         self.node_location_map = {}
@@ -396,7 +502,7 @@ class AgentBuilder:
         graph_plan_path: Optional[str] = None,
         output_path: Optional[str] = None,
         temperature: float = 0.2,
-        max_tokens: int = 12000,
+        max_tokens: int = MAX_TOKENS,
         overwrite: bool = True,
     ) -> str:
         """Amend a single node UI HTML file using file-based planner wrapper."""
@@ -495,16 +601,58 @@ class AgentBuilder:
             )
         return steps_meta
 
+    @staticmethod
+    def _frontend_src_file_map(frontend_src_dir: str | Path) -> Dict[str, Path]:
+        base_dir = Path(frontend_src_dir).expanduser().resolve()
+        return {
+            "api": base_dir / "api" / "workflow.js",
+            "store": base_dir / "store" / "workflow.js",
+            "app_shell": base_dir / "components" / "AppShell.vue",
+            "app": base_dir / "App.vue",
+            "app_css": base_dir / "styles" / "app.css",
+        }
+
+    @classmethod
+    def _resolve_frontend_violation_target(cls, frontend_src_dir: str | Path, violation: Any) -> Optional[Path]:
+        file_map = cls._frontend_src_file_map(frontend_src_dir)
+        rule_to_target = {
+            "execution_endpoint_missing": "api",
+            "reset_session_endpoint_missing": "api",
+            "step_card_handler_missing": "store",
+            "session_id_usage_missing": "store",
+            "step_output_schema_renderer_missing": "app_shell",
+            "app_shell_import_missing": "app",
+            "app_view_import_missing": "app",
+        }
+
+        if getattr(violation, "rule", "") == "frontend_lint_error":
+            for raw_path in [getattr(violation, "class_name", ""), str(getattr(violation, "detail", "")).split(":", 1)[0].strip()]:
+                if not raw_path:
+                    continue
+                candidate = Path(raw_path).expanduser()
+                if candidate.is_file():
+                    return candidate.resolve()
+            return None
+
+        target_key = rule_to_target.get(getattr(violation, "rule", ""))
+        if target_key is None:
+            return None
+        return file_map[target_key]
+
     def generate_frontend(
         self,
-        output_filename: str = "frontend.html",
+        output_filename: str = "frontend",
+        frontend_mode: str = "vue_src",
         temperature: float = 0.3,
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
-        max_audit_rounds: int = 3,
+        max_audit_rounds: int = 4,
     ) -> str:
-        """Generate and audit frontend.html."""
-        frontend_path = os.path.join(self.root_dir, output_filename)
+        """Generate and audit frontend output in vue_src mode."""
+        frontend_path = os.path.join(self.root_dir, output_filename+"/src")
+        frontend_project_dir = os.path.join(self.root_dir, output_filename)
+        self._ensure_vue_frontend_project(frontend_project_dir)
+        self._write_vue_proxy_config(Path(frontend_project_dir).expanduser())
         print(f"Generating frontend -> {frontend_path}")
         steps_meta = self._build_steps_meta()
 
@@ -517,13 +665,24 @@ class AgentBuilder:
         if isinstance(effective_style_prompt, str):
             effective_style_prompt = effective_style_prompt.strip() or None
         print("starting frontend generation with style prompt:", repr(effective_style_prompt))
-        self.frontend_writer.write_frontend_html(
+
+        if frontend_mode != "vue_src":
+            raise ValueError("frontend_mode must be 'vue_src'.")
+        reference_frontend_src_dir = os.path.join(self.root_dir, "meta_agent/library/frontend_reference/src")
+        self.generate_frontend_views(
+            output_base_dir=frontend_path,
+            context_base_dir=context_base_dir,
+            temperature=temperature,
+        )
+
+        self.frontend_writer.write_frontend_src_files(
             steps_meta=steps_meta,
-            output_path=frontend_path,
+            output_base_dir=frontend_path,
             context_base_dir=context_base_dir,
             run_step_endpoint="/api/run-step",
             reset_session_endpoint="/api/reset-session",
             requirement_analysis_result=self.requirement_analysis_result,
+            reference_frontend_src_dir=reference_frontend_src_dir,
             frontend_style_prompt=effective_style_prompt,
             overwrite=True,
             temperature=temperature,
@@ -533,26 +692,213 @@ class AgentBuilder:
         for audit_round in range(1, max_audit_rounds + 1):
             ok, violations = self.frontend_auditor.audit_frontend_file(frontend_path)
             if ok:
-                print("frontend.html audit passed.")
+                print(f"frontend audit passed for mode={frontend_mode}.")
                 break
             last_amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
             if audit_round >= max_audit_rounds:
                 raise RuntimeError(
-                    "frontend.html audit did not pass after "
+                    "frontend audit did not pass after "
                     f"{max_audit_rounds} attempt(s). Last feedback:\n{last_amendment}"
                 )
-            print(
-                "frontend.html audit failed. Applying amendment... "
-                f"({audit_round}/{max_audit_rounds})"
-            )
-            self.frontend_writer._amend_frontend_with_feedback(
-                frontend_path,
-                last_amendment,
-                temperature=max(0.2, temperature),
-            )
+            grouped_feedback: Dict[Path, List[str]] = {}
+            unresolved_feedback: List[str] = []
+            for violation in violations:
+                target_file = self._resolve_frontend_violation_target(frontend_path, violation)
+                message = f"Line {violation.lineno}: {violation.rule} - {violation.detail}"
+                if target_file is None or not target_file.is_file():
+                    unresolved_feedback.append(message)
+                    continue
+                grouped_feedback.setdefault(target_file, []).append(message)
+
+            if not grouped_feedback:
+                raise RuntimeError(
+                    "frontend src audit failed and no amendable target files could be resolved. "
+                    f"Last feedback:\n{last_amendment}"
+                )
+
+            if unresolved_feedback:
+                unresolved_feedback_text = "\n".join(unresolved_feedback)
+                raise RuntimeError(
+                    "frontend src audit failed and some violations could not be routed to an existing frontend file. "
+                    f"Unresolved feedback:\n{unresolved_feedback_text}"
+                )
+
+            for target_file, file_feedback in grouped_feedback.items():
+                print(f"frontend audit failed. Applying amendment to {target_file} ...")
+                self.frontend_writer.amend_code_with_feedback(
+                    file_path=str(target_file),
+                    rule_violations="\n".join(file_feedback),
+                    steps_meta=steps_meta,
+                    context_base_dir=context_base_dir,
+                    requirement_analysis_result=self.requirement_analysis_result,
+                    reference_frontend_src_dir=reference_frontend_src_dir,
+                    frontend_style_prompt=effective_style_prompt,
+                    overwrite=True,
+                    temperature=temperature,
+                )
 
         self.frontend_output_path = frontend_path
         return frontend_path
+
+    def _ensure_vue_frontend_project(self, frontend_project_dir: str) -> str:
+        """Create the Vue frontend project with Vue CLI when it is missing."""
+        resolved_frontend_dir = Path(frontend_project_dir).expanduser()
+        if not resolved_frontend_dir.is_absolute():
+            resolved_frontend_dir = Path(self.root_dir).expanduser() / resolved_frontend_dir
+        resolved_frontend_dir = resolved_frontend_dir.resolve()
+
+        if resolved_frontend_dir.exists():
+            self._write_vue_proxy_config(resolved_frontend_dir)
+            return str(resolved_frontend_dir)
+
+        vue_executable = shutil.which("vue")
+        if not vue_executable:
+            self._create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir)
+            print(
+                "warning: Vue CLI is not installed or not available on PATH; "
+                f"using minimal frontend scaffold at {resolved_frontend_dir}"
+            )
+            return str(resolved_frontend_dir)
+
+        print(f"Creating Vue frontend project -> {resolved_frontend_dir}")
+        try:
+            subprocess.run(
+                [vue_executable, "create", resolved_frontend_dir.name, "--default"],
+                cwd=str(resolved_frontend_dir.parent),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.strip() if exc.stderr else ""
+            stdout = exc.stdout.strip() if exc.stdout else ""
+            detail = stderr or stdout or str(exc)
+            self._create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir)
+            print(
+                "warning: vue create failed; "
+                f"using minimal frontend scaffold at {resolved_frontend_dir}. "
+                f"Original error: {detail}"
+            )
+            return str(resolved_frontend_dir)
+        except OSError as exc:
+            self._create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir)
+            print(
+                "warning: vue command execution failed; "
+                f"using minimal frontend scaffold at {resolved_frontend_dir}. "
+                f"Original error: {exc}"
+            )
+            return str(resolved_frontend_dir)
+
+        self._write_vue_proxy_config(resolved_frontend_dir)
+        return str(resolved_frontend_dir)
+
+    @staticmethod
+    def _create_minimal_vue_frontend_scaffold(frontend_dir: Path) -> None:
+        """Create a minimal npm-based Vue-like scaffold so generation/auditing can proceed."""
+        frontend_dir.mkdir(parents=True, exist_ok=True)
+        (frontend_dir / "src").mkdir(parents=True, exist_ok=True)
+
+        package_json_path = frontend_dir / "package.json"
+        if not package_json_path.exists():
+            package_json = {
+                "name": frontend_dir.name,
+                "version": "0.0.0",
+                "private": True,
+                "scripts": {
+                    "lint": "echo 'lint not configured for minimal scaffold'"
+                },
+            }
+            package_json_path.write_text(
+                json.dumps(package_json, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    @staticmethod
+    def _write_vue_proxy_config(frontend_dir: Path) -> None:
+        vue_config_path = frontend_dir / "vue.config.js"
+        vue_config_path.write_text(
+            "const { defineConfig } = require('@vue/cli-service')\n"
+            "module.exports = defineConfig({\n"
+            "  devServer: {\n"
+            "    proxy: {\n"
+            "      '/api': {\n"
+            "        target: 'http://127.0.0.1:8000',\n"
+            "        changeOrigin: true,\n"
+            "      },\n"
+            "    },\n"
+            "  },\n"
+            "})\n",
+            encoding="utf-8",
+        )
+
+    def generate_frontend_views(
+        self,
+        graph_plan_path: Optional[str] = None,
+        output_base_dir: str = "frontend/src",
+        context_base_dir: Optional[str] = None,
+        temperature: float = 0.3,
+    ) -> Dict[str, Dict[str, str]]:
+        """Generate one Vue view and stylesheet per graph node in dependency order."""
+        if graph_plan_path:
+            self.graph_plan_path = graph_plan_path
+        if not self.graph_plan_path:
+            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
+
+        graph_path = Path(self.graph_plan_path).expanduser().resolve()
+        planned_graph = getattr(self, "planned_graph", None)
+        if planned_graph is None or Path(planned_graph.graph_json_path).resolve() != graph_path:
+            self.planned_graph = Graph(str(graph_path))
+
+        resolved_output_dir = Path(output_base_dir).expanduser()
+        if not resolved_output_dir.is_absolute():
+            resolved_output_dir = Path(self.root_dir).expanduser() / resolved_output_dir
+        resolved_output_dir = resolved_output_dir.resolve()
+
+        if context_base_dir is None:
+            resolved_context_dir = Path(self.root_dir).expanduser().resolve()
+        else:
+            resolved_context_dir = Path(context_base_dir).expanduser().resolve()
+
+        graph_plan_context = graph_path.read_text(encoding="utf-8")
+        self.frontend_view_writer_map = {}
+        self.frontend_view_output_map = {}
+        self.frontend_views_output_path = str(resolved_output_dir)
+
+        nodes = self.planned_graph.get_topological_sorted_nodes()
+        total = len(nodes)
+        pipeline = GPipeline()
+
+        elements: Dict[str, _FrontendViewGenerateElement] = {}
+        for index, name in enumerate(nodes, start=1):
+            elements[name] = _FrontendViewGenerateElement(
+                self,
+                name,
+                total,
+                index,
+                output_base_dir=str(resolved_output_dir),
+                context_base_dir=str(resolved_context_dir),
+                graph_plan_context=graph_plan_context,
+                temperature=temperature,
+            )
+            self.frontend_view_writer_map[name] = elements[name].coder
+
+        for name in nodes:
+            node_meta = self.planned_graph.get_node_meta(name)
+            depends = set()
+            if node_meta and node_meta.depends:
+                depends = {elements[dep] for dep in node_meta.depends if dep in elements}
+            status = pipeline.registerGElement(elements[name], depends, name, 1)
+            if status.isErr():
+                raise RuntimeError(f"registerGElement failed for frontend view {name}: {status.getInfo()}")
+
+        process_status = pipeline.process()
+        if process_status.isErr():
+            raise RuntimeError(f"generate_frontend_views pipeline.process failed: {process_status.getInfo()}")
+
+        return self.frontend_view_output_map
 
     def generate_main_entrypoint(
         self,
@@ -723,6 +1069,7 @@ class AgentBuilder:
         test_after_generation: bool = True,
         generate_node_docs: bool = True,
         generate_node_html: bool = True,
+        frontend_mode: str = "vue_src",
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
     ) -> None:
@@ -734,7 +1081,8 @@ class AgentBuilder:
             test_after_generation: Whether to test generated main.py after generation.
             generate_node_docs: Whether to generate per-node markdown planning docs.
             generate_node_html: Whether to generate per-node HTML interaction files for node writing context.
-            frontend_style_prompt: Optional style guidance for generated frontend.html.
+            frontend_mode: Frontend output mode. Only 'vue_src' is supported.
+            frontend_style_prompt: Optional style guidance for generated frontend output.
             context_base_dir: Optional base directory for loading graph_plan.json and node_ui/*.html used as frontend generation context.
         """
         total_steps = 5
@@ -780,12 +1128,13 @@ class AgentBuilder:
 
         print("Generating frontend...")
         self.generate_frontend(
-            output_filename="frontend.html",
+            output_filename=os.path.join("frontend", "src"),
+            frontend_mode=frontend_mode,
             temperature=0.0,
             frontend_style_prompt=self.frontend_style_prompt,
             context_base_dir=context_base_dir,
         )
-        self._advance_progress("frontend.html generated and audited")
+        self._advance_progress(f"frontend generated and audited ({frontend_mode})")
 
         print("Generating main entrypoint...")
         main_entrypoint_path = self.generate_main_entrypoint(
@@ -816,6 +1165,6 @@ class AgentBuilder:
             print(f"- node_docs/: {getattr(self, 'node_docs_dir', '')}")
         if generate_node_html:
             print(f"- node_ui/: {getattr(self, 'node_html_dir', '')}")
-        print(f"- frontend.html: {self.frontend_output_path}")
+        print(f"- frontend: {self.frontend_output_path}")
         print(f"- main.py: {self.main_output_path}")
 

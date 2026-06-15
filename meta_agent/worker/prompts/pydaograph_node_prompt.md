@@ -74,7 +74,10 @@ Minimality checklist (must follow):
 - Keep one processing method for the selected base class (`process_input` / `process_chat` / `process_operation`).
 - Do not add helper methods unless they remove duplicated logic used at least twice.
 - Do not include mocked/sample/simulated runtime data in business logic.
-- Do not add logging, debug prints, test stubs, or markdown/comments beyond concise TODOs.
+- Add detailed debug logging that writes to a local file path so execution can be inspected after runs.
+- Keep logging implementation simple: prefer the standard `logging` module, a module-local logger, a `FileHandler`, and `pathlib.Path(...).mkdir(parents=True, exist_ok=True)` for the log directory.
+- Log meaningful checkpoints, resolved inputs/dependency values, validation failures, external command execution outcomes, and raised exceptions without leaking secrets.
+- Do not add debug prints, test stubs, or markdown/comments beyond concise TODOs.
 - Use straightforward guard clauses and `.get(...)` defaults instead of complex validation frameworks.
 - Keep summaries/cards concise and requirement-focused.
 

@@ -1,9 +1,10 @@
-"""Generate AG-UI HTML frontend files via an LLM."""
+"""Generate AG-UI Vue frontend files via an LLM."""
 
 from __future__ import annotations
 
 import sys
 import json
+import re
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,20 +21,79 @@ else:
 if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
-from meta_agent.llm_client.coder import Coder
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS
+from meta_agent.tools import graph_to_nodes
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
-from meta_agent.tools.text_tools import normalize_requirement_analysis_result
+from meta_agent.tools.function_tools import _run_stage
+from meta_agent.tools.text_tools import normalize_requirement_analysis_result, truncate_context
+
+
+_DEFAULT_VUE_FRONTEND_REFERENCE_DIR = Path("/Users/xiechuxi/Desktop/codes/education_workflow/frontend/src")
+_BUNDLED_VUE_FRONTEND_REFERENCE_DIR = ROOT_DIR / "library" / "frontend_reference" / "src"
+
+
+def _find_code_start_index(lines: Sequence[str], suffix: str) -> int | None:
+	patterns = {
+		".js": re.compile(r"^(import\b|export\b|const\b|let\b|var\b|function\b|async\s+function\b|class\b|/\*|//|[A-Za-z_$][\w$]*\s*=)"),
+		".css": re.compile(r"^(@(?:import|charset|media|supports|layer|keyframes)\b|/\*|:root\b|[.#\[:*a-zA-Z_-][^{};]*\{)"),
+		".vue": re.compile(r"^(<template\b|<script\b|<style\b|<!--|import\b|export\b)"),
+	}
+	pattern = patterns.get(suffix)
+	if pattern is None:
+		return None
+
+	for index, line in enumerate(lines):
+		if pattern.match(line.strip()):
+			return index
+	return None
+
+
+def _find_code_end_index(lines: Sequence[str], suffix: str) -> int | None:
+	patterns = {
+		".js": re.compile(r"^(</script>|[}\])];?|[A-Za-z_$][\w$]*\s*=|return\b|export\b|import\b|const\b|let\b|var\b|function\b|async\s+function\b|class\b|/\*|//|.*[;{}]$)"),
+		".css": re.compile(r"^(}\s*$|/\*|@(?:import|charset|media|supports|layer|keyframes)\b|[.#\[:*a-zA-Z_-][^{};]*\{|.*}\s*$)"),
+		".vue": re.compile(r"^(</template>|</script>|</style>|<template\b|<script\b|<style\b|<!--|.*>\s*$)"),
+	}
+	pattern = patterns.get(suffix)
+	if pattern is None:
+		return None
+
+	for index in range(len(lines) - 1, -1, -1):
+		if pattern.match(lines[index].strip()):
+			return index
+	return None
+
+
+def _extract_frontend_source_content(content: str, file_path: str | None) -> str:
+	cleaned = content.strip()
+	if not file_path:
+		return cleaned
+
+	suffix = Path(file_path).suffix.lower()
+	if suffix not in {".js", ".css", ".vue"}:
+		return cleaned
+
+	lines = cleaned.splitlines()
+	if not lines:
+		return cleaned
+
+	start_index = _find_code_start_index(lines, suffix)
+	end_index = _find_code_end_index(lines, suffix)
+	if start_index is None or end_index is None or end_index < start_index:
+		return cleaned
+
+	return "\n".join(lines[start_index : end_index + 1]).strip()
 
 
 @dataclass
 class PromptFrontendCoder(Coder):
-	"""Coder that emits AG-UI lifecycle frontend HTML from step metadata."""
+	"""Coder that emits AG-UI lifecycle frontend src files from step metadata."""
 
 	prompt_path: str = "worker/prompts/pydaograph_frontend_prompt.md"
-	reference_frontend_max_chars: int = 12000
 	node_ui_context_max_chars: int = 18000
 	graph_plan_context_max_chars: int = 12000
 	step_output_card_context_max_chars: int = 12000
+	vue_reference_context_max_chars: int = 12000
 
 	def __post_init__(self) -> None:
 		prompt_file = ROOT_DIR / self.prompt_path
@@ -42,6 +102,15 @@ class PromptFrontendCoder(Coder):
 
 		self.system_prompt = prompt_file.read_text(encoding="utf-8")
 		super().__post_init__()
+
+	def sanitize_generated_output(
+		self,
+		content: str,
+		*,
+		file_path: str | None = None,
+	) -> str:
+		cleaned = super().sanitize_generated_output(content, file_path=file_path)
+		return _extract_frontend_source_content(cleaned, file_path)
 
 	def _normalize_steps(self, steps_meta: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 		normalized: list[dict[str, Any]] = []
@@ -129,140 +198,588 @@ class PromptFrontendCoder(Coder):
 
 		return normalized
 
-	def _build_user_prompt(
+	def _resolve_reference_frontend_src_dir(
+		self,
+		reference_frontend_src_dir: str | Path | None = None,
+	) -> Path:
+		candidates: list[Path] = []
+		if reference_frontend_src_dir is not None:
+			candidates.append(Path(reference_frontend_src_dir).expanduser().resolve())
+		candidates.extend(
+			[
+				_BUNDLED_VUE_FRONTEND_REFERENCE_DIR.resolve(),
+				_DEFAULT_VUE_FRONTEND_REFERENCE_DIR.resolve(),
+			]
+		)
+
+		seen: set[Path] = set()
+		unique_candidates: list[Path] = []
+		for candidate in candidates:
+			if candidate in seen:
+				continue
+			seen.add(candidate)
+			unique_candidates.append(candidate)
+
+		for candidate in unique_candidates:
+			if candidate.exists() and candidate.is_dir():
+				return candidate
+
+		raise FileNotFoundError(
+			"reference frontend src directory not found. "
+			f"Checked: {', '.join(str(candidate) for candidate in unique_candidates)}"
+		)
+
+	def _load_reference_vue_frontend_context(
+		self,
+		reference_frontend_src_dir: str | Path | None = None,
+	) -> dict[str, str]:
+		reference_dir = self._resolve_reference_frontend_src_dir(reference_frontend_src_dir)
+		files = {
+			"api": reference_dir / "api" / "workflow.js",
+			"store": reference_dir / "store" / "workflow.js",
+			"app_shell": reference_dir / "components" / "AppShell.vue",
+			"app_css": reference_dir / "styles" / "app.css",
+		}
+		missing = [str(path) for path in files.values() if not path.is_file()]
+		if missing:
+			raise FileNotFoundError(
+				"reference frontend files not found: " + ", ".join(missing)
+			)
+
+		return {
+			key: path.read_text(encoding="utf-8")
+			for key, path in files.items()
+		}
+
+	def _load_reference_app_source(
+		self,
+		reference_frontend_src_dir: str | Path | None = None,
+	) -> str:
+		reference_dir = self._resolve_reference_frontend_src_dir(reference_frontend_src_dir)
+		app_path = reference_dir / "App.vue"
+		if not app_path.is_file():
+			raise FileNotFoundError(f"reference frontend file not found: {app_path}")
+
+		return app_path.read_text(encoding="utf-8")
+
+	@staticmethod
+	def _resolve_context_base_dir(
+		output_path: Path,
+		base_dir: str | Path | None = None,
+	) -> Path:
+		if base_dir is None:
+			return output_path.parent.resolve()
+		return Path(base_dir).expanduser().resolve()
+
+	@staticmethod
+	def _load_generated_frontend_context(output_path: Path) -> dict[str, str]:
+		src_dir = output_path.parent.resolve()
+		files = {
+			"api": src_dir / "api" / "workflow.js",
+			"store": src_dir / "store" / "workflow.js",
+			"app_shell": src_dir / "components" / "AppShell.vue",
+		}
+		missing = [str(path) for path in files.values() if not path.is_file()]
+		if missing:
+			raise FileNotFoundError(
+				"generated frontend files required for App.vue were not found: " + ", ".join(missing)
+			)
+
+		return {
+			key: path.read_text(encoding="utf-8")
+			for key, path in files.items()
+		}
+
+	def _build_api_user_prompt(
+		self,
+		*,
+		run_step_endpoint: str,
+		reset_session_endpoint: str,
+		reference_api_source: str,
+		requirement_analysis_result: Mapping[str, Any] | None,
+	) -> str:
+		cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
+		is_cron_task = bool(cron_meta and cron_meta["is_cron_task"])
+		execution_endpoint = "/cron/start" if is_cron_task else run_step_endpoint
+		cron_block = ""
+		if is_cron_task:
+			cron_block = (
+				"Cron mode requirements:\n"
+				"- Export a startCron(payload, onEvent) helper that POSTs to /cron/start.\n"
+				"- Keep resetSession(sessionId) exported and unchanged in spirit.\n"
+				"- If the cron endpoint returns SSE, parse it exactly like runStep; if it returns JSON only, pass the parsed object to onEvent once when provided.\n\n"
+			)
+
+		reference_api_source = truncate_context(
+			reference_api_source,
+			label="reference_api_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+
+		return (
+			"Generate one JavaScript module file named workflow.js for frontend/src/api/workflow.js.\n"
+			"Return only runnable JavaScript with no markdown fences or explanation.\n"
+			"Follow the reference module structure closely: fetch-based helpers, incremental SSE parsing, and plain exported functions.\n"
+			"Implement a shared internal SSE reader helper if it reduces duplication.\n"
+			f"Export runStep(payload, onEvent) targeting {execution_endpoint}.\n"
+			f"Export resetSession(sessionId) targeting {reset_session_endpoint}.\n"
+			"For SSE parsing, read response.body with getReader(), split on newline, handle lines starting with 'data: ', ignore empty payloads and [DONE], and JSON.parse each event before calling onEvent.\n"
+			"Throw on non-ok HTTP responses and include the status code in the error message.\n"
+			"Keep the module framework-agnostic.\n\n"
+			f"{cron_block}"
+			"Reference api/workflow.js example:\n"
+			f"{reference_api_source}\n"
+		)
+
+	def _build_store_user_prompt(
 		self,
 		*,
 		steps_meta: list[dict[str, Any]],
 		run_step_endpoint: str,
 		reset_session_endpoint: str,
 		requirement_analysis_result: Mapping[str, Any] | None,
-		reference_frontend: str,
-		node_ui_context: str,
+		reference_store_source: str,
 		graph_plan_context: str,
 		step_output_card_context: str,
-		frontend_style_prompt: str | None = None,
 	) -> str:
 		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
-		reference_frontend = self._truncate_context(
-			reference_frontend,
-			label="reference_frontend",
-			max_chars=self.reference_frontend_max_chars,
+		reference_store_source = truncate_context(
+			reference_store_source,
+			label="reference_store_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
 		)
-		node_ui_context = self._truncate_context(
-			node_ui_context,
-			label="node_ui_context",
-			max_chars=self.node_ui_context_max_chars,
-		)
-		graph_plan_context = self._truncate_context(
+		graph_plan_context = truncate_context(
 			graph_plan_context,
 			label="graph_plan_context",
 			max_chars=self.graph_plan_context_max_chars,
+			request_label="frontend generation request",
 		)
-		step_output_card_context = self._truncate_context(
+		step_output_card_context = truncate_context(
 			step_output_card_context,
 			label="step_output_card_context",
 			max_chars=self.step_output_card_context_max_chars,
+			request_label="frontend generation request",
 		)
 		cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
 		is_cron_task = bool(cron_meta and cron_meta["is_cron_task"])
-		effective_run_step_endpoint = "/cron/start" if is_cron_task else run_step_endpoint
-		style_block = ""
-		if frontend_style_prompt and frontend_style_prompt.strip():
-			style_block = (
-				"User-defined frontend style guidance (must follow while preserving required behavior and event semantics):\n"
-				f"{frontend_style_prompt.strip()}\n\n"
-			)
+		execution_helper = "startCron" if is_cron_task else "runStep"
+		execution_endpoint = "/cron/start" if is_cron_task else run_step_endpoint
 		cron_block = ""
-		execution_behavior = (
-			"3) Stream SSE from the execution endpoint and react to STEP_STARTED, STEP_FINISHED, TEXT_MESSAGE_CONTENT, CUSTOM(step_card), RUN_ERROR, RUN_FINISHED when the endpoint is stream-based. TEXT_MESSAGE_CONTENT is streamed in multiple chunks for chat nodes; append chunks in order and render live.\n"
-		)
-		input_behavior = (
-			"7) If step metadata includes inputRequired=false or nodeKind in ('operation','service','skill'), do not require text input for submission.\n"
-			"7.1) For any step that does not require direct user input (for example operation/service/skill/dependency-driven steps), auto-submit it immediately when it becomes unlocked and visible; do not require a click on a Run button.\n"
-			"8) If step extData.type == 'user_file_input' (or nodeKind='file'), treat it as WorkflowFileNode input: render a multi-file upload control (allow selecting multiple files).\n"
-			"9) For file upload nodes, read selected files as encoded byte strings and submit input as {'files':[{'fileName','fileBytes'}, ...]} where fileBytes is a data-url/byte-string derived from each uploaded file.\n"
-			"10) If only one file is selected in file-upload nodes, still use the same files array shape with one item for consistency.\n"
-			"11) If step extData.type == 'user_input', 'chat_input', or 'skill': if extData.inputs_format is non-empty, render structured form controls by field type (string/number/boolean), then stringify the collected object (e.g., JSON.stringify) and submit that serialized value as input string; if inputs_format is empty, keep plain text input behavior.\n"
-			"11.0) Concrete example: extData.inputs_format={'email_address':'string','password':'number','remember_me':'boolean'} => render text/number/checkbox controls, build {'email_address':'user@example.com','password':123456,'remember_me':true}, then submit input='{'\"email_address\":\"user@example.com\",\"password\":123456,\"remember_me\":true}'.\n"
-			"11.1) For extData.type == 'chat_input' (or nodeKind='chat') with no inputs_format, keep plain text input submission behavior.\n"
-		)
 		if is_cron_task:
-			cron_expression = cron_meta["crontab_expression"] or "TBD"
 			cron_block = (
-				"Cron workflow requirements:\n"
-				f"- requirement_analysis_result says this is a cron workflow with task_type={cron_meta['task_type'] or 'cron'} and crontab_expression={cron_expression}.\n"
-				"- Replace any per-step POST /api/run-step flow with a single Start Cron button that calls POST /cron/start.\n"
-				"- Reuse sessionId from localStorage when calling POST /cron/start and show the returned running state, sessionId, taskType, and crontabExpression inline.\n"
-				"- Keep the workflow step cards visible as read-only overview cards, but do not render per-step Run buttons, text inputs, or upload forms in cron mode.\n"
-				"- Keep the cron controls visually consistent with the rest of the frontend and leave Reset Session available.\n\n"
-			)
-			execution_behavior = (
-				"3) In cron mode, do not submit individual steps to /api/run-step. Render one prominent Start Cron button that calls POST /cron/start with fetch.\n"
-				"3.1) After POST /cron/start returns, render the response inline and preserve the workflow cards as a read-only execution overview.\n"
-			)
-			input_behavior = (
-				"7) In cron mode, do not render direct per-step submission controls. The only execution trigger is the Start Cron button wired to POST /cron/start.\n"
+				"Cron workflow state requirements:\n"
+				"- Track cron response metadata and expose a startCronRun() action instead of per-step run buttons.\n"
+				"- Keep step cards visible as read-only overview data.\n"
+				"- Preserve sessionId handling and reset/new-session actions.\n\n"
 			)
 
 		return (
-			"Generate one runnable frontend.html for an AG-UI lifecycle step workflow.\n"
-			"Use plain HTML + CSS + browser JavaScript (no frameworks).\n"
-			"Use the provided reference HTML style and behavior as the baseline.\n\n"
-			f"{style_block}"
+			"Generate one JavaScript module file named workflow.js for frontend/src/store/workflow.js.\n"
+			"Return only runnable JavaScript with no markdown fences or explanation.\n"
+			"Target modern Vue runtime behavior only: never use this.$set or Vue.set; update reactive state via direct assignment, object spread, or Object.assign instead.\n"
+			"Use Vue's reactive() store style and export createWorkflowStore().\n"
+			"Also export STEP_METADATA as a constant populated from the step metadata JSON below.\n"
+			"Import resetSession and "
+			f"{execution_helper} from ../api/workflow.\n"
+			f"The store must orchestrate calls to {execution_endpoint}.\n"
+			"Required behavior:\n"
+			"- persist sessionId in localStorage and expose displaySessionId(), progressText(), and progressPercent().\n"
+			"- track stepStatus, stepResults, conversationEntries, completedSteps, runningStep, eventLog, and totalSteps.\n"
+			"- unlock steps from dependency completion, and auto-submit steps with inputRequired=false or nodeKind in ('operation','service','skill') once they become unlocked.\n"
+			"- handle AG-UI events STEP_STARTED, STEP_FINISHED, TEXT_MESSAGE_CONTENT, CUSTOM with name='step_card', RUN_ERROR, and RUN_FINISHED.\n"
+			"- append TEXT_MESSAGE_CONTENT chunks in order for chat steps instead of replacing prior content.\n"
+			"- store step_card payloads under stepResults[stepId] and preserve card plus derived output.\n"
+			"- provide resetCurrentSession(), createNewSession(), initialize(), submitStep(stepId, inputValue), isUnlocked(stepId), and isCompleted(stepId).\n"
+			"- support file-input nodes by accepting already-serialized payload strings from the component layer rather than directly reading files in the store.\n"
+			"- support structured user_input forms by sending serialized JSON strings unchanged.\n"
+			"- keep code plain and robust, matching the reference module organization.\n\n"
 			f"{cron_block}"
-			f"execution endpoint: {effective_run_step_endpoint}\n"
-			f"reset-session endpoint: {reset_session_endpoint}\n\n"
 			"Graph plan JSON context:\n"
 			f"{graph_plan_context}\n\n"
-			"Per-step StepRunOutput.card format context parsed from generated node files (authoritative when available; use these shapes to design each response/result card before falling back to generic rows/actions rendering):\n"
+			"Per-step StepRunOutput.card schema context:\n"
 			f"{step_output_card_context}\n\n"
-			"Node UI HTML context loaded from default node_ui folder (copy these HTML/CSS/JS patterns as closely as possible for each matching step card):\n"
-			f"{node_ui_context}\n\n"
-			"The backend may emit AG-UI events, including CUSTOM event name='step_card'.\n"
-			"Each step returns StepRunOutput (input nodes via process_input, file nodes via build_step_output after persistence, chat nodes via build_step_output, operation nodes via process_operation) with fields:\n"
-			"- card: object (render rows from card.rows where each row has name/value; also render card.actions when present)\n"
-			"- derived: object (for backend chaining and possible final display)\n\n"
-			"step_card event payload shape:\n"
-			"- stepId, title, prompt, state, card, derived, unlocked, isFinal\n\n"
-			"Required UI behavior:\n"
-			"1) Build one step card per step from this metadata.\n"
-			"2) Enforce dependency-gated input enabling (only unlocked step can submit).\n"
-			"2.1) For the card of the currently running step, show a visible running-circle loading indicator while waiting for backend result events, then hide it when the step finishes or errors.\n"
-			f"{execution_behavior}"
-			"4) Render step_card.state and the full step_card.card payload into the matching step card. Use the per-step StepRunOutput.card format context above to shape the response UI for each step; when that context is missing, fall back to generic rendering for card.rows and card.actions.\n"
-			"4.1) When per-step StepRunOutput.card format context is available, implement and use a dedicated helper named renderCardSchemaSections to render schema-aware response/result sections for the matching step card.\n"
-			"5) Maintain sessionId in localStorage and show it in a badge.\n"
-			"6) Include New Session + Reset Session actions that call reset-session endpoint.\n"
-			f"{input_behavior}"
-			"12) For nodeKind='chat', render labels/status as chat-oriented, keep the same step-card event flow and payload handling, and surface progressive LLM text as chunks arrive over SSE.\n"
-			"13) For nodeKind='file', render labels/status as file-upload/storage oriented; for nodeKind='service', render labels/status as service startup/orchestration oriented; for nodeKind='skill', render labels/status as skill-execution oriented; keep the same step-card event flow and payload handling.\n"
-			"13.1) For auto-run steps, show non-interactive UI (informational text only) and rely on card running indicator/state rather than clickable run controls.\n"
-			"14) Render step cards progressively in metadata order: show only the first card initially, and reveal each later card only when that card becomes unlocked. Do not gate card visibility on the previous card's STEP_FINISHED event alone.\n"
-			"15) Make step cards visually polished and modern: clear hierarchy, elegant spacing, subtle gradients/shadows, rounded card shells, and compact status/meta chips.\n"
-			"16) Treat step card sections distinctly (header/body/input/results) and improve readability for rows, and actions without changing backend event semantics.\n"
-			"17) For nodeKind='chat', use chat-oriented labels; for nodeKind='file', use upload/storage labels.\n"
-			"18) Keep implementation minimal and robust; no extra features beyond the polished card styling and required behavior.\n"
-			"19) For each step, find the matching node_ui HTML snippet (by step id or title substring) and faithfully copy its CSS rules, component markup (chip grids, pill rows, tag lists, param-groups, dependency-context boxes), and interaction JS (click-to-toggle, add/remove handlers) into that step's card body. Do not redesign what is already defined in the node snippet.\n"
-			"20) Before submitting any step, always serialize complex UI control state into a JSON string for the `input` field: multi-select chips → JSON.stringify({field: selectedArray}); line-list / bullet-point textarea → JSON.stringify({field: lines.filter(Boolean)}); tag/pill lists → JSON.stringify({field: tags}). Never send raw JS arrays or objects. Single plain-text inputs submit their string value directly.\n\n"
-			"If any behavior in the reference frontend conflicts with these requirements, follow these requirements.\n\n"
 			"Step metadata JSON:\n"
 			f"{steps_json}\n\n"
-			"Reference frontend example (adapt this structure and event handling):\n"
-			f"{reference_frontend}\n"
+			"Reference store/workflow.js example:\n"
+			f"{reference_store_source}\n"
+		)
+
+	def _build_app_shell_user_prompt(
+		self,
+		*,
+		steps_meta: list[dict[str, Any]],
+		store_workflow_source: str,
+		reference_app_shell_source: str,
+		node_view_template_context: str,
+		step_output_card_context: str,
+	) -> str:
+		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
+		store_workflow_source = truncate_context(
+			store_workflow_source,
+			label="store_workflow_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+		reference_app_shell_source = truncate_context(
+			reference_app_shell_source,
+			label="reference_app_shell_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+		node_view_template_context = truncate_context(
+			node_view_template_context,
+			label="node_view_template_context",
+			max_chars=self.node_ui_context_max_chars,
+			request_label="frontend generation request",
+		)
+		step_output_card_context = truncate_context(
+			step_output_card_context,
+			label="step_output_card_context",
+			max_chars=self.step_output_card_context_max_chars,
+			request_label="frontend generation request",
+		)
+
+		return (
+			"Generate one Vue single-file component named AppShell.vue for frontend/src/components/AppShell.vue.\n"
+			"Return only runnable Vue SFC code with no markdown fences or explanation.\n"
+			"Never use this.$set or Vue.set anywhere in the component; use direct property assignment, object spread, or Object.assign for reactive updates.\n"
+			"Use the reference component as the baseline for layout rhythm, store interaction, and composition.\n"
+			"This component is the workflow main page and must operate directly on an injected workflowStore.\n"
+			"Prefer Vue Options API to match the example project.\n"
+			"Import ../styles/app.css in the component's style block and keep shared styling there instead of embedding the main stylesheet rules inside the SFC.\n"
+			"If the component needs a few truly local styles, keep them minimal and scoped while leaving the primary visual system in app.css.\n"
+			"Required UI behavior:\n"
+			"- show a top bar with session badge, progress, New Session, and Reset Session actions.\n"
+			"- render one workflow card per step from store.steps and keep cards progressive by unlocked state.\n"
+			"- render status badges for locked/active/running/completed/error.\n"
+			"- expose one input area per selected or active step and submit through workflowStore.submitStep(stepId, serializedInput).\n"
+			"- for nodeKind='file', use a multi-file picker and serialize files into JSON strings shaped like {files:[{fileName,bytes},...]} before submission.\n"
+			"- for extData.inputs_format, render structured controls by type and submit JSON.stringify(collectedObject).\n"
+			"- for nodeKind='chat', show progressive assistant text from conversation entries and card results.\n"
+			"- render card.rows, card.actions, and schema-aware sections using a helper named renderCardSchemaSections when schema context is available.\n"
+			"- include a visible running indicator on the currently running step.\n"
+			"- keep the look polished and modern while staying close to the example structure.\n\n"
+			"Store workflow.js context:\n"
+			f"{store_workflow_source}\n\n"
+			"Node view template context from frontend/src/views/{Node}.vue:\n"
+			f"{node_view_template_context}\n\n"
+			"Per-step StepRunOutput.card schema context:\n"
+			f"{step_output_card_context}\n\n"
+			"Step metadata JSON:\n"
+			f"{steps_json}\n\n"
+			"Reference AppShell.vue example:\n"
+			f"{reference_app_shell_source}\n"
+		)
+
+	def _build_app_css_user_prompt(
+		self,
+		*,
+		reference_app_css_source: str,
+		node_style_context: str,
+		frontend_style_prompt: str,
+	) -> str:
+		reference_app_css_source = truncate_context(
+			reference_app_css_source,
+			label="reference_app_css_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+		node_style_context = truncate_context(
+			node_style_context,
+			label="node_style_context",
+			max_chars=self.node_ui_context_max_chars,
+			request_label="frontend generation request",
+		)
+
+		return (
+			"Generate one CSS file named app.css for frontend/src/styles/app.css.\n"
+			"Return only runnable CSS with no markdown fences or explanation.\n"
+			"Use the reference stylesheet as the baseline shared design system for the generated workflow frontend.\n"
+			"Keep selectors, layout hooks, and utility rules needed by the reference AppShell structure unless the style guidance clearly requires an intentional adjustment.\n"
+			"Use the node stylesheet context to make app.css visually fit and complement the generated frontend/src/styles/{Node}.css files without duplicating their component-scoped rules.\n"
+			"Apply the user-defined frontend style guidance below across colors, spacing, typography, surfaces, and visual polish while keeping the stylesheet production-ready.\n\n"
+			"Node stylesheet context from frontend/src/styles/{Node}.css:\n"
+			f"{node_style_context}\n\n"
+			"User-defined frontend style guidance:\n"
+			f"{frontend_style_prompt.strip()}\n\n"
+			"Reference app.css example:\n"
+			f"{reference_app_css_source}\n"
+		)
+
+	def _build_app_vue_user_prompt(
+		self,
+		*,
+		node_names: Sequence[str],
+		reference_app_source: str,
+		generated_api_source: str,
+		generated_store_source: str,
+		generated_app_shell_source: str,
+	) -> str:
+		node_names_json = json.dumps(list(node_names), ensure_ascii=False, indent=2)
+		reference_app_source = truncate_context(
+			reference_app_source,
+			label="reference_app_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+		generated_api_source = truncate_context(
+			generated_api_source,
+			label="generated_api_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+		generated_store_source = truncate_context(
+			generated_store_source,
+			label="generated_store_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+		generated_app_shell_source = truncate_context(
+			generated_app_shell_source,
+			label="generated_app_shell_source",
+			max_chars=self.vue_reference_context_max_chars,
+			request_label="frontend generation request",
+		)
+
+		return (
+			"Generate one Vue single-file component named App.vue for frontend/src/App.vue.\n"
+			"Return only runnable Vue SFC code with no markdown fences or explanation.\n"
+			"Never use this.$set or Vue.set; keep all reactive updates compatible with modern Vue patterns.\n"
+			"Use the reference App.vue as the baseline integration pattern, but adapt it to the generated sources below.\n"
+			"Import createWorkflowStore from ./store/workflow and AppShell from './components/AppShell.vue'.\n"
+			"Import one node view component per graph node name from ./views/<NodeName>.vue when node names are provided.\n"
+			"Build a viewMap keyed by graph node name so App.vue becomes the composition root that wires the generated store, shell, and node views together.\n"
+			"Provide workflowStore for descendants, call workflowStore.initialize() during setup, and keep hash-based routing aligned to known steps or node names.\n"
+			"Use the generated AppShell.vue source as the primary contract for props, events, and slots. If it already expects active-step-id, active-view, or navigate handlers, preserve that interface instead of inventing a new one.\n"
+			"Use the generated api/workflow.js and store/workflow.js as integration context so lifecycle and state usage stay consistent.\n"
+			"When no node names are available, still render AppShell and initialize the workflow store without view imports.\n\n"
+			"Graph node names for imports:\n"
+			f"{node_names_json}\n\n"
+			"Generated api/workflow.js context:\n"
+			f"{generated_api_source}\n\n"
+			"Generated store/workflow.js context:\n"
+			f"{generated_store_source}\n\n"
+			"Generated components/AppShell.vue context:\n"
+			f"{generated_app_shell_source}\n\n"
+			"Reference App.vue example:\n"
+			f"{reference_app_source}\n"
 		)
 
 	@staticmethod
-	def _truncate_context(text: str, *, label: str, max_chars: int) -> str:
-		if max_chars <= 0 or len(text) <= max_chars:
-			return text
+	def _detect_frontend_file_kind(file_path: Path) -> str:
+		normalized = file_path.as_posix()
+		if normalized.endswith("/api/workflow.js"):
+			return "api"
+		if normalized.endswith("/store/workflow.js"):
+			return "store"
+		if normalized.endswith("/components/AppShell.vue"):
+			return "app_shell"
+		if "/views/" in normalized and normalized.endswith(".vue"):
+			return "view"
+		if normalized.endswith("/styles/app.css"):
+			return "app_css"
+		if normalized.endswith("/App.vue"):
+			return "app"
+		raise ValueError(f"Unsupported frontend file for amendment: {file_path}")
 
-		head_chars = max_chars // 2
-		tail_chars = max_chars - head_chars
-		omitted = len(text) - max_chars
-		return (
-			f"{text[:head_chars]}\n\n"
-			f"[truncated {label}: omitted {omitted} characters to keep the frontend generation request bounded]\n\n"
-			f"{text[-tail_chars:]}"
+	@staticmethod
+	def _build_feedback_contract_text(file_kind: str) -> str:
+		contracts = {
+			"api": (
+				"Preserve the api/workflow.js contract: exported fetch helpers, SSE parsing, "
+				"runStep(payload, onEvent), resetSession(sessionId), and startCron(payload, onEvent) when cron mode is required.\n"
+			),
+			"store": (
+				"Preserve the store/workflow.js contract: export createWorkflowStore() and STEP_METADATA, "
+				"keep reactive state, dependency unlocking, auto-submit behavior, and AG-UI event handling.\n"
+			),
+			"app_shell": (
+				"Preserve the AppShell.vue contract: operate on injected workflowStore, keep the session/progress top bar, "
+				"progressive step cards, input surfaces, chat rendering, and schema-aware card rendering helpers.\n"
+			),
+			"app": (
+				"Preserve the App.vue contract: remain the composition root, import createWorkflowStore and AppShell, "
+				"provide workflowStore, initialize it during setup, and keep node-view routing aligned with workflow nodes.\n"
+			),
+			"view": (
+				"Preserve the views/<Node>.vue contract: keep it focused on a single workflow step with injected workflowStore integration, "
+				"and preserve the existing node template structure as literally as possible while applying only minimal Vue-specific fixes.\n"
+			),
+			"app_css": (
+				"Preserve the app.css contract: keep the shared visual system and selectors required by the generated AppShell structure.\n"
+			),
+		}
+		return contracts[file_kind]
+
+	def _build_amendment_prompt(
+		self,
+		*,
+		file_path: Path,
+		original_code: str,
+		rule_violations: str,
+		steps_meta: Sequence[Mapping[str, Any]] | None = None,
+		context_base_dir: str | Path | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
+		requirement_analysis_result: Mapping[str, Any] | None = None,
+		frontend_style_prompt: str | None = None,
+	) -> str:
+		file_kind = self._detect_frontend_file_kind(file_path)
+		contract_text = self._build_feedback_contract_text(file_kind)
+		user_prompt = (
+			"You are updating an existing AG-UI Vue frontend source file.\n"
+			f"Target file: {file_path.name}\n"
+			"Fix the listed rule violations while preserving valid existing behavior and file structure.\n"
+			"Prefer the smallest viable edit; do not redesign the file unless a violation requires it.\n"
+			"Every defined variable must be used; remove dead assignments.\n"
+			"Do not use this.$set or Vue.set in the updated file; prefer direct assignment, object spread, or Object.assign for reactive state changes.\n"
+			f"{contract_text}"
+			"Return only runnable code without commentary or markdown fences.\n\n"
+			"Existing code:\n"
+			f"{original_code}\n\n"
+			"Rule violations to fix:\n"
+			f"{rule_violations}\n"
+		)
+
+		try:
+			reference_context = self._load_reference_vue_frontend_context(reference_frontend_src_dir)
+		except FileNotFoundError:
+			reference_context = {}
+
+		if file_kind == "api":
+			reference_api_source = reference_context.get("api", "")
+			if reference_api_source:
+				user_prompt += (
+					"\nReference api/workflow.js context:\n"
+					f"{truncate_context(reference_api_source, label='reference_api_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
+				)
+			cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
+			if cron_meta and cron_meta["is_cron_task"]:
+				user_prompt += "\nCron mode is enabled for this frontend; preserve cron-specific behavior if present.\n"
+
+		normalized_steps: list[dict[str, Any]] = []
+		if steps_meta:
+			normalized_steps = self._normalize_steps(steps_meta)
+
+		if file_kind in {"store", "app_shell"}:
+			if normalized_steps:
+				user_prompt += (
+					"\nStep metadata JSON:\n"
+					f"{json.dumps(normalized_steps, ensure_ascii=False, indent=2)}\n"
+				)
+			step_output_card_context = self._load_step_output_card_context(
+				steps_meta=normalized_steps,
+				output_path=file_path,
+				base_dir=context_base_dir,
+			) if normalized_steps else ""
+			if step_output_card_context:
+				user_prompt += (
+					"\nPer-step StepRunOutput.card schema context:\n"
+					f"{truncate_context(step_output_card_context, label='step_output_card_context', max_chars=self.step_output_card_context_max_chars, request_label='frontend amendment request')}\n"
+				)
+			if file_kind == "store":
+				_, graph_plan_context = self._load_default_frontend_context(file_path, base_dir=context_base_dir)
+				if graph_plan_context:
+					user_prompt += (
+						"\nGraph plan JSON context:\n"
+						f"{truncate_context(graph_plan_context, label='graph_plan_context', max_chars=self.graph_plan_context_max_chars, request_label='frontend amendment request')}\n"
+					)
+			reference_key = "store" if file_kind == "store" else "app_shell"
+			reference_source = reference_context.get(reference_key, "")
+			if reference_source:
+				user_prompt += (
+					f"\nReference {reference_key} context:\n"
+					f"{truncate_context(reference_source, label=f'reference_{reference_key}_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
+				)
+
+		if file_kind == "app":
+			try:
+				reference_app_source = self._load_reference_app_source(reference_frontend_src_dir)
+			except FileNotFoundError:
+				reference_app_source = ""
+			if reference_app_source:
+				user_prompt += (
+					"\nReference App.vue context:\n"
+					f"{truncate_context(reference_app_source, label='reference_app_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
+				)
+			try:
+				generated_context = self._load_generated_frontend_context(file_path)
+			except FileNotFoundError:
+				generated_context = {}
+			for context_key, context_label in {
+				"api": "Generated api/workflow.js context",
+				"store": "Generated store/workflow.js context",
+				"app_shell": "Generated AppShell.vue context",
+			}.items():
+				context_text = generated_context.get(context_key, "")
+				if not context_text:
+					continue
+				user_prompt += (
+					f"\n{context_label}:\n"
+					f"{truncate_context(context_text, label=f'generated_{context_key}_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
+				)
+			resolved_base_dir = self._resolve_context_base_dir(file_path, context_base_dir)
+			graph_plan_path = resolved_base_dir / "workflow.json"
+			if graph_plan_path.is_file():
+				node_names = list(graph_to_nodes(graph_plan_path).keys())
+				if node_names:
+					user_prompt += (
+						"\nGraph node names for imports:\n"
+						f"{json.dumps(node_names, ensure_ascii=False, indent=2)}\n"
+					)
+
+		if file_kind == "app_css":
+			reference_app_css_source = reference_context.get("app_css", "")
+			if reference_app_css_source:
+				user_prompt += (
+					"\nReference app.css context:\n"
+					f"{truncate_context(reference_app_css_source, label='reference_app_css_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
+				)
+			if frontend_style_prompt and frontend_style_prompt.strip():
+				user_prompt += (
+					"\nUser-defined frontend style guidance:\n"
+					f"{frontend_style_prompt.strip()}\n"
+				)
+
+		return user_prompt
+
+	def amend_code_with_feedback(
+		self,
+		file_path: str | Path,
+		rule_violations: str,
+		*,
+		steps_meta: Sequence[Mapping[str, Any]] | None = None,
+		context_base_dir: str | Path | None = None,
+		requirement_analysis_result: Mapping[str, Any] | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
+		frontend_style_prompt: str | None = None,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> Path:
+		target_path = Path(file_path).expanduser()
+		if not target_path.exists():
+			raise FileNotFoundError(f"Frontend file not found: {target_path}")
+
+		original_code = target_path.read_text(encoding="utf-8")
+		user_prompt = self._build_amendment_prompt(
+			file_path=target_path,
+			original_code=original_code,
+			rule_violations=rule_violations,
+			steps_meta=steps_meta,
+			context_base_dir=context_base_dir,
+			reference_frontend_src_dir=reference_frontend_src_dir,
+			requirement_analysis_result=requirement_analysis_result,
+			frontend_style_prompt=frontend_style_prompt,
+		)
+
+		return self.code_to_file(
+			user_prompt,
+			str(target_path),
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
 		)
 
 	def _load_default_frontend_context(
@@ -272,10 +789,7 @@ class PromptFrontendCoder(Coder):
 	) -> tuple[str, str]:
 		"""Load workflow.json and node_ui/*.html from a user-provided or default base dir."""
 
-		if base_dir is None:
-			resolved_base_dir = output_path.parent.resolve()
-		else:
-			resolved_base_dir = Path(base_dir).expanduser().resolve()
+		resolved_base_dir = self._resolve_context_base_dir(output_path, base_dir)
 		graph_plan_path = resolved_base_dir / "workflow.json"
 		node_ui_dir = resolved_base_dir / "node_ui"
 
@@ -302,6 +816,53 @@ class PromptFrontendCoder(Coder):
 
 		return node_ui_context, graph_plan_context
 
+	@staticmethod
+	def _extract_vue_template_block(vue_source: str) -> str:
+		match = re.search(r"<template\b[^>]*>[\s\S]*?</template>", vue_source, re.IGNORECASE)
+		return match.group(0) if match else vue_source
+
+	def _load_node_view_template_context(self, output_path: Path) -> str:
+		src_dir = output_path.parent.parent.resolve()
+		views_dir = src_dir / "views"
+		if not views_dir.is_dir():
+			return f"[missing] no *.vue files found under: {views_dir}"
+
+		template_chunks: list[str] = []
+		for vue_file in sorted(views_dir.glob("*.vue")):
+			try:
+				vue_source = vue_file.read_text(encoding="utf-8")
+			except UnicodeDecodeError:
+				vue_source = vue_file.read_text(encoding="utf-8", errors="replace")
+			template_chunks.append(
+				f"\n=== {vue_file.name} ===\n{self._extract_vue_template_block(vue_source)}\n"
+			)
+
+		if not template_chunks:
+			return f"[missing] no *.vue files found under: {views_dir}"
+
+		return "\n".join(template_chunks)
+
+	def _load_node_style_context(self, output_path: Path) -> str:
+		src_dir = output_path.parent.parent.resolve()
+		styles_dir = src_dir / "styles"
+		if not styles_dir.is_dir():
+			return f"[missing] no node *.css files found under: {styles_dir}"
+
+		style_chunks: list[str] = []
+		for css_file in sorted(styles_dir.glob("*.css")):
+			if css_file.name == "app.css":
+				continue
+			try:
+				css_source = css_file.read_text(encoding="utf-8")
+			except UnicodeDecodeError:
+				css_source = css_file.read_text(encoding="utf-8", errors="replace")
+			style_chunks.append(f"\n=== {css_file.name} ===\n{css_source}\n")
+
+		if not style_chunks:
+			return f"[missing] no node *.css files found under: {styles_dir}"
+
+		return "\n".join(style_chunks)
+
 	def _load_step_output_card_context(
 		self,
 		*,
@@ -309,10 +870,7 @@ class PromptFrontendCoder(Coder):
 		output_path: Path,
 		base_dir: str | Path | None = None,
 	) -> str:
-		if base_dir is None:
-			resolved_base_dir = output_path.parent.resolve()
-		else:
-			resolved_base_dir = Path(base_dir).expanduser().resolve()
+		resolved_base_dir = self._resolve_context_base_dir(output_path, base_dir)
 
 		card_schemas: list[dict[str, Any]] = []
 		for step in steps_meta:
@@ -345,37 +903,50 @@ class PromptFrontendCoder(Coder):
 
 		return json.dumps(card_schemas, ensure_ascii=False, indent=2)
 
-	def write_frontend_html(
+	def write_api_workflow_file(
+		self,
+		*,
+		output_path: str | Path,
+		run_step_endpoint: str = "/api/run-step",
+		reset_session_endpoint: str = "/api/reset-session",
+		requirement_analysis_result: Mapping[str, Any] | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> Path:
+		reference_context = self._load_reference_vue_frontend_context(reference_frontend_src_dir)
+		user_prompt = self._build_api_user_prompt(
+			run_step_endpoint=run_step_endpoint,
+			reset_session_endpoint=reset_session_endpoint,
+			reference_api_source=reference_context["api"],
+			requirement_analysis_result=requirement_analysis_result,
+		)
+		return self.code_to_file(
+			user_prompt,
+			str(Path(output_path).expanduser()),
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+		)
+
+	def write_store_workflow_file(
 		self,
 		*,
 		steps_meta: Sequence[Mapping[str, Any]],
-		output_path: str,
+		output_path: str | Path,
 		context_base_dir: str | None = None,
 		run_step_endpoint: str = "/api/run-step",
 		reset_session_endpoint: str = "/api/reset-session",
 		requirement_analysis_result: Mapping[str, Any] | None = None,
-		reference_frontend_path: str | None = None,
-		frontend_style_prompt: str | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 10000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		normalized_steps = self._normalize_steps(steps_meta)
-
-		if reference_frontend_path:
-			reference_path = Path(reference_frontend_path).expanduser().resolve()
-		else:
-			reference_path = ROOT_DIR / "library/frontend_reference.html"
-
-		if not reference_path.exists():
-			raise FileNotFoundError(f"reference_frontend_path not found: {reference_path}")
-
-		reference_frontend = reference_path.read_text(encoding="utf-8")
-
 		target_path = Path(output_path).expanduser()
-		if target_path.suffix.lower() != ".html":
-			target_path = target_path.with_suffix(".html")
-		target_path.parent.mkdir(parents=True, exist_ok=True)
+		reference_context = self._load_reference_vue_frontend_context(reference_frontend_src_dir)
 		node_ui_context, graph_plan_context = self._load_default_frontend_context(
 			target_path,
 			base_dir=context_base_dir,
@@ -385,19 +956,15 @@ class PromptFrontendCoder(Coder):
 			output_path=target_path,
 			base_dir=context_base_dir,
 		)
-
-		user_prompt = self._build_user_prompt(
+		user_prompt = self._build_store_user_prompt(
 			steps_meta=normalized_steps,
 			run_step_endpoint=run_step_endpoint,
 			reset_session_endpoint=reset_session_endpoint,
 			requirement_analysis_result=requirement_analysis_result,
-			reference_frontend=reference_frontend,
-			node_ui_context=node_ui_context,
+			reference_store_source=reference_context["store"],
 			graph_plan_context=graph_plan_context,
 			step_output_card_context=step_output_card_context,
-			frontend_style_prompt=frontend_style_prompt,
 		)
-
 		return self.code_to_file(
 			user_prompt,
 			str(target_path),
@@ -406,36 +973,62 @@ class PromptFrontendCoder(Coder):
 			max_tokens=max_tokens,
 		)
 
-	def amend_code_with_feedback(
+	def write_app_shell_vue_file(
 		self,
-		code_path: str,
-		amendment: str,
 		*,
+		steps_meta: Sequence[Mapping[str, Any]],
+		output_path: str | Path,
+		context_base_dir: str | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
+		frontend_style_prompt: str | None = None,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 20000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
-		"""Amend existing frontend HTML using feedback and write updated file."""
-
-		target_path = Path(code_path).expanduser()
-		if target_path.suffix.lower() != ".html":
-			target_path = target_path.with_suffix(".html")
-
-		if not target_path.exists():
-			raise FileNotFoundError(f"Frontend file not found: {target_path}")
-
-		original_html = target_path.read_text(encoding="utf-8")
-		user_prompt = (
-			"You are updating an AG-UI lifecycle frontend HTML file.\n"
-			"Keep it as a single runnable frontend.html file using plain HTML/CSS/JS.\n"
-			"Preserve existing behavior and fix only the issues in the amendment.\n"
-			"Return only runnable HTML with no explanation.\n\n"
-			"Existing frontend:\n"
-			f"{original_html}\n\n"
-			"Amendment / feedback to apply:\n"
-			f"{amendment}\n"
+		normalized_steps = self._normalize_steps(steps_meta)
+		target_path = Path(output_path).expanduser()
+		reference_context = self._load_reference_vue_frontend_context(reference_frontend_src_dir)
+		step_output_card_context = self._load_step_output_card_context(
+			steps_meta=normalized_steps,
+			output_path=target_path,
+			base_dir=context_base_dir,
 		)
-
+		store_path = target_path.parent.parent / "store" / "workflow.js"
+		if store_path.is_file():
+			store_workflow_source = store_path.read_text(encoding="utf-8")
+		else:
+			store_workflow_source = reference_context["store"]
+		node_view_template_context = self._load_node_view_template_context(target_path)
+		app_css_path = target_path.parent.parent / "styles" / "app.css"
+		print(f"start writing app.css to: {app_css_path}")
+		if frontend_style_prompt and frontend_style_prompt.strip():
+			node_style_context = self._load_node_style_context(target_path)
+			app_css_prompt = self._build_app_css_user_prompt(
+				reference_app_css_source=reference_context["app_css"],
+				node_style_context=node_style_context,
+				frontend_style_prompt=frontend_style_prompt,
+			)
+			self.code_to_file(
+				app_css_prompt,
+				str(app_css_path),
+				overwrite=overwrite,
+				temperature=temperature,
+				max_tokens=max_tokens,
+			)
+		else:
+			self.write_code_to_file(
+				reference_context["app_css"],
+				str(app_css_path),
+				overwrite=overwrite,
+			)
+		user_prompt = self._build_app_shell_user_prompt(
+			steps_meta=normalized_steps,
+			store_workflow_source=store_workflow_source,
+			reference_app_shell_source=reference_context["app_shell"],
+			node_view_template_context=node_view_template_context,
+			step_output_card_context=step_output_card_context,
+		)
+		print(f"start writing AppShell.vue to: {target_path}")
 		return self.code_to_file(
 			user_prompt,
 			str(target_path),
@@ -444,19 +1037,124 @@ class PromptFrontendCoder(Coder):
 			max_tokens=max_tokens,
 		)
 
-	def _amend_frontend_with_feedback(
+	def write_app_file(
 		self,
-		frontend_path: str,
-		amendment: str,
 		*,
+		steps_meta: Sequence[Mapping[str, Any]],
+		output_path: str | Path,
+		context_base_dir: str | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
+		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 20000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
-		"""Private helper that delegates to amend_code_with_feedback."""
-
-		return self.amend_code_with_feedback(
-			frontend_path,
-			amendment,
-			temperature=temperature,
+		target_path = Path(output_path).expanduser()
+		resolved_base_dir = self._resolve_context_base_dir(target_path, context_base_dir)
+		graph_plan_path = resolved_base_dir / "workflow.json"
+		reference_app_source = self._load_reference_app_source(reference_frontend_src_dir)
+		node_names = list(graph_to_nodes(graph_plan_path).keys()) if graph_plan_path.is_file() else []
+		generated_context = self._load_generated_frontend_context(target_path)
+		user_prompt = self._build_app_vue_user_prompt(
+			node_names=node_names,
+			reference_app_source=reference_app_source,
+			generated_api_source=generated_context["api"],
+			generated_store_source=generated_context["store"],
+			generated_app_shell_source=generated_context["app_shell"],
 		)
+		return self.code_to_file(
+			user_prompt,
+			str(target_path),
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+		)
+
+	def write_frontend_src_files(
+		self,
+		*,
+		steps_meta: Sequence[Mapping[str, Any]],
+		output_base_dir: str | Path,
+		context_base_dir: str | None = None,
+		run_step_endpoint: str = "/api/run-step",
+		reset_session_endpoint: str = "/api/reset-session",
+		requirement_analysis_result: Mapping[str, Any] | None = None,
+		reference_frontend_src_dir: str | Path | None = None,
+		frontend_style_prompt: str | None = None,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		api_max_tokens: int = MAX_TOKENS,
+		store_max_tokens: int = MAX_TOKENS,
+		app_shell_max_tokens: int = MAX_TOKENS,
+		app_max_tokens: int = MAX_TOKENS,
+	) -> dict[str, Path]:
+		base_dir = Path(output_base_dir).expanduser()
+		api_path = base_dir / "api" / "workflow.js"
+		store_path = base_dir / "store" / "workflow.js"
+		app_shell_path = base_dir / "components" / "AppShell.vue"
+		app_path = base_dir / "App.vue"
+		app_css_path = base_dir / "styles" / "app.css"
+
+		api_output = _run_stage(
+			"api workflow file",
+			api_path,
+			self.write_api_workflow_file,
+			output_path=api_path,
+			run_step_endpoint=run_step_endpoint,
+			reset_session_endpoint=reset_session_endpoint,
+			requirement_analysis_result=requirement_analysis_result,
+			reference_frontend_src_dir=reference_frontend_src_dir,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=api_max_tokens,
+		)
+		store_output = _run_stage(
+			"store workflow file",
+			store_path,
+			self.write_store_workflow_file,
+			steps_meta=steps_meta,
+			output_path=store_path,
+			context_base_dir=context_base_dir,
+			run_step_endpoint=run_step_endpoint,
+			reset_session_endpoint=reset_session_endpoint,
+			requirement_analysis_result=requirement_analysis_result,
+			reference_frontend_src_dir=reference_frontend_src_dir,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=store_max_tokens,
+		)
+		app_shell_output = _run_stage(
+			"app shell file",
+			app_shell_path,
+			self.write_app_shell_vue_file,
+			steps_meta=steps_meta,
+			output_path=app_shell_path,
+			context_base_dir=context_base_dir,
+			reference_frontend_src_dir=reference_frontend_src_dir,
+			frontend_style_prompt=frontend_style_prompt,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=app_shell_max_tokens,
+		)
+		app_output = _run_stage(
+			"app file",
+			app_path,
+			self.write_app_file,
+			steps_meta=steps_meta,
+			output_path=app_path,
+			context_base_dir=context_base_dir,
+			reference_frontend_src_dir=reference_frontend_src_dir,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=app_max_tokens,
+		)
+		print(f"finished writing frontend files to: {base_dir}")
+
+		return {
+			"api": api_output,
+			"store": store_output,
+			"app_shell": app_shell_output,
+			"app": app_output,
+			"app_css": app_css_path,
+		}
+
 

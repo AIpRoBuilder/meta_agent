@@ -5,8 +5,8 @@ This directory stores reusable prompt/reference assets shared by code generators
 ## Files
 
 - `frontend_reference.html`
-  - Baseline AG-UI frontend template used by frontend generation.
-  - Default consumer: `meta_agent/worker/frontend_writer.py` (`PromptFrontendCoder.write_frontend_html`).
+  - Legacy single-file AG-UI frontend template retained for historical reference.
+  - Not used by the current Vue src frontend generation flow.
 
 - `workflow_nodes_reference_excerpts.md`
   - Workflow node base-class reference excerpt used to ground node generation.

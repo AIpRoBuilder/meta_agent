@@ -15,7 +15,7 @@ else:
 if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
-from meta_agent.llm_client.coder import Coder
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 
 
 @dataclass
@@ -734,7 +734,7 @@ class GraphPlanner(Coder):
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 20000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		"""Read requirement_analysis.md and write a JSON graph plan."""
 
@@ -758,7 +758,7 @@ class GraphPlanner(Coder):
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.05,
-		max_tokens: int = 20000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		"""Call the LLM and persist the graph plan as JSON."""
 
@@ -824,7 +824,7 @@ class GraphPlanner(Coder):
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 20000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		"""Amend an existing graph JSON plan using feedback."""
 

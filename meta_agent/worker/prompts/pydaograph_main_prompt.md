@@ -14,6 +14,7 @@ Required imports:
 - `from fastapi.responses import HTMLResponse, StreamingResponse`
 - `from pydantic import BaseModel`
 - `from ag_ui_workflow import WorkflowEngine`
+- `import uvicorn`
 - Import node classes from the generated root package (for example `from example_agent_output import StepA, StepB`)
 
 Required globals and setup:
@@ -24,6 +25,7 @@ Required globals and setup:
 - `PIPELINE_JSON_PATH = Path(__file__).with_name("workflow_pipeline.json")`
 - `ENGINES: dict[str, WorkflowEngine] = {}`
 - `STEP_CHAIN = [NodeA.step_meta(), NodeB.step_meta(), ...]` in deterministic order
+- End with a script launcher under `if __name__ == "__main__":` that calls `uvicorn.run(app, ...)`
 - Do not import node classes from `.step_nodes`
 - Do not use relative node imports such as `from . import ...`; import from root package name.
 - Node imports must work in script execution style: `python main.py`.

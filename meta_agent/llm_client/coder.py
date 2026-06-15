@@ -31,6 +31,18 @@ class LLMGenerationError(RuntimeError):
     """Raised when the language model fails to return usable content."""
 
 
+def _resolve_max_tokens() -> int:
+    raw_value = os.getenv("MAX_TOKENS", "8192").strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return 8192
+    return value if value > 0 else 8192
+
+
+MAX_TOKENS = _resolve_max_tokens()
+
+
 def _strip_code_fence(text: str) -> str:
     """Remove any Markdown fence lines (```lang) from the text."""
 
@@ -55,7 +67,6 @@ class Coder:
     deepseek_base_url: str = "https://api.deepseek.com"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     oneoneoneapi_base_url: str = "https://111api.chat/v1"
-    request_timeout: float = 180.0
     client: Optional[object] = None
 
     def __post_init__(self) -> None:
@@ -73,7 +84,7 @@ class Coder:
                     raise ValueError(
                         "Missing OpenAI API key; set OPENAI_API_KEY or pass api_key."
                     )
-                client_kwargs = {"api_key": resolved_key, "timeout": self.request_timeout}
+                client_kwargs = {"api_key": resolved_key}
                 if resolved_base_url:
                     client_kwargs["base_url"] = resolved_base_url
                 self.client = OpenAI(**client_kwargs)
@@ -96,11 +107,7 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("DEEPSEEK_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing DEEPSEEK_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(
-                    api_key=resolved_key,
-                    base_url=self.deepseek_base_url,
-                    timeout=self.request_timeout,
-                )
+                self.client = OpenAI(api_key=resolved_key, base_url=self.deepseek_base_url)
             elif self.provider == "qwen":
                 if OpenAI is None:
                     raise ImportError(
@@ -110,11 +117,7 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("DASHSCOPE_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing DASHSCOPE_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(
-                    api_key=resolved_key,
-                    base_url=self.qwen_base_url,
-                    timeout=self.request_timeout,
-                )
+                self.client = OpenAI(api_key=resolved_key, base_url=self.qwen_base_url)
             elif self.provider == "111api":
                 if OpenAI is None:
                     raise ImportError(
@@ -124,11 +127,7 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("ONEONEONEAPI_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing ONEONEONEAPI_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(
-                    api_key=resolved_key,
-                    base_url=self.oneoneoneapi_base_url,
-                    timeout=self.request_timeout,
-                )
+                self.client = OpenAI(api_key=resolved_key, base_url=self.oneoneoneapi_base_url)
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
@@ -137,7 +136,7 @@ class Coder:
         user_prompt: str,
         *,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = MAX_TOKENS,
     ) -> str:
         """Call the LLM and return the generated code as plain text."""
 
@@ -191,7 +190,7 @@ class Coder:
         *,
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         """Generate code from the prompt and persist it to `file_path`."""
 

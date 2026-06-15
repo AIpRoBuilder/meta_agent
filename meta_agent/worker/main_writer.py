@@ -20,7 +20,7 @@ else:
 if str(ROOT_DIR.parent) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR.parent))
 
-from meta_agent.llm_client.coder import Coder
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 from meta_agent.tools.text_tools import normalize_requirement_analysis_result
 
 
@@ -111,7 +111,7 @@ class PromptMainFileCoder(Coder):
             f"Node classes in graph-plan order: {class_chain}",
             f"Node package root name: {nodes_package_name}",
             "The file must:",
-            "- Use imports and module layout aligned with the lifecycle example: FastAPI, HTMLResponse, StreamingResponse, BaseModel, WorkflowEngine, and node imports from the root package.",
+            "- Use imports and module layout aligned with the lifecycle example: FastAPI, HTMLResponse, StreamingResponse, BaseModel, WorkflowEngine, uvicorn, and node imports from the root package.",
             "- Automatically load environment variables from a .env file on startup (prefer `from dotenv import load_dotenv`) before app/engine initialization.",
             "- Resolve .env path robustly by trying current file directory first and then project root fallback.",
             "- Import all node classes from the package root named above (for example `from example_agent_output import StepA, StepB`) and do NOT import from `.step_nodes`.",
@@ -119,6 +119,7 @@ class PromptMainFileCoder(Coder):
             "- Ensure node imports work when executed as script (`python main.py`) and avoid try/except import blocks.",
             "- In generated main.py, include `sys.path.insert(0, str(Path(__file__).resolve().parent.parent))` before importing node classes.",
             "- Define app-level constants for pipeline json path, engine cache map, and ordered STEP_CHAIN built from each node's step_meta().",
+            f"- End the file with a real script launcher: `if __name__ == \"__main__\": uvicorn.run(app, host={fastapi_host!r}, port={fastapi_port}, reload={uvicorn_reload})` or equivalent using the same app object.",
             "- Implement RunStepInput, ResetSessionInput, and ResetSessionOutput pydantic models with camelCase fields.",
             "- In RunStepInput include: sessionId, stepId, input, and optional file_path.",
             "- Type RunStepInput.input as flexible payload (e.g. str | dict[str, Any] | None), not str-only.",
@@ -197,7 +198,7 @@ class PromptMainFileCoder(Coder):
         uvicorn_reload: bool = False,
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         project_root = Path(project_root_path).expanduser().resolve()
         if not project_root.exists() or not project_root.is_dir():
@@ -249,7 +250,7 @@ class PromptMainFileCoder(Coder):
         language: str = "python",
         overwrite: bool = True,
         temperature: float = 0.2,
-        max_tokens: int = 8192,
+        max_tokens: int = MAX_TOKENS,
     ) -> Path:
         """Amend existing code using feedback and write the updated code to disk."""
 

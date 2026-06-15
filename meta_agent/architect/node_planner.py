@@ -16,7 +16,7 @@ else:
 if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
-from meta_agent.llm_client.coder import Coder
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 
 
 class _NodePlanElement(GElement):
@@ -208,7 +208,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 8192,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		"""Delegate to the shared internal :class:`Coder` instance."""
 		return self._coder.code_to_file(
@@ -442,7 +442,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.05,
-		max_tokens: int = 12000,
+		max_tokens: int = MAX_TOKENS,
 	) -> list[Path]:
 		"""Generate one brief markdown file per node, named `<node_name>.md`."""
 
@@ -474,7 +474,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 12000,
+		max_tokens: int = MAX_TOKENS,
 	) -> list[Path]:
 		"""Generate one brief node summary markdown for each node into `output_dir`.
 
@@ -571,7 +571,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 12000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		"""Rewrite a single node UI HTML file using user feedback.
 
@@ -666,7 +666,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 12000,
+		max_tokens: int = MAX_TOKENS,
 	) -> Path:
 		"""File-based wrapper for :meth:`amend_node_ui`.
 
@@ -720,7 +720,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
-		max_tokens: int = 12000,
+		max_tokens: int = MAX_TOKENS,
 	) -> list[Path]:
 		"""Generate one HTML UI file per node into `<output_dir>/node_ui`."""
 
@@ -752,7 +752,7 @@ class NodePlanner:
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.05,
-		max_tokens: int = 12000,
+		max_tokens: int = MAX_TOKENS,
 	) -> list[Path]:
 		"""Generate one HTML UI file per node into `node_ui` under `output_dir`."""
 
