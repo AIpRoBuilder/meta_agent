@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from meta_agent.architect.graph import NodeMeta
 import meta_agent.worker.frontend_writer as frontend_writer_module
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
 from meta_agent.worker.frontend_view_writer import FrontendViewCoder
@@ -146,6 +147,8 @@ def test_build_app_shell_user_prompt_includes_schema_and_file_input_requirements
     assert "<template><section>Collect</section></template>" in prompt
     assert "renderCardSchemaSections" in prompt
     assert "Never use this.$set or Vue.set" in prompt
+    assert "conversation bar centered along the middle bottom of the page" in prompt
+    assert "call workflowStore.submitStep(stepId, payload) so the request flows to /api/run-step" in prompt
     assert "serialize files into JSON strings shaped like {files:[{fileName,bytes},...]} before submission" in prompt
     assert "Graph plan JSON context" not in prompt
 
@@ -170,21 +173,8 @@ def test_build_app_vue_user_prompt_includes_generated_context_requirements():
     writer = PromptFrontendCoder(client=_FakeClient())
 
     prompt = writer._build_app_vue_user_prompt(
-        steps_meta=[
-            {
-                "id": "collect",
-                "title": "Collect Input",
-                "prompt": "Collect the user's request",
-                "dependencies": [],
-                "services": [],
-                "inputRequired": True,
-                "nodeKind": "input",
-                "extData": {"type": "user_input", "desc": "", "inputs_format": {}},
-            }
-        ],
         node_names=["CollectInput", "ReviewResult"],
         reference_app_source="<template><AppShell /></template>",
-        graph_plan_context='{"nodes": [{"name": "CollectInput"}, {"name": "ReviewResult"}]}',
         generated_api_source="export async function runStep() {}",
         generated_store_source="export function createWorkflowStore() {}",
         generated_app_shell_source="<template></template>",
@@ -193,6 +183,8 @@ def test_build_app_vue_user_prompt_includes_generated_context_requirements():
     assert "frontend/src/App.vue" in prompt
     assert "Import createWorkflowStore from ./store/workflow" in prompt
     assert "AppShell from './components/AppShell.vue'" in prompt
+    assert "Import one node view component per visible graph node name" in prompt
+    assert "Visible graph node names for imports" in prompt
     assert "./views/<NodeName>.vue" in prompt
     assert '"CollectInput"' in prompt
 
@@ -202,7 +194,7 @@ def test_frontend_view_prompt_prioritizes_literal_html_reuse():
 
     prompt = writer._build_vue_user_prompt(
         node_name="CollectInput",
-        node_meta={"name": "CollectInput", "title": "Collect Input"},
+        node_meta=NodeMeta(name="CollectInput", type="", desc="Collect Input"),
         graph_plan_context='{"nodes":[]}',
         node_html_context='<section class="collect"><button type="button">Run</button></section>',
         node_python_context='def process_input():\n    return "ok"',
@@ -222,10 +214,12 @@ def test_frontend_view_prompt_includes_file_upload_backend_payload_contract():
 
     prompt = writer._build_vue_user_prompt(
         node_name="UploadFiles",
-        node_meta={
-            "name": "UploadFiles",
-            "ext_data": {"type": "user_file_input", "desc": "Upload source files"},
-        },
+        node_meta=NodeMeta(
+            name="UploadFiles",
+            type="",
+            desc="",
+            ext_data={"type": "user_file_input", "desc": "Upload source files"},
+        ),
         graph_plan_context='{"nodes":[]}',
         node_html_context='<section class="upload"><input type="file" multiple></section>',
         node_python_context='def save_files_remote():\n    return "ok"',
@@ -237,7 +231,40 @@ def test_frontend_view_prompt_includes_file_upload_backend_payload_contract():
     assert "use real uploaded file names and file bytes encoded to a string value" in prompt
 
 
-def test_write_app_file_uses_graph_to_nodes_with_resolved_base_dir(tmp_path, monkeypatch):
+def test_frontend_view_writer_skips_nodes_with_show_frontend_disabled(tmp_path, monkeypatch):
+    writer = FrontendViewCoder(client=_FakeClient())
+    context_dir = tmp_path / "context"
+    output_dir = tmp_path / "frontend" / "src"
+    context_dir.mkdir()
+    (context_dir / "VisibleNode.html").write_text("<section>Visible</section>", encoding="utf-8")
+    (context_dir / "VisibleNode.py").write_text("def run():\n    return 'visible'\n", encoding="utf-8")
+
+    observed_paths = []
+
+    def fake_code_to_file(user_prompt, output_file, **kwargs):
+        observed_paths.append(Path(output_file))
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_file).write_text("generated", encoding="utf-8")
+        return Path(output_file)
+
+    monkeypatch.setattr(writer, "code_to_file", fake_code_to_file)
+
+    result = writer.write_graph_node_files(
+        graph_plan={
+            "nodes": [
+                {"name": "VisibleNode", "desc": "visible", "show_frontend": True},
+                {"name": "HiddenNode", "desc": "hidden", "show_frontend": False},
+            ]
+        },
+        context_base_dir=str(context_dir),
+        output_base_dir=str(output_dir),
+    )
+
+    assert set(result.keys()) == {"VisibleNode"}
+    assert all("HiddenNode" not in str(path) for path in observed_paths)
+
+
+def test_write_app_file_uses_workflow_json_with_resolved_base_dir(tmp_path, monkeypatch):
     writer = PromptFrontendCoder(client=_FakeClient())
     context_dir = tmp_path / "context"
     reference_dir = tmp_path / "reference" / "src"
@@ -255,15 +282,10 @@ def test_write_app_file_uses_graph_to_nodes_with_resolved_base_dir(tmp_path, mon
 
     observed = {}
 
-    def fake_graph_to_nodes(source):
-        observed["source"] = source
-        return {"CollectInput": {"type": "user_input"}}
-
     def fake_code_to_file(user_prompt, output_file, **kwargs):
         observed["user_prompt"] = user_prompt
         return Path(output_file)
 
-    monkeypatch.setattr(frontend_writer_module, "graph_to_nodes", fake_graph_to_nodes)
     monkeypatch.setattr(writer, "code_to_file", fake_code_to_file)
 
     result = writer.write_app_file(
@@ -284,9 +306,56 @@ def test_write_app_file_uses_graph_to_nodes_with_resolved_base_dir(tmp_path, mon
         reference_frontend_src_dir=str(reference_dir),
     )
 
-    assert observed["source"] == expected_path
     assert '"CollectInput"' in observed["user_prompt"]
     assert result == output_path
+
+
+def test_write_app_file_skips_nodes_with_show_frontend_disabled(tmp_path, monkeypatch):
+    writer = PromptFrontendCoder(client=_FakeClient())
+    context_dir = tmp_path / "context"
+    reference_dir = tmp_path / "reference" / "src"
+    output_path = tmp_path / "frontend" / "src" / "App.vue"
+    context_dir.mkdir()
+    _write_reference_frontend_src(reference_dir)
+    (context_dir / "workflow.json").write_text(
+        '{"nodes": [{"name": "VisibleNode", "show_frontend": true}, {"name": "HiddenNode", "show_frontend": false}]}',
+        encoding="utf-8",
+    )
+    (output_path.parent / "api").mkdir(parents=True)
+    (output_path.parent / "store").mkdir(parents=True)
+    (output_path.parent / "components").mkdir(parents=True)
+    (output_path.parent / "api" / "workflow.js").write_text("export async function runStep() {}", encoding="utf-8")
+    (output_path.parent / "store" / "workflow.js").write_text("export function createWorkflowStore() {}", encoding="utf-8")
+    (output_path.parent / "components" / "AppShell.vue").write_text("<template></template>", encoding="utf-8")
+
+    observed = {}
+
+    def fake_code_to_file(user_prompt, output_file, **kwargs):
+        observed["user_prompt"] = user_prompt
+        return Path(output_file)
+
+    monkeypatch.setattr(writer, "code_to_file", fake_code_to_file)
+
+    writer.write_app_file(
+        steps_meta=[
+            {
+                "id": "visible",
+                "title": "Visible",
+                "prompt": "Visible",
+                "dependencies": [],
+                "services": [],
+                "inputRequired": True,
+                "nodeKind": "input",
+                "extData": {"type": "user_input", "desc": "", "inputs_format": {}},
+            }
+        ],
+        output_path=output_path,
+        context_base_dir=str(context_dir),
+        reference_frontend_src_dir=str(reference_dir),
+    )
+
+    assert '"VisibleNode"' in observed["user_prompt"]
+    assert '"HiddenNode"' not in observed["user_prompt"]
 
 
 def test_write_app_shell_vue_file_writes_reference_app_css(tmp_path, monkeypatch):
@@ -472,6 +541,68 @@ def test_write_frontend_src_files_writes_requested_targets(tmp_path):
     assert output["app"].parent.name == "src"
     assert output["app_css"].parent.name == "styles"
     assert output["app_css"].read_text(encoding="utf-8") == ":root {}"
+
+
+def test_write_frontend_src_files_uses_store_steps_meta_when_provided(tmp_path, monkeypatch):
+    writer = PromptFrontendCoder(client=_FakeClient())
+    context_dir = tmp_path / "context"
+    reference_dir = tmp_path / "reference" / "src"
+    context_dir.mkdir()
+    _write_reference_frontend_src(reference_dir)
+    (context_dir / "workflow.json").write_text('{"nodes": []}', encoding="utf-8")
+    (context_dir / "node_ui").mkdir()
+
+    observed = {}
+
+    def fake_write_store_workflow_file(*, steps_meta, output_path, **kwargs):
+        observed["store_steps_meta"] = steps_meta
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("export const STEP_METADATA = []", encoding="utf-8")
+        return Path(output_path)
+
+    monkeypatch.setattr(writer, "write_store_workflow_file", fake_write_store_workflow_file)
+
+    writer.write_frontend_src_files(
+        steps_meta=[
+            {
+                "id": "VisibleNode",
+                "title": "Visible",
+                "prompt": "Visible",
+                "dependencies": [],
+                "services": [],
+                "inputRequired": True,
+                "nodeKind": "input",
+                "extData": {"type": "user_input", "desc": "", "inputs_format": {}},
+            }
+        ],
+        store_steps_meta=[
+            {
+                "id": "VisibleNode",
+                "title": "Visible",
+                "prompt": "Visible",
+                "dependencies": [],
+                "services": [],
+                "inputRequired": True,
+                "nodeKind": "input",
+                "extData": {"type": "user_input", "desc": "", "inputs_format": {}},
+            },
+            {
+                "id": "HiddenNode",
+                "title": "Hidden",
+                "prompt": "Hidden",
+                "dependencies": ["VisibleNode"],
+                "services": [],
+                "inputRequired": False,
+                "nodeKind": "operation",
+                "extData": {"type": "none", "desc": "no need for ext data", "inputs_format": {}},
+            },
+        ],
+        output_base_dir=tmp_path / "frontend" / "src",
+        context_base_dir=str(context_dir),
+        reference_frontend_src_dir=str(reference_dir),
+    )
+
+    assert [step["id"] for step in observed["store_steps_meta"]] == ["VisibleNode", "HiddenNode"]
 
 
 def test_detect_frontend_file_kind_supports_node_view_vue_paths():

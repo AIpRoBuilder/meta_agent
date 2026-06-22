@@ -17,13 +17,11 @@ from meta_agent.worker.node_writer import (
     WorkflowOperationNodeCoder,
     WorkflowServiceNodeCoder,
     WorkflowSkillNodeCoder,
-    WorkflowChatNodeCoder,
     WorkflowFileNodeCoder,
     WorkflowStepNodeCoder,
     is_none_ext_data,
     is_service_ext_data,
     is_skill_ext_data,
-    is_chat_ext_data,
     is_file_ext_data,
 )
 from meta_agent.worker.frontend_view_writer import FrontendViewCoder
@@ -116,7 +114,6 @@ class _FrontendViewGenerateElement(GElement):
             if self.node_meta is None:
                 raise ValueError(f"node metadata not found for {self.node_name}")
 
-            node_meta = self.node_meta.to_dict() if hasattr(self.node_meta, "to_dict") else dict(self.node_meta)
             style_filename = f"{self.node_name}.css"
             view_path = self.output_base_dir / "views" / f"{self.node_name}.vue"
             style_path = self.output_base_dir / "styles" / style_filename
@@ -135,7 +132,7 @@ class _FrontendViewGenerateElement(GElement):
 
             self.coder.write_node_vue_file(
                 node_name=self.node_name,
-                node_meta=node_meta,
+                node_meta=self.node_meta,
                 graph_plan_context=self.graph_plan_context,
                 node_html_context=node_html_context,
                 node_python_context=node_python_context,
@@ -146,7 +143,7 @@ class _FrontendViewGenerateElement(GElement):
             )
             self.coder.write_node_css_file(
                 node_name=self.node_name,
-                node_meta=node_meta,
+                node_meta=self.node_meta,
                 graph_plan_context=self.graph_plan_context,
                 node_html_context=node_html_context,
                 output_path=style_path,
@@ -247,13 +244,6 @@ class AgentBuilder:
             )
         if is_none_ext_data(ext_data):
             return WorkflowOperationNodeCoder(
-                api_key=self.api_key,
-                model=self.model,
-                provider=self.provider,
-                root_dir_path=self.root_dir,
-            )
-        if is_chat_ext_data(ext_data):
-            return WorkflowChatNodeCoder(
                 api_key=self.api_key,
                 model=self.model,
                 provider=self.provider,
@@ -542,11 +532,13 @@ class AgentBuilder:
         self.last_amended_node_ui_path = final_path
         return final_path
 
-    def _build_steps_meta(self) -> List[Dict[str, Any]]:
+    def _build_steps_meta(self, include_hidden_nodes: bool = False) -> List[Dict[str, Any]]:
         """Build step metadata for frontend generation from planned graph."""
         steps_meta: List[Dict[str, Any]] = []
         for node_name in self.planned_graph.get_topological_sorted_nodes():
             node_meta = self.planned_graph.get_node_meta(node_name)
+            if node_meta and not node_meta.show_frontend and not include_hidden_nodes:
+                continue
             title = (node_meta.desc or node_name) if node_meta else node_name
             prompt = (node_meta.desc or f"Provide input for {node_name}") if node_meta else f"Provide input for {node_name}"
             dependencies = node_meta.depends if node_meta and node_meta.depends else []
@@ -570,10 +562,8 @@ class AgentBuilder:
                 ext_desc = ""
                 service_name = ""
 
-            input_required = ext_type in {"user_input", "user_file_input", "chat_input"}
-            if ext_type == "chat_input":
-                node_kind = "chat"
-            elif ext_type == "user_file_input":
+            input_required = ext_type in {"user_input", "user_file_input"}
+            if ext_type == "user_file_input":
                 node_kind = "file"
             elif ext_type == "service" or service_name:
                 node_kind = "service"
@@ -595,7 +585,7 @@ class AgentBuilder:
                     "extData": {
                         "type": ext_type,
                         "desc": ext_desc,
-                        "inputs_format": normalized_inputs_format if ext_type in ("user_input", "chat_input", "skill") else {},
+                        "inputs_format": normalized_inputs_format if ext_type in ("user_input", "skill") else {},
                     },
                 }
             )
@@ -655,6 +645,7 @@ class AgentBuilder:
         self._write_vue_proxy_config(Path(frontend_project_dir).expanduser())
         print(f"Generating frontend -> {frontend_path}")
         steps_meta = self._build_steps_meta()
+        store_steps_meta = self._build_steps_meta(include_hidden_nodes=True)
 
         if max_audit_rounds < 1:
             raise ValueError("max_audit_rounds must be at least 1.")
@@ -677,6 +668,7 @@ class AgentBuilder:
 
         self.frontend_writer.write_frontend_src_files(
             steps_meta=steps_meta,
+            store_steps_meta=store_steps_meta,
             output_base_dir=frontend_path,
             context_base_dir=context_base_dir,
             run_step_endpoint="/api/run-step",
@@ -867,7 +859,12 @@ class AgentBuilder:
         self.frontend_view_output_map = {}
         self.frontend_views_output_path = str(resolved_output_dir)
 
-        nodes = self.planned_graph.get_topological_sorted_nodes()
+        nodes = [
+            node_name
+            for node_name in self.planned_graph.get_topological_sorted_nodes()
+            if not self.planned_graph.get_node_meta(node_name)
+            or self.planned_graph.get_node_meta(node_name).show_frontend
+        ]
         total = len(nodes)
         pipeline = GPipeline()
 

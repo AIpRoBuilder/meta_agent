@@ -7,7 +7,6 @@
 - 必须从节点 `ext_data.type` 推导节点类别：
   - `user_input` -> `WorkflowStepNode`
   - `none`（或无法识别时默认）-> `WorkflowOperationNode`
-  - `chat_input` -> `WorkflowChatNode`
   - `user_file_input` -> `WorkflowFileNode`
 
 ## 输出风格

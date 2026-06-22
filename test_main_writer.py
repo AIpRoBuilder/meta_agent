@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import meta_agent.agent_builder as agent_builder_module
 from meta_agent.agent_builder import AgentBuilder
+from meta_agent.architect.graph import NodeMeta
 from meta_agent.worker.main_writer import PromptMainFileCoder
 
 
@@ -123,3 +124,73 @@ def test_agent_builder_reset_llm_config_recreates_llm_components(monkeypatch, tm
         "model": "new-model",
         "provider": "new-provider",
     }
+
+
+def test_build_steps_meta_skips_nodes_with_show_frontend_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_builder_module, "RequirementDisector", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "GraphPlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "NodePlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "PromptMainFileCoder", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "PromptFrontendCoder", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "FrontendViewCoder", _FakeComponent)
+
+    builder = AgentBuilder(
+        api_key="key",
+        model="model",
+        provider="provider",
+        root_dir=str(tmp_path),
+        services_root_path="services-dir",
+        skills_root_path="skills-dir",
+    )
+
+    class _FakePlannedGraph:
+        def get_topological_sorted_nodes(self):
+            return ["VisibleNode", "HiddenNode"]
+
+        def get_node_meta(self, node_name):
+            if node_name == "VisibleNode":
+                return NodeMeta(name="VisibleNode", type="", desc="Visible node", show_frontend=True)
+            if node_name == "HiddenNode":
+                return NodeMeta(name="HiddenNode", type="", desc="Hidden node", show_frontend=False)
+            return None
+
+    builder.planned_graph = _FakePlannedGraph()
+
+    steps_meta = builder._build_steps_meta()
+
+    assert [step["id"] for step in steps_meta] == ["VisibleNode"]
+
+
+def test_build_steps_meta_can_include_hidden_nodes(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_builder_module, "RequirementDisector", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "GraphPlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "NodePlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "PromptMainFileCoder", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "PromptFrontendCoder", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "FrontendViewCoder", _FakeComponent)
+
+    builder = AgentBuilder(
+        api_key="key",
+        model="model",
+        provider="provider",
+        root_dir=str(tmp_path),
+        services_root_path="services-dir",
+        skills_root_path="skills-dir",
+    )
+
+    class _FakePlannedGraph:
+        def get_topological_sorted_nodes(self):
+            return ["VisibleNode", "HiddenNode"]
+
+        def get_node_meta(self, node_name):
+            if node_name == "VisibleNode":
+                return NodeMeta(name="VisibleNode", type="", desc="Visible node", show_frontend=True)
+            if node_name == "HiddenNode":
+                return NodeMeta(name="HiddenNode", type="", desc="Hidden node", show_frontend=False)
+            return None
+
+    builder.planned_graph = _FakePlannedGraph()
+
+    steps_meta = builder._build_steps_meta(include_hidden_nodes=True)
+
+    assert [step["id"] for step in steps_meta] == ["VisibleNode", "HiddenNode"]

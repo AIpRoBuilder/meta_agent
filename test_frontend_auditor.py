@@ -233,6 +233,64 @@ export default {
         assert any(v.rule == "view_store_import_invalid" for v in violations)
 
 
+def test_audit_frontend_src_rejects_invalid_submit_step_signature_in_views(tmp_path):
+        _write_required_frontend_src(
+                tmp_path,
+                app_text="""
+<script>
+import AppShell from './components/AppShell.vue'
+</script>
+""".strip(),
+                view_files={
+                        "CollectInput.vue": """
+<script>
+export default {
+    methods: {
+        runCurrentStep() {
+            return this.workflowStore.submitStep(this.stepId)
+        }
+    }
+}
+</script>
+""".strip()
+                },
+        )
+
+        ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
+
+        assert ok is False
+        assert any(v.rule == "view_submit_step_signature_invalid" for v in violations)
+
+
+def test_audit_frontend_src_accepts_expected_submit_step_signature_in_views(tmp_path):
+        _write_required_frontend_src(
+                tmp_path,
+                app_text="""
+<script>
+import AppShell from './components/AppShell.vue'
+</script>
+""".strip(),
+                view_files={
+                        "CollectInput.vue": """
+<script>
+export default {
+    methods: {
+        runCurrentStep(userInput) {
+            return this.workflowStore.submitStep(this.stepId, userInput)
+        }
+    }
+}
+</script>
+""".strip()
+                },
+        )
+
+        ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
+
+        assert ok is True
+        assert violations == []
+
+
 def test_audit_frontend_src_uses_shared_graph_loader_from_project_root(tmp_path, monkeypatch):
     project_root = tmp_path / "project"
     frontend_src_dir = project_root / "frontend" / "src"

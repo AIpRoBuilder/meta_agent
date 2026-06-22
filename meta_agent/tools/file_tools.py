@@ -326,7 +326,6 @@ _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
 	"WorkflowStepNode": ("process_input",),
 	"WorkflowFileNode": ("build_step_output",),
 	"WorkflowOperationNode": ("process_operation",),
-	"WorkflowChatNode": ("build_step_output",),
 	"WorkflowServiceNode": ("use_service",),
 	"WorkflowSkillNode": ("process_operation",),
 }
@@ -335,7 +334,6 @@ _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
 def _get_workflow_base_class_objects() -> dict[str, type]:
 	"""Return a mapping of base class name -> class, imported lazily to avoid circular imports."""
 	from ag_ui_workflow.nodes import (  # noqa: PLC0415
-		WorkflowChatNode,
 		WorkflowFileNode,
 		WorkflowOperationNode,
 		WorkflowStepNode,
@@ -346,7 +344,6 @@ def _get_workflow_base_class_objects() -> dict[str, type]:
 		"WorkflowStepNode": WorkflowStepNode,
 		"WorkflowFileNode": WorkflowFileNode,
 		"WorkflowOperationNode": WorkflowOperationNode,
-		"WorkflowChatNode": WorkflowChatNode,
 		"WorkflowServiceNode": WorkflowServiceNode,
 		"WorkflowSkillNode": WorkflowSkillNode,
 	}
@@ -686,7 +683,7 @@ def compile_node_file_and_get_derived_keys(node_file_path: str) -> list[str]:
 	"""Parse a node file and return all derived-dict keys from workflow node classes.
 
 	The parser inspects subclasses of WorkflowStepNode, WorkflowFileNode,
-	WorkflowOperationNode, WorkflowChatNode, WorkflowServiceNode, and WorkflowSkillNode using Python AST,
+	WorkflowOperationNode, WorkflowServiceNode, and WorkflowSkillNode using Python AST,
 	then extracts string keys from local ``derived`` dict literals (and equivalent
 	``StepRunOutput(..., derived=...)`` literals) inside relevant methods.
 	"""

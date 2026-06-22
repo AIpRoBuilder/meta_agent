@@ -21,9 +21,8 @@ Shared workflow context:
 - You are provided all node HTML snippets from the default `node_ui/` directory as context; for each step card, faithfully reproduce the matching node snippet's structure, CSS classes, palette, spacing values, and component shapes inside the Vue UI wherever relevant. If no matching snippet exists for a step, fall back to the global card style.
 - Backend execution endpoint: use `POST /api/run-step` for normal workflows, and replace it with `POST /cron/start` for cron workflows.
 - Backend endpoint for reset/new session init: `POST /api/reset-session`.
-- Input step nodes run `process_input(...)`, file nodes build results via `build_step_output(...)` after persistence, chat nodes run `process_chat(...)`, and operation nodes run `process_operation(...)`.
+- Input step nodes run `process_input(...)`, file nodes build results via `build_step_output(...)` after persistence, and operation nodes run `process_operation(...)`.
 - Operation, service, and skill nodes do not require direct user text input and should auto-submit once unlocked.
-- For `extData.type == "chat_input"`, treat the step as conversational (`nodeKind='chat'`) and keep plain text input submission behavior.
 - For `extData.type == "user_file_input"` / `nodeKind='file'`, render multi-file upload UI and submit `input` with `files` (array of `{fileName, fileBytes}`) serialized by the component layer.
 
 Event handling requirements:
@@ -31,7 +30,6 @@ Event handling requirements:
 - Handle AG-UI lifecycle events:
   - `STEP_STARTED` -> mark running state and append system/event log entries.
   - `STEP_FINISHED` -> mark step as completed and unlock next eligible step.
-  - `TEXT_MESSAGE_CONTENT` -> append assistant text deltas in arrival order; these are streamed in multiple chunks for `nodeKind='chat'` responses and must be rendered progressively.
   - `CUSTOM` with `name == "step_card"` -> render/update step card using payload including `stepId`, `title`, `prompt`, `card`, `derived`, `unlocked`, `isFinal`.
   - `RUN_ERROR` -> show error state and re-enable the step.
   - `RUN_FINISHED` -> stop stream state for this submit.

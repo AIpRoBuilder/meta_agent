@@ -21,6 +21,7 @@ if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
+from meta_agent.architect.graph import NodeMeta
 from meta_agent.tools.text_tools import truncate_context
 
 
@@ -64,6 +65,8 @@ class FrontendViewCoder(Coder):
 				continue
 			if node.get("enable", True) is False:
 				continue
+			if node.get("show_frontend", True) is False:
+				continue
 
 			node_name = str(node.get("name", "")).strip()
 			if not node_name:
@@ -95,13 +98,13 @@ class FrontendViewCoder(Coder):
 		self,
 		*,
 		node_name: str,
-		node_meta: Mapping[str, Any],
+		node_meta: NodeMeta,
 		graph_plan_context: str,
 		node_html_context: str,
 		node_python_context: str,
 		style_filename: str,
 	) -> str:
-		node_meta_json = json.dumps(dict(node_meta), ensure_ascii=False, indent=2)
+		node_meta_json = json.dumps(node_meta.to_dict(), ensure_ascii=False, indent=2)
 		graph_plan_context = truncate_context(
 			graph_plan_context,
 			label="graph_plan_context",
@@ -149,11 +152,11 @@ class FrontendViewCoder(Coder):
 		self,
 		*,
 		node_name: str,
-		node_meta: Mapping[str, Any],
+		node_meta: NodeMeta,
 		graph_plan_context: str,
 		node_html_context: str,
 	) -> str:
-		node_meta_json = json.dumps(dict(node_meta), ensure_ascii=False, indent=2)
+		node_meta_json = json.dumps(node_meta.to_dict(), ensure_ascii=False, indent=2)
 		graph_plan_context = truncate_context(
 			graph_plan_context,
 			label="graph_plan_context",
@@ -173,6 +176,7 @@ class FrontendViewCoder(Coder):
 			"Keep the same class names, ids, attributes, section ordering, and tag hierarchy assumptions unless a small change is required to produce valid, maintainable CSS.\n"
 			"Do not redesign, summarize, or replace the HTML-derived structure with a different selector strategy; make the smallest CSS-specific additions needed to style the provided markup.\n"
 			"Scope selectors to the node page so styles stay local to this view.\n"
+			"Implement a dedicated step card surface in this node stylesheet that is sized to approximately one-third of the page (target about one-third viewport width and one-third viewport height, e.g. around 33vw x 33vh) while keeping it responsive on smaller screens.\n"
 			"Follow the reference frontend style direction: concise, component-scoped rules that extend shared page-shell classes.\n\n"
 			"Graph plan JSON context:\n"
 			f"{graph_plan_context}\n\n"
@@ -186,7 +190,7 @@ class FrontendViewCoder(Coder):
 		self,
 		*,
 		node_name: str,
-		node_meta: Mapping[str, Any],
+		node_meta: NodeMeta,
 		graph_plan_context: str,
 		node_html_context: str,
 		node_python_context: str,
@@ -216,7 +220,7 @@ class FrontendViewCoder(Coder):
 		self,
 		*,
 		node_name: str,
-		node_meta: Mapping[str, Any],
+		node_meta: NodeMeta,
 		graph_plan_context: str,
 		node_html_context: str,
 		output_path: str | Path,
@@ -265,7 +269,8 @@ class FrontendViewCoder(Coder):
 		written_files: dict[str, dict[str, Path]] = {}
 
 		for node in nodes:
-			node_name = str(node.get("name", "")).strip()
+			node_meta = NodeMeta.from_dict(node)
+			node_name = node_meta.name.strip()
 			if not node_name:
 				continue
 
@@ -277,7 +282,7 @@ class FrontendViewCoder(Coder):
 
 			self.write_node_vue_file(
 				node_name=node_name,
-				node_meta=node,
+				node_meta=node_meta,
 				graph_plan_context=graph_plan_context,
 				node_html_context=node_html_context,
 				node_python_context=node_python_context,
@@ -289,7 +294,7 @@ class FrontendViewCoder(Coder):
 			)
 			self.write_node_css_file(
 				node_name=node_name,
-				node_meta=node,
+				node_meta=node_meta,
 				graph_plan_context=graph_plan_context,
 				node_html_context=node_html_context,
 				output_path=style_path,

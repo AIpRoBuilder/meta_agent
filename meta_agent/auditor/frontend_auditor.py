@@ -17,6 +17,7 @@ class FrontendAuditor(BaseAuditor):
 	"""Audit generated frontend src files for required AG-UI lifecycle contracts."""
 
 	SCHEMA_RENDER_HELPER_NAME = "renderCardSchemaSections"
+	REQUIRED_SUBMIT_STEP_ARGS = "this.stepId,userInput"
 	VUE_REQUIRED_FILES = {
 		"api": Path("api/workflow.js"),
 		"store": Path("store/workflow.js"),
@@ -294,6 +295,7 @@ class FrontendAuditor(BaseAuditor):
 
 		violations.extend(self._audit_app_vue_imports(app_text, workflow_data))
 		violations.extend(self._audit_view_store_imports(frontend_dir))
+		violations.extend(self._audit_view_submit_step_calls(frontend_dir))
 		violations.extend(self._collect_forbidden_vue2_syntax_violations(resolved_files))
 		violations.extend(self._collect_lint_violations(frontend_dir))
 
@@ -305,6 +307,12 @@ class FrontendAuditor(BaseAuditor):
 		if not match:
 			return 1
 		return text.count("\n", 0, match.start()) + 1
+
+	@staticmethod
+	def _line_number_for_index(text: str, index: int) -> int:
+		if index < 0:
+			return 1
+		return text.count("\n", 0, index) + 1
 
 	@classmethod
 	def _audit_view_store_imports(cls, frontend_dir: Path) -> List[RuleViolation]:
@@ -330,6 +338,36 @@ class FrontendAuditor(BaseAuditor):
 					lineno=cls._line_number_for_pattern(view_text, r"\.\./stores/workflowStore"),
 				)
 			)
+
+		return violations
+
+	@classmethod
+	def _audit_view_submit_step_calls(cls, frontend_dir: Path) -> List[RuleViolation]:
+		violations: List[RuleViolation] = []
+		views_dir = frontend_dir / "views"
+		if not views_dir.is_dir():
+			return violations
+
+		submit_step_call_pattern = re.compile(r"\bsubmitStep\s*\(([^)]*)\)")
+		for view_file in sorted(views_dir.glob("*.vue")):
+			view_text = view_file.read_text(encoding="utf-8")
+			for match in submit_step_call_pattern.finditer(view_text):
+				arguments = match.group(1)
+				normalized_arguments = re.sub(r"\s+", "", arguments)
+				if normalized_arguments == cls.REQUIRED_SUBMIT_STEP_ARGS:
+					continue
+
+				violations.append(
+					RuleViolation(
+						class_name=str(view_file),
+						rule="view_submit_step_signature_invalid",
+						detail=(
+							f"{view_file}: submitStep calls in node view files must use "
+							"submitStep(this.stepId, userInput)."
+						),
+						lineno=cls._line_number_for_index(view_text, match.start()),
+					)
+				)
 
 		return violations
 
@@ -362,6 +400,8 @@ class FrontendAuditor(BaseAuditor):
 			if not isinstance(node, Mapping):
 				continue
 			if node.get("enable", True) is False:
+				continue
+			if node.get("show_frontend", True) is False:
 				continue
 			node_name = str(node.get("name", "")).strip()
 			if not node_name:

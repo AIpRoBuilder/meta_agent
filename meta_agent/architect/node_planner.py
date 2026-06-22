@@ -262,14 +262,6 @@ class NodePlanner:
 				"note": "Service bootstrap node: prepares service run/probe spec for sandbox or local execution.",
 			}
 
-		if ext_type == "chat_input":
-			return {
-				"extType": ext_type,
-				"nodeKind": "chat",
-				"baseClass": "WorkflowChatNode",
-				"primaryFunctions": ["process_chat", "build_user_prompt"],
-				"note": "Conversational node: combines user chat input with dependency outputs; validates inputs_format when present.",
-			}
 		if ext_type == "user_file_input":
 			return {
 				"extType": ext_type,
@@ -417,6 +409,9 @@ class NodePlanner:
 	def _node_ui_filename(self, node: dict[str, Any], index: int) -> str:
 		name = str(node.get("name", "")).strip() or f"Node{index}"
 		return f"{name}.html"
+
+	def _should_generate_node_ui(self, node: dict[str, Any]) -> bool:
+		return node.get("show_frontend", True) is not False
 
 	def _build_node_ui_prompt(self, requirement_text: str, node_context: str) -> str:
 		return (
@@ -761,8 +756,9 @@ class NodePlanner:
 		except json.JSONDecodeError as exc:
 			raise ValueError(f"Invalid graph plan JSON: {exc}") from exc
 
-		nodes = self._extract_nodes(graph_plan)
+		nodes = [node for node in self._extract_nodes(graph_plan) if self._should_generate_node_ui(node)]
 		if not nodes:
+			self.ui_elements = {}
 			return []
 
 		target_dir = Path(output_dir)

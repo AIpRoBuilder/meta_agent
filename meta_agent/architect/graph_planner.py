@@ -23,11 +23,15 @@ class GraphPlanner(Coder):
 	"""Generate a JSON graph plan from a requirements analysis markdown.
 
 	Nodes in the plan should be objects with keys: `name`, `type`, `desc`,
-	`depends`, `ext_data`, optional `inputs_format`, and optional `services`.
+	`show_frontend`, `depends`, `ext_data`, optional `inputs_format`, and optional `services`.
+
+	`show_frontend` must be a boolean for every node. Use `true` when the node
+	should be exposed in the generated frontend flow, and `false` for backend-only
+	or infrastructure nodes that should remain hidden from the UI.
 
 	`ext_data` should be a JSON object for every node with shape:
 	{
-		"type": "user_input" | "user_file_input" | "chat_input" | "url" | "file" | "db" | "skill" | "service" | "none" | ...,
+		"type": "user_input" | "user_file_input" | "url" | "file" | "db" | "skill" | "service" | "none" | ...,
 		"desc": "short description",
 		"service_name": "optional service directory name (required when type=service)",
 		"skill_name": "optional skill directory name (required when type=skill)"
@@ -39,10 +43,9 @@ class GraphPlanner(Coder):
 	]
 
 	Use `{"type": "user_input", ...}` for nodes that require user input.
-	For user_input, chat_input, and skill nodes, include `inputs_format` as an object describing expected
+	For user_input and skill nodes, include `inputs_format` as an object describing expected
 	user input fields and primitive types, e.g.:
 	{"email_address": "string", "password": "number"}. 
-	Use `{"type": "chat_input", ...}` for nodes that should be implemented as WorkflowChatNode.
 	Use `{"type": "user_file_input", ...}` for nodes that should be implemented as WorkflowFileNode.
 	Use `{"type": "service", "service_name": "<service>", ...}` for nodes that should be implemented as WorkflowServiceNode.
 	Use `{"type": "skill", "skill_name": "<skill>", ...}` for nodes that should be implemented as WorkflowSkillNode.
@@ -531,6 +534,17 @@ class GraphPlanner(Coder):
 				for service_name, use_desc in sorted(normalized.items())
 			]
 
+	def _normalize_show_frontend(self, raw_value: Any) -> bool:
+		if isinstance(raw_value, bool):
+			return raw_value
+		if isinstance(raw_value, str):
+			clean = raw_value.strip().lower()
+			if clean in {"false", "0", "no", "off"}:
+				return False
+			if clean in {"true", "1", "yes", "on"}:
+				return True
+		return bool(raw_value) if raw_value is not None else True
+
 	def _normalize_ext_data_in_file(self, graph_json_path: Path) -> None:
 		# Normalize ext_data shape and enforce type=none description rules.
 
@@ -550,6 +564,10 @@ class GraphPlanner(Coder):
 		for node in nodes:
 			if not isinstance(node, dict):
 				continue
+
+			node["show_frontend"] = self._normalize_show_frontend(
+				node.get("show_frontend", True)
+			)
 
 			loop_value = node.get("loop", 1)
 			try:
@@ -609,7 +627,7 @@ class GraphPlanner(Coder):
 				)
 				continue
 
-			if ext_type in ("user_input", "chat_input"):
+			if ext_type == "user_input":
 				raw_inputs_format = node.get("inputs_format", {})
 				normalized_inputs_format: dict[str, str] = {}
 				if isinstance(raw_inputs_format, dict):
@@ -771,15 +789,15 @@ class GraphPlanner(Coder):
 			"Node-type/function selection rules:\n"
 			"- Use WorkflowStepNode-compatible semantics for nodes with ext_data.type='user_input'\n"
 			"- Use WorkflowOperationNode-compatible semantics for pure compute/process nodes with ext_data.type='none'\n"
-			"- Use WorkflowChatNode-compatible semantics for conversational assistant nodes with ext_data.type='chat_input'\n"
 			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
 			"- Use WorkflowServiceNode-compatible semantics for service bootstrap/startup nodes with ext_data.type='service'\n"
 			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'\n"
-			"- Do not invent node categories outside Step/Operation/Chat/File/Service/Skill capabilities defined in the workflow reference\n"
+			"- Do not invent node categories outside Step/Operation/File/Service/Skill implementation capabilities defined in the workflow reference\n"
 			"Schema requirements for each node:\n"
-			"- Required fields: name, type, desc, enable, depends, ext_data\n"
-			"- For nodes where ext_data.type='user_input', 'chat_input', or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
-			"- Do not include inputs_format for nodes other than user_input, chat_input, and skill\n"
+			"- Required fields: name, type, desc, show_frontend, enable, depends, ext_data\n"
+			"- show_frontend must be an explicit boolean on every node; use true for user-visible steps and false for backend-only or infrastructure nodes\n"
+			"- For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
+			"- Do not include inputs_format for nodes other than user_input and skill\n"
 			"- Only include node.services when a node actually uses one or more upstream services\n"
 			"- Do not include services for nodes that do not use services, even if they are downstream of a service node\n"
 			"- When node.services is present, service_name must be selected from service nodes in that node's direct/transitive ancestors\n"
@@ -788,17 +806,16 @@ class GraphPlanner(Coder):
 			"- If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2)\n"
 			"- ext_data must be a JSON object with keys: type, desc (and service_name when type='service', skill_name when type='skill')\n"
 			"- Mark text input nodes with ext_data.type = 'user_input'\n"
-			"- Mark conversational/chat assistant nodes with ext_data.type = 'chat_input'\n"
 			"- Mark generic file-upload nodes that require user files with ext_data.type = 'user_file_input'\n"
 			"- Mark service bootstrap/startup nodes with ext_data.type = 'service'\n"
 			"- Mark skill-library wrapper nodes with ext_data.type = 'skill'\n"
-			"- Workflow mapping: user_input -> WorkflowStepNode, chat_input -> WorkflowChatNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode\n"
+			"- Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode\n"
 			"- If ext_data.type='service', ext_data.service_name must be set to a valid service directory name\n"
 			"- If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name\n"
-			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'chat_input','desc':'chat with assistant using previous step outputs'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}\n"
+			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}\n"
 			"- For nodes without external dependency, include ext_data as {'type':'none','desc':'no need for ext data'}\n"
 			"- If ext_data.type is 'none', desc must be exactly 'no need for ext data'\n"
-			"- Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}\n"
+			"- Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','show_frontend':true,'loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}\n"
 			f"{self._build_service_context_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON.\n\n"
@@ -842,14 +859,14 @@ class GraphPlanner(Coder):
 			"Node-type/function selection rules:\n"
 			"- Use WorkflowStepNode-compatible semantics for nodes with ext_data.type='user_input'\n"
 			"- Use WorkflowOperationNode-compatible semantics for pure compute/process nodes with ext_data.type='none'\n"
-			"- Use WorkflowChatNode-compatible semantics for conversational assistant nodes with ext_data.type='chat_input'\n"
 			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
 			"- Use WorkflowServiceNode-compatible semantics for service bootstrap/startup nodes with ext_data.type='service'.\n"
 			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'.\n"
-			"- Do not invent node categories outside Step/Operation/Chat/File/Service/Skill capabilities defined in the workflow reference\n"
-			"Preserve the graph schema (top-level nodes list with name, type, desc, depends, ext_data).\n"
-			"For nodes where ext_data.type='user_input', 'chat_input', or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
-			"Do not include inputs_format for nodes other than user_input, chat_input, and skill.\n"
+			"- Do not invent node categories outside Step/Operation/File/Service/Skill implementation capabilities defined in the workflow reference\n"
+			"Preserve the graph schema (top-level nodes list with name, type, desc, show_frontend, depends, ext_data).\n"
+			"Every node must include show_frontend as an explicit boolean; use true for user-visible steps and false for backend-only or infrastructure nodes.\n"
+			"For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
+			"Do not include inputs_format for nodes other than user_input and skill.\n"
 			"Only include node.services when a node actually uses one or more upstream services.\n"
 			"Do not include services for nodes that do not use services, even if they are downstream of a service node.\n"
 			"When node.services is present, service_name must be selected from service nodes in that node's direct/transitive ancestors.\n"
@@ -858,16 +875,15 @@ class GraphPlanner(Coder):
 			"If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2).\n"
 			"Every node must include ext_data as a JSON object with keys: type, desc (plus service_name when type='service', skill_name when type='skill').\n"
 			"Mark text input nodes with ext_data.type='user_input'.\n"
-			"Mark conversational/chat assistant nodes with ext_data.type='chat_input'.\n"
 			"Mark generic file-upload nodes that require user files with ext_data.type='user_file_input'.\n"
 			"Mark service bootstrap/startup nodes with ext_data.type='service'.\n"
 			"Mark skill-library wrapper nodes with ext_data.type='skill'.\n"
 			"If ext_data.type='service', ext_data.service_name must be set to a valid service directory name.\n"
 			"If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name.\n"
-			"Workflow mapping: user_input -> WorkflowStepNode, chat_input -> WorkflowChatNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode.\n"
+			"Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode.\n"
 			"If ext_data.type is 'none', desc must be exactly 'no need for ext data'.\n"
-			"Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}.\n"
-			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'chat_input','desc':'chat with assistant using previous step outputs'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}.\n"
+			"Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','show_frontend':true,'loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}.\n"
+			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}.\n"
 			f"{self._build_service_context_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON without code fences or commentary.\n\n"

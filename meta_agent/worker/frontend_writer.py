@@ -22,6 +22,7 @@ if str(ROOT_DIR.parent) not in sys.path:
 	sys.path.insert(0, str(ROOT_DIR.parent))
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
+from meta_agent.architect.graph import NodeMeta
 from meta_agent.tools import graph_to_nodes
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
 from meta_agent.tools.function_tools import _run_stage
@@ -30,59 +31,6 @@ from meta_agent.tools.text_tools import normalize_requirement_analysis_result, t
 
 _DEFAULT_VUE_FRONTEND_REFERENCE_DIR = Path("/Users/xiechuxi/Desktop/codes/education_workflow/frontend/src")
 _BUNDLED_VUE_FRONTEND_REFERENCE_DIR = ROOT_DIR / "library" / "frontend_reference" / "src"
-
-
-def _find_code_start_index(lines: Sequence[str], suffix: str) -> int | None:
-	patterns = {
-		".js": re.compile(r"^(import\b|export\b|const\b|let\b|var\b|function\b|async\s+function\b|class\b|/\*|//|[A-Za-z_$][\w$]*\s*=)"),
-		".css": re.compile(r"^(@(?:import|charset|media|supports|layer|keyframes)\b|/\*|:root\b|[.#\[:*a-zA-Z_-][^{};]*\{)"),
-		".vue": re.compile(r"^(<template\b|<script\b|<style\b|<!--|import\b|export\b)"),
-	}
-	pattern = patterns.get(suffix)
-	if pattern is None:
-		return None
-
-	for index, line in enumerate(lines):
-		if pattern.match(line.strip()):
-			return index
-	return None
-
-
-def _find_code_end_index(lines: Sequence[str], suffix: str) -> int | None:
-	patterns = {
-		".js": re.compile(r"^(</script>|[}\])];?|[A-Za-z_$][\w$]*\s*=|return\b|export\b|import\b|const\b|let\b|var\b|function\b|async\s+function\b|class\b|/\*|//|.*[;{}]$)"),
-		".css": re.compile(r"^(}\s*$|/\*|@(?:import|charset|media|supports|layer|keyframes)\b|[.#\[:*a-zA-Z_-][^{};]*\{|.*}\s*$)"),
-		".vue": re.compile(r"^(</template>|</script>|</style>|<template\b|<script\b|<style\b|<!--|.*>\s*$)"),
-	}
-	pattern = patterns.get(suffix)
-	if pattern is None:
-		return None
-
-	for index in range(len(lines) - 1, -1, -1):
-		if pattern.match(lines[index].strip()):
-			return index
-	return None
-
-
-def _extract_frontend_source_content(content: str, file_path: str | None) -> str:
-	cleaned = content.strip()
-	if not file_path:
-		return cleaned
-
-	suffix = Path(file_path).suffix.lower()
-	if suffix not in {".js", ".css", ".vue"}:
-		return cleaned
-
-	lines = cleaned.splitlines()
-	if not lines:
-		return cleaned
-
-	start_index = _find_code_start_index(lines, suffix)
-	end_index = _find_code_end_index(lines, suffix)
-	if start_index is None or end_index is None or end_index < start_index:
-		return cleaned
-
-	return "\n".join(lines[start_index : end_index + 1]).strip()
 
 
 @dataclass
@@ -102,15 +50,6 @@ class PromptFrontendCoder(Coder):
 
 		self.system_prompt = prompt_file.read_text(encoding="utf-8")
 		super().__post_init__()
-
-	def sanitize_generated_output(
-		self,
-		content: str,
-		*,
-		file_path: str | None = None,
-	) -> str:
-		cleaned = super().sanitize_generated_output(content, file_path=file_path)
-		return _extract_frontend_source_content(cleaned, file_path)
 
 	def _normalize_steps(self, steps_meta: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 		normalized: list[dict[str, Any]] = []
@@ -161,8 +100,6 @@ class PromptFrontendCoder(Coder):
 
 			input_required = bool(item.get("inputRequired", True))
 			node_kind = str(item.get("nodeKind", "input")).strip() or "input"
-			if ext_type == "chat_input":
-				node_kind = "chat"
 			if ext_type == "user_file_input":
 				node_kind = "file"
 			if ext_type == "service":
@@ -173,7 +110,7 @@ class PromptFrontendCoder(Coder):
 				input_required = False
 			if node_kind in {"service", "skill"}:
 				input_required = False
-			if ext_type in {"user_input", "user_file_input", "chat_input"}:
+			if ext_type in {"user_input", "user_file_input"}:
 				input_required = True
 
 			normalized.append(
@@ -261,6 +198,31 @@ class PromptFrontendCoder(Coder):
 			raise FileNotFoundError(f"reference frontend file not found: {app_path}")
 
 		return app_path.read_text(encoding="utf-8")
+
+	@staticmethod
+	def _load_frontend_visible_node_names(graph_plan_path: Path) -> list[str]:
+		if not graph_plan_path.is_file():
+			return []
+
+		try:
+			graph_plan_data = json.loads(graph_plan_path.read_text(encoding="utf-8"))
+		except json.JSONDecodeError:
+			return list(graph_to_nodes(graph_plan_path).keys())
+
+		nodes = graph_plan_data.get("nodes", []) if isinstance(graph_plan_data, Mapping) else []
+		if not isinstance(nodes, list):
+			return []
+
+		visible_names: list[str] = []
+		for node in nodes:
+			if not isinstance(node, Mapping):
+				continue
+			node_meta = NodeMeta.from_dict(node)
+			if not node_meta.name or not node_meta.show_frontend:
+				continue
+			visible_names.append(node_meta.name)
+
+		return visible_names
 
 	@staticmethod
 	def _resolve_context_base_dir(
@@ -453,11 +415,11 @@ class PromptFrontendCoder(Coder):
 			"Required UI behavior:\n"
 			"- show a top bar with session badge, progress, New Session, and Reset Session actions.\n"
 			"- render one workflow card per step from store.steps and keep cards progressive by unlocked state.\n"
+			"- arrange the step cards in a strict vertical column with exactly one card per row (no multi-column card grid).\n"
 			"- render status badges for locked/active/running/completed/error.\n"
 			"- expose one input area per selected or active step and submit through workflowStore.submitStep(stepId, serializedInput).\n"
 			"- for nodeKind='file', use a multi-file picker and serialize files into JSON strings shaped like {files:[{fileName,bytes},...]} before submission.\n"
 			"- for extData.inputs_format, render structured controls by type and submit JSON.stringify(collectedObject).\n"
-			"- for nodeKind='chat', show progressive assistant text from conversation entries and card results.\n"
 			"- render card.rows, card.actions, and schema-aware sections using a helper named renderCardSchemaSections when schema context is available.\n"
 			"- include a visible running indicator on the currently running step.\n"
 			"- keep the look polished and modern while staying close to the example structure.\n\n"
@@ -498,6 +460,7 @@ class PromptFrontendCoder(Coder):
 			"Return only runnable CSS with no markdown fences or explanation.\n"
 			"Use the reference stylesheet as the baseline shared design system for the generated workflow frontend.\n"
 			"Keep selectors, layout hooks, and utility rules needed by the reference AppShell structure unless the style guidance clearly requires an intentional adjustment.\n"
+			"Define the AppShell step-list layout so workflow step cards are displayed vertically in one column with one card per row across the page (do not use multi-column grids for step cards).\n"
 			"Use the node stylesheet context to make app.css visually fit and complement the generated frontend/src/styles/{Node}.css files without duplicating their component-scoped rules.\n"
 			"Apply the user-defined frontend style guidance below across colors, spacing, typography, surfaces, and visual polish while keeping the stylesheet production-ready.\n\n"
 			"Node stylesheet context from frontend/src/styles/{Node}.css:\n"
@@ -548,14 +511,15 @@ class PromptFrontendCoder(Coder):
 			"Return only runnable Vue SFC code with no markdown fences or explanation.\n"
 			"Never use this.$set or Vue.set; keep all reactive updates compatible with modern Vue patterns.\n"
 			"Use the reference App.vue as the baseline integration pattern, but adapt it to the generated sources below.\n"
-			"Import createWorkflowStore from ./store/workflow and AppShell from './components/AppShell.vue'.\n"
-			"Import one node view component per graph node name from ./views/<NodeName>.vue when node names are provided.\n"
-			"Build a viewMap keyed by graph node name so App.vue becomes the composition root that wires the generated store, shell, and node views together.\n"
+			"Import { createWorkflowStore } from ./store/workflow and AppShell from './components/AppShell.vue'.\n"
+			"Import one node view component only for the exact visible graph node names listed below, using ./views/<ActualNodeName>.vue paths.\n"
+			"Do not invent extra view imports, do not import hidden or backend-only nodes, and never emit placeholder imports such as ./views/{nodes}.vue or ./views/<NodeName>.vue literally.\n"
+			"Build a viewMap keyed by visible graph node name so App.vue becomes the composition root that wires the generated store, shell, and node views together.\n"
 			"Provide workflowStore for descendants, call workflowStore.initialize() during setup, and keep hash-based routing aligned to known steps or node names.\n"
 			"Use the generated AppShell.vue source as the primary contract for props, events, and slots. If it already expects active-step-id, active-view, or navigate handlers, preserve that interface instead of inventing a new one.\n"
 			"Use the generated api/workflow.js and store/workflow.js as integration context so lifecycle and state usage stay consistent.\n"
 			"When no node names are available, still render AppShell and initialize the workflow store without view imports.\n\n"
-			"Graph node names for imports:\n"
+			"Visible graph node names for imports:\n"
 			f"{node_names_json}\n\n"
 			"Generated api/workflow.js context:\n"
 			f"{generated_api_source}\n\n"
@@ -600,8 +564,8 @@ class PromptFrontendCoder(Coder):
 				"progressive step cards, input surfaces, chat rendering, and schema-aware card rendering helpers.\n"
 			),
 			"app": (
-				"Preserve the App.vue contract: remain the composition root, import createWorkflowStore and AppShell, "
-				"provide workflowStore, initialize it during setup, and keep node-view routing aligned with workflow nodes.\n"
+				"Preserve the App.vue contract: remain the composition root, import { createWorkflowStore } from './store/workflow' and AppShell from './components/AppShell.vue', "
+				"provide workflowStore, initialize it during setup, keep node-view routing aligned with visible workflow nodes only, and never add placeholder or hidden-node view imports.\n"
 			),
 			"view": (
 				"Preserve the views/<Node>.vue contract: keep it focused on a single workflow step with injected workflowStore integration, "
@@ -1052,7 +1016,7 @@ class PromptFrontendCoder(Coder):
 		resolved_base_dir = self._resolve_context_base_dir(target_path, context_base_dir)
 		graph_plan_path = resolved_base_dir / "workflow.json"
 		reference_app_source = self._load_reference_app_source(reference_frontend_src_dir)
-		node_names = list(graph_to_nodes(graph_plan_path).keys()) if graph_plan_path.is_file() else []
+		node_names = self._load_frontend_visible_node_names(graph_plan_path)
 		generated_context = self._load_generated_frontend_context(target_path)
 		user_prompt = self._build_app_vue_user_prompt(
 			node_names=node_names,
@@ -1073,6 +1037,7 @@ class PromptFrontendCoder(Coder):
 		self,
 		*,
 		steps_meta: Sequence[Mapping[str, Any]],
+		store_steps_meta: Sequence[Mapping[str, Any]] | None = None,
 		output_base_dir: str | Path,
 		context_base_dir: str | None = None,
 		run_step_endpoint: str = "/api/run-step",
@@ -1111,7 +1076,7 @@ class PromptFrontendCoder(Coder):
 			"store workflow file",
 			store_path,
 			self.write_store_workflow_file,
-			steps_meta=steps_meta,
+			steps_meta=store_steps_meta if store_steps_meta is not None else steps_meta,
 			output_path=store_path,
 			context_base_dir=context_base_dir,
 			run_step_endpoint=run_step_endpoint,

@@ -81,8 +81,8 @@ class NodeAuditor(BaseAuditor):
             self._check_clone(cls, violations)
             self._check_init(cls, violations)
             self._check_step_id_matches_class_name(cls, violations)
+            self._check_hidden_frontend_nodes_disable_input(cls, violations, node_meta)
             self._check_step_node_dependency_results(cls, path, violations)
-            self._check_chat_node_dependency_results(cls, path, violations)
             self._check_file_node_no_build_step_output(cls, violations)
             self._check_operation_node_dependency_results(cls, path, violations)
             self._check_service_node_dependency_results(cls, path, violations)
@@ -262,11 +262,68 @@ class NodeAuditor(BaseAuditor):
                 )
             )
 
+    def _check_hidden_frontend_nodes_disable_input(
+        self,
+        cls: ast.ClassDef,
+        violations: List[RuleViolation],
+        node_meta: Optional[NodeMeta] = None,
+    ) -> None:
+        """Ensure hidden nodes explicitly disable input in class metadata."""
+        if node_meta is None or node_meta.show_frontend:
+            return
+        if not self._is_registered_class(cls):
+            return
+        if not self._is_workflow_step_node_subclass(cls):
+            return
+
+        input_required_value: ast.expr | None = None
+        input_required_lineno = cls.lineno
+        for node in cls.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "INPUT_REQUIRED":
+                        input_required_value = node.value
+                        input_required_lineno = node.lineno
+                        break
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name) and node.target.id == "INPUT_REQUIRED":
+                    input_required_value = node.value
+                    input_required_lineno = node.lineno
+            if input_required_value is not None:
+                break
+
+        if input_required_value is None:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="hidden_frontend_input_required_missing",
+                    detail=(
+                        "When node_meta.show_frontend is False, the node class must define "
+                        "INPUT_REQUIRED = False."
+                    ),
+                    lineno=cls.lineno,
+                )
+            )
+            return
+
+        if not (isinstance(input_required_value, ast.Constant) and input_required_value.value is False):
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="hidden_frontend_input_required_invalid",
+                    detail=(
+                        "When node_meta.show_frontend is False, INPUT_REQUIRED must be the "
+                        "literal False."
+                    ),
+                    lineno=input_required_lineno,
+                )
+            )
+
     def _is_workflow_step_node_subclass(self, cls: ast.ClassDef) -> bool:
         for base in cls.bases:
-            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode"}:
                 return True
-            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowChatNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode"}:
                 return True
         return False
 
@@ -278,9 +335,6 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_operation_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowOperationNode"})
-
-    def _is_workflow_chat_node_subclass(self, cls: ast.ClassDef) -> bool:
-        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowChatNode"})
 
     def _is_workflow_file_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowFileNode"})
@@ -509,7 +563,6 @@ class NodeAuditor(BaseAuditor):
 
         Rules:
         - ext_data.type == "user_input" => class must subclass WorkflowStepNode
-        - ext_data.type == "chat_input" => class must subclass WorkflowChatNode
         - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
         - ext_data.type == "service" or ext_data.service_name exists => class must subclass WorkflowServiceNode
         - ext_data.type == "none" => class must subclass WorkflowOperationNode
@@ -535,16 +588,6 @@ class NodeAuditor(BaseAuditor):
                         class_name=cls.name,
                         rule="ext_data_user_input_requires_step_node",
                         detail="When ext_data.type is 'user_input', the node class must subclass WorkflowStepNode.",
-                        lineno=cls.lineno,
-                    )
-                )
-        elif ext_type == "chat_input":
-            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowChatNode"}):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_chat_input_requires_chat_node",
-                        detail="When ext_data.type is 'chat_input', the node class must subclass WorkflowChatNode.",
                         lineno=cls.lineno,
                     )
                 )
@@ -773,29 +816,6 @@ class NodeAuditor(BaseAuditor):
             method=method,
             violations=violations,
             method_name="process_operation",
-        )
-
-    def _check_chat_node_dependency_results(
-        self,
-        cls: ast.ClassDef,
-        node_file_path: Path,
-        violations: List[RuleViolation],
-    ) -> None:
-        if not self._is_registered_class(cls):
-            return
-        if not self._is_workflow_chat_node_subclass(cls):
-            return
-
-        method = self._get_method(cls, "process_chat")
-        if method is None:
-            return
-
-        self._check_dependency_results_usage(
-            cls=cls,
-            node_file_path=node_file_path,
-            method=method,
-            violations=violations,
-            method_name="process_chat",
         )
 
     def _check_service_node_dependency_results(
