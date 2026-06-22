@@ -615,14 +615,20 @@ class AgentBuilder:
             "app_view_import_missing": "app",
         }
 
-        if getattr(violation, "rule", "") == "frontend_lint_error":
-            for raw_path in [getattr(violation, "class_name", ""), str(getattr(violation, "detail", "")).split(":", 1)[0].strip()]:
-                if not raw_path:
-                    continue
-                candidate = Path(raw_path).expanduser()
-                if candidate.is_file():
-                    return candidate.resolve()
-            return None
+        frontend_src_path = Path(frontend_src_dir).expanduser().resolve()
+        for raw_path in [
+            getattr(violation, "class_name", ""),
+            str(getattr(violation, "detail", "")).split(":", 1)[0].strip(),
+        ]:
+            if not raw_path:
+                continue
+            candidate = Path(raw_path).expanduser()
+            if candidate.is_file():
+                return candidate.resolve()
+            if not candidate.is_absolute():
+                relative_candidate = (frontend_src_path / candidate).resolve()
+                if relative_candidate.is_file():
+                    return relative_candidate
 
         target_key = rule_to_target.get(getattr(violation, "rule", ""))
         if target_key is None:
