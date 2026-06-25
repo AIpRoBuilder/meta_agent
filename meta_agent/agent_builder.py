@@ -806,6 +806,8 @@ class AgentBuilder:
                 "version": "0.0.0",
                 "private": True,
                 "scripts": {
+                    "start": "npm run serve",
+                    "serve": "vue-cli-service serve",
                     "lint": "echo 'lint not configured for minimal scaffold'"
                 },
             }
