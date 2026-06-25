@@ -643,12 +643,13 @@ class AgentBuilder:
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
         max_audit_rounds: int = 4,
+        backend_port: int = 8000,
     ) -> str:
         """Generate and audit frontend output in vue_src mode."""
         frontend_path = os.path.join(self.root_dir, output_filename+"/src")
         frontend_project_dir = os.path.join(self.root_dir, output_filename)
-        self._ensure_vue_frontend_project(frontend_project_dir)
-        self._write_vue_proxy_config(Path(frontend_project_dir).expanduser())
+        self._ensure_vue_frontend_project(frontend_project_dir, backend_port=backend_port)
+        self._write_vue_proxy_config(Path(frontend_project_dir).expanduser(), backend_port=backend_port)
         print(f"Generating frontend -> {frontend_path}")
         steps_meta = self._build_steps_meta()
         store_steps_meta = self._build_steps_meta(include_hidden_nodes=True)
@@ -738,7 +739,7 @@ class AgentBuilder:
         self.frontend_output_path = frontend_path
         return frontend_path
 
-    def _ensure_vue_frontend_project(self, frontend_project_dir: str) -> str:
+    def _ensure_vue_frontend_project(self, frontend_project_dir: str, backend_port: int = 8000) -> str:
         """Create the Vue frontend project with Vue CLI when it is missing."""
         resolved_frontend_dir = Path(frontend_project_dir).expanduser()
         if not resolved_frontend_dir.is_absolute():
@@ -746,13 +747,13 @@ class AgentBuilder:
         resolved_frontend_dir = resolved_frontend_dir.resolve()
 
         if resolved_frontend_dir.exists():
-            self._write_vue_proxy_config(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir, backend_port=backend_port)
             return str(resolved_frontend_dir)
 
         vue_executable = shutil.which("vue")
         if not vue_executable:
             self._create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-            self._write_vue_proxy_config(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir, backend_port=backend_port)
             print(
                 "warning: Vue CLI is not installed or not available on PATH; "
                 f"using minimal frontend scaffold at {resolved_frontend_dir}"
@@ -773,7 +774,7 @@ class AgentBuilder:
             stdout = exc.stdout.strip() if exc.stdout else ""
             detail = stderr or stdout or str(exc)
             self._create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-            self._write_vue_proxy_config(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir, backend_port=backend_port)
             print(
                 "warning: vue create failed; "
                 f"using minimal frontend scaffold at {resolved_frontend_dir}. "
@@ -782,7 +783,7 @@ class AgentBuilder:
             return str(resolved_frontend_dir)
         except OSError as exc:
             self._create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-            self._write_vue_proxy_config(resolved_frontend_dir)
+            self._write_vue_proxy_config(resolved_frontend_dir, backend_port=backend_port)
             print(
                 "warning: vue command execution failed; "
                 f"using minimal frontend scaffold at {resolved_frontend_dir}. "
@@ -790,7 +791,7 @@ class AgentBuilder:
             )
             return str(resolved_frontend_dir)
 
-        self._write_vue_proxy_config(resolved_frontend_dir)
+        self._write_vue_proxy_config(resolved_frontend_dir, backend_port=backend_port)
         return str(resolved_frontend_dir)
 
     @staticmethod
@@ -817,7 +818,9 @@ class AgentBuilder:
             )
 
     @staticmethod
-    def _write_vue_proxy_config(frontend_dir: Path) -> None:
+    def _write_vue_proxy_config(frontend_dir: Path, backend_port: int = 8000) -> None:
+        if not isinstance(backend_port, int) or not (1 <= backend_port <= 65535):
+            raise ValueError("backend_port must be an integer in range 1..65535.")
         vue_config_path = frontend_dir / "vue.config.js"
         vue_config_path.write_text(
             "const { defineConfig } = require('@vue/cli-service')\n"
@@ -825,7 +828,7 @@ class AgentBuilder:
             "  devServer: {\n"
             "    proxy: {\n"
             "      '/api': {\n"
-            "        target: 'http://127.0.0.1:8000',\n"
+            f"        target: 'http://127.0.0.1:{backend_port}',\n"
             "        changeOrigin: true,\n"
             "      },\n"
             "    },\n"
@@ -1077,6 +1080,7 @@ class AgentBuilder:
         frontend_mode: str = "vue_src",
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
+        backend_port: int = 8000,
     ) -> None:
         """Run full build pipeline and generate AG-UI deliverables.
 
@@ -1089,6 +1093,7 @@ class AgentBuilder:
             frontend_mode: Frontend output mode. Only 'vue_src' is supported.
             frontend_style_prompt: Optional style guidance for generated frontend output.
             context_base_dir: Optional base directory for loading graph_plan.json and node_ui/*.html used as frontend generation context.
+            backend_port: Backend API port used by the generated Vue devServer proxy.
         """
         total_steps = 5
         if generate_node_docs:
@@ -1138,6 +1143,7 @@ class AgentBuilder:
             temperature=0.0,
             frontend_style_prompt=self.frontend_style_prompt,
             context_base_dir=context_base_dir,
+            backend_port=backend_port,
         )
         self._advance_progress(f"frontend generated and audited ({frontend_mode})")
 
