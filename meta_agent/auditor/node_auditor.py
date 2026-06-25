@@ -51,6 +51,17 @@ class NodeAuditor(BaseAuditor):
             )
             return False, [violation]
 
+        try:
+            compile(source, str(path), "exec")
+        except SyntaxError as exc:
+            violation = RuleViolation(
+                class_name="(file)",
+                rule="compile_error",
+                detail=str(exc),
+                lineno=exc.lineno or 0,
+            )
+            return False, [violation]
+
         violations: List[RuleViolation] = []
         self._check_no_todo_markers(source, violations)
         class_defs = [node for node in tree.body if isinstance(node, ast.ClassDef)]

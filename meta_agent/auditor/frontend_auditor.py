@@ -216,6 +216,109 @@ class FrontendAuditor(BaseAuditor):
 
 		return violations
 
+	@classmethod
+	def _validate_css_syntax(cls, css_text: str) -> tuple[int, str] | None:
+		line = 1
+		index = 0
+		length = len(css_text)
+		brace_stack: List[int] = []
+		in_comment = False
+		in_single_quote = False
+		in_double_quote = False
+		escape_next = False
+
+		while index < length:
+			char = css_text[index]
+			next_char = css_text[index + 1] if index + 1 < length else ""
+
+			if char == "\n":
+				line += 1
+
+			if in_comment:
+				if char == "*" and next_char == "/":
+					in_comment = False
+					index += 2
+					continue
+				index += 1
+				continue
+
+			if in_single_quote:
+				if escape_next:
+					escape_next = False
+				elif char == "\\":
+					escape_next = True
+				elif char == "'":
+					in_single_quote = False
+				index += 1
+				continue
+
+			if in_double_quote:
+				if escape_next:
+					escape_next = False
+				elif char == "\\":
+					escape_next = True
+				elif char == '"':
+					in_double_quote = False
+				index += 1
+				continue
+
+			if char == "/" and next_char == "*":
+				in_comment = True
+				index += 2
+				continue
+
+			if char == "'":
+				in_single_quote = True
+				index += 1
+				continue
+
+			if char == '"':
+				in_double_quote = True
+				index += 1
+				continue
+
+			if char == "{":
+				brace_stack.append(line)
+			elif char == "}":
+				if not brace_stack:
+					return line, "Unexpected closing brace in CSS."
+				brace_stack.pop()
+
+			index += 1
+
+		if in_comment:
+			return line, "Unclosed CSS comment; expected closing */."
+
+		if in_single_quote or in_double_quote:
+			return line, "Unclosed CSS string literal."
+
+		if brace_stack:
+			return brace_stack[-1], "Unclosed CSS block; expected closing }."
+
+		return None
+
+	def _collect_css_syntax_violations(self, frontend_dir: Path) -> List[RuleViolation]:
+		violations: List[RuleViolation] = []
+		for css_file in sorted(frontend_dir.rglob("*.css")):
+			css_text = css_file.read_text(encoding="utf-8")
+			validation_error = self._validate_css_syntax(css_text)
+			if validation_error is None:
+				continue
+
+			lineno, detail = validation_error
+			violations.append(
+				RuleViolation(
+					class_name=str(css_file),
+					rule="frontend_css_syntax_error",
+					detail=(
+						f"{css_file}: CSS file is not compilable due to syntax issues. {detail}"
+					),
+					lineno=lineno,
+				)
+			)
+
+		return violations
+
 	def _audit_frontend_file(self, frontend_path: str) -> tuple[bool, List[RuleViolation]]:
 		path = Path(frontend_path)
 		return self._audit_frontend_src_dir(path)
@@ -297,6 +400,7 @@ class FrontendAuditor(BaseAuditor):
 		violations.extend(self._audit_view_store_imports(frontend_dir))
 		violations.extend(self._audit_view_submit_step_calls(frontend_dir))
 		violations.extend(self._collect_forbidden_vue2_syntax_violations(resolved_files))
+		violations.extend(self._collect_css_syntax_violations(frontend_dir))
 		violations.extend(self._collect_lint_violations(frontend_dir))
 
 		return len(violations) == 0, violations
