@@ -914,6 +914,7 @@ class AgentBuilder:
         output_filename: str = "main.py",
         fastapi_host: str = "0.0.0.0",
         temperature: float = 0.0,
+        fastapi_port: int = 8000,
     ) -> str:
         self.main_output_path = os.path.join(self.root_dir, output_filename)
         print(f"Generating main entrypoint -> {self.main_output_path}")
@@ -923,6 +924,7 @@ class AgentBuilder:
             output_path=self.main_output_path,
             requirement_analysis_result=self.requirement_analysis_result,
             fastapi_host=fastapi_host,
+            fastapi_port=fastapi_port,
             temperature=temperature,
         )
 
