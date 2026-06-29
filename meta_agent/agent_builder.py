@@ -82,6 +82,7 @@ class _NodeGenerateElement(GElement):
 
             return CStatus()
         except Exception as exc:
+            print(f"[{self.node_index}/{self.total}] Node generation failed for {self.node_name}: {exc}")
             return CStatus(1001, f"node generation failed for {self.node_name}: {exc}")
 
 
