@@ -206,7 +206,12 @@ class AgentBuilder:
             services_root_path=self.services_root_path,
             skills_root_path=self.skills_root_path,
         )
-        self.node_planner = NodePlanner(api_key=self.api_key, model=self.model, provider=self.provider)
+        self.node_planner = NodePlanner(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            skills_root_path=self.skills_root_path,
+        )
         self.main_writer = PromptMainFileCoder(api_key=self.api_key, model=self.model, provider=self.provider)
         self.frontend_writer = PromptFrontendCoder(api_key=self.api_key, model=self.model, provider=self.provider)
         self.frontend_view_writer = FrontendViewCoder(api_key=self.api_key, model=self.model, provider=self.provider)
@@ -531,6 +536,64 @@ class AgentBuilder:
 
         final_path = str(amended_path)
         self.last_amended_node_ui_path = final_path
+        return final_path
+
+    def amend_node_markdown(
+        self,
+        node_name: str,
+        amendment: str,
+        existing_markdown_path: Optional[str] = None,
+        requirement_md_path: Optional[str] = None,
+        graph_plan_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = MAX_TOKENS,
+        overwrite: bool = True,
+    ) -> str:
+        """Amend a single graph node and regenerate its markdown planning doc."""
+        if not isinstance(node_name, str) or not node_name.strip():
+            raise ValueError("node_name must be a non-empty string.")
+        if not isinstance(amendment, str) or not amendment.strip():
+            raise ValueError("amendment must be a non-empty string.")
+
+        if requirement_md_path:
+            self.requirement_md_path = requirement_md_path
+        if graph_plan_path:
+            self.graph_plan_path = graph_plan_path
+
+        if not self.requirement_md_path:
+            raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
+        if not self.graph_plan_path:
+            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
+
+        target_markdown_path = output_path or existing_markdown_path
+        if target_markdown_path is None:
+            target_markdown_path = os.path.join(self.root_dir, "node_docs", f"{node_name}.md")
+
+        print(f"Amending node markdown '{node_name}' -> {target_markdown_path}")
+        amended_graph_path, amended_doc_path = self.node_planner.amend_graph_node_from_files(
+            node_name=node_name,
+            user_prompt=amendment,
+            requirement_md_path=self.requirement_md_path,
+            graph_plan_json_path=self.graph_plan_path,
+            node_output_path=target_markdown_path,
+            overwrite=overwrite,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        self.graph_plan_path = str(amended_graph_path)
+        self.planned_graph = Graph(self.graph_plan_path)
+        self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
+
+        final_path = str(amended_doc_path)
+        self.node_docs_dir = str(Path(final_path).parent)
+        existing_paths = list(getattr(self, "node_doc_paths", []) or [])
+        expected_name = f"{node_name}.md"
+        updated_paths = [path for path in existing_paths if Path(path).name != expected_name]
+        updated_paths.append(final_path)
+        self.node_doc_paths = updated_paths
+        self.last_amended_node_doc_path = final_path
         return final_path
 
     def _build_steps_meta(self, include_hidden_nodes: bool = False) -> List[Dict[str, Any]]:

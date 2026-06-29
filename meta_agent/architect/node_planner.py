@@ -155,6 +155,8 @@ class NodePlanner:
 
 	prompt_path: str = "architect/prompts/node_planner_prompt.md"
 	workflow_nodes_reference_path: str = "library/workflow_nodes_reference_excerpts.md"
+	default_skills_dirname: str = "skills"
+	skills_root_path: str = ""
 	# Coder configuration fields (forwarded to Coder instances)
 	provider: str = "openai"
 	model: str = "gpt-4.1-mini"
@@ -201,6 +203,19 @@ class NodePlanner:
 			client=self.client,
 		)
 
+	def _make_coder_with_system_prompt(self, system_prompt: str) -> Coder:
+		"""Create a fresh :class:`Coder` using an override system prompt."""
+		return Coder(
+			provider=self.provider,
+			model=self.model,
+			api_key=self.api_key,
+			system_prompt=system_prompt,
+			zhipu_thinking=self.zhipu_thinking,
+			deepseek_base_url=self.deepseek_base_url,
+			qwen_base_url=self.qwen_base_url,
+			client=self.client,
+		)
+
 	def code_to_file(
 		self,
 		user_prompt: str,
@@ -218,6 +233,87 @@ class NodePlanner:
 			temperature=temperature,
 			max_tokens=max_tokens,
 		)
+
+	def _default_skills_root(self) -> Path:
+		if self.skills_root_path:
+			configured = Path(self.skills_root_path).expanduser().resolve()
+			if configured.is_dir():
+				return configured
+		root_dir = ROOT_DIR.parent
+		direct = root_dir / self.default_skills_dirname
+		if direct.is_dir():
+			return direct
+		parent = root_dir.parent / self.default_skills_dirname
+		if parent.is_dir():
+			return parent
+		return direct
+
+	def _list_available_skills(self) -> list[str]:
+		skills_root = self._default_skills_root()
+		if not skills_root.is_dir():
+			return []
+		return sorted(
+			child.name
+			for child in skills_root.iterdir()
+			if child.is_dir() and (child / "skill.md").is_file()
+		)
+
+	def _read_skill_markdown(self, skills_root: Path, skill_name: str) -> str:
+		if not skill_name:
+			return ""
+		skill_doc = skills_root / skill_name / "skill.md"
+		if not skill_doc.is_file():
+			return ""
+		return skill_doc.read_text(encoding="utf-8").strip()
+
+	def _extract_skill_description(self, skill_markdown: str) -> str:
+		if not skill_markdown.strip():
+			return ""
+		from meta_agent.tools.file_tools import parse_skill_md
+
+		sections = parse_skill_md(skill_markdown)
+		description = sections.get("Description", "").strip()
+		if description:
+			return " ".join(description.splitlines()).strip()
+		for line in skill_markdown.splitlines():
+			stripped = line.strip()
+			if stripped and not stripped.startswith("#") and not stripped.startswith("`"):
+				return stripped
+		return ""
+
+	def _skill_descriptions(self) -> dict[str, str]:
+		skills_root = self._default_skills_root()
+		descriptions: dict[str, str] = {}
+		for skill_name in self._list_available_skills():
+			skill_markdown = self._read_skill_markdown(skills_root, skill_name)
+			description = self._extract_skill_description(skill_markdown)
+			if description:
+				descriptions[skill_name] = description
+		return descriptions
+
+	def _node_type_choice_lines(self) -> list[str]:
+		return [
+			"- selectable node types:",
+			"  - user_input -> WorkflowStepNode: use when this step directly accepts structured or text user input.",
+			"  - user_file_input -> WorkflowFileNode: use when this step collects uploaded files from the user.",
+			"  - service -> WorkflowServiceNode: use when this step boots or verifies an external service.",
+			"  - skill -> WorkflowSkillNode: use when this step wraps a pre-built skill directory.",
+			"  - none -> WorkflowOperationNode: use for pure compute or dependency-driven processing without direct user input.",
+		]
+
+	def _skill_choice_lines(self) -> list[str]:
+		available_skills = self._list_available_skills()
+		if not available_skills:
+			return ["- available skills: none"]
+		descriptions = self._skill_descriptions()
+		lines = [
+			f"- available skills root: {self._default_skills_root()}",
+			"- available skills:",
+		]
+		for skill_name in available_skills:
+			description = descriptions.get(skill_name, "") or "no description found"
+			lines.append(f"  - {skill_name}: {description}")
+		return lines
 
 	def _normalize_ext_type(self, ext_data: Any) -> str:
 		if isinstance(ext_data, dict):
@@ -400,6 +496,9 @@ class NodePlanner:
 				f"- note: {profile['note']}",
 			]
 		)
+		ctx_lines.extend(self._node_type_choice_lines())
+		if profile["nodeKind"] == "skill":
+			ctx_lines.extend(self._skill_choice_lines())
 		return "\n".join(ctx_lines)
 
 	def _node_filename(self, node: dict[str, Any], index: int) -> str:
@@ -553,6 +652,248 @@ class NodePlanner:
 			f"{old_html}\n\n"
 			"=== Amendment Instructions (apply these changes) ===\n"
 			f"{user_prompt}\n"
+		)
+
+	def _build_amend_graph_node_prompt(
+		self,
+		user_prompt: str,
+		requirement_text: str,
+		node_context: str,
+		existing_node_json: str,
+	) -> str:
+		return (
+			"Rewrite ONLY the target node JSON object from an existing graph plan.\n"
+			"Return exactly one valid JSON object for the node. No markdown fences, no commentary.\n"
+			"Preserve the node name unless the amendment explicitly requires a rename.\n"
+			"Node schema requirements:\n"
+			"- Required fields: name, type, desc, show_frontend, enable, depends, ext_data\n"
+			"- show_frontend must be an explicit boolean\n"
+			"- ext_data must be a JSON object with keys: type, desc, and skill_name when type='skill', service_name when type='service'\n"
+			"- Allowed node type choices are listed in the node context below\n"
+			"- Include inputs_format only when ext_data.type is 'user_input' or 'skill'\n"
+			"- Do not include inputs_format for other node types\n"
+			"- Only include services when the node actually uses upstream services\n"
+			"- For skill nodes, ext_data.skill_name must match one listed available skill exactly\n\n"
+			"=== Requirement Analysis ===\n"
+			f"{requirement_text}\n\n"
+			"=== Target Node Context ===\n"
+			f"{node_context}\n\n"
+			"=== Existing Node JSON ===\n"
+			f"{existing_node_json}\n\n"
+			"=== Amendment Instructions ===\n"
+			f"{user_prompt}\n"
+		)
+
+	def _write_amended_graph_node(
+		self,
+		node_name: str,
+		user_prompt: str,
+		requirement_text: str,
+		graph_plan_text: str,
+		graph_output_path: str,
+		*,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> tuple[Path, dict[str, Any], int]:
+		try:
+			graph_plan: dict[str, Any] = json.loads(graph_plan_text)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid graph plan JSON: {exc}") from exc
+
+		nodes = self._extract_nodes(graph_plan)
+		matched_node: dict[str, Any] | None = None
+		matched_index = 1
+		for idx, node in enumerate(nodes, start=1):
+			name = str(node.get("name", "")).strip() or f"Node{idx}"
+			if name == node_name:
+				matched_node = node
+				matched_index = idx
+				break
+
+		if matched_node is None:
+			raise ValueError(
+				f"Node '{node_name}' not found in graph plan. "
+				f"Available nodes: {[str(n.get('name', '')).strip() for n in nodes]}"
+			)
+
+		output_target = Path(graph_output_path)
+		if output_target.exists() and not overwrite:
+			raise FileExistsError(f"Output file exists and overwrite=False: {output_target}")
+
+		node_context = self._node_context(matched_node, matched_index)
+		prompt = self._build_amend_graph_node_prompt(
+			user_prompt=user_prompt,
+			requirement_text=requirement_text,
+			node_context=node_context,
+			existing_node_json=json.dumps(matched_node, ensure_ascii=False, indent=2),
+		)
+		amend_coder = self._make_coder_with_system_prompt(
+			"You are a precise workflow graph planner. Return only valid JSON for the requested single node object."
+		)
+		updated_node_raw = amend_coder.generate_code(
+			prompt,
+			temperature=temperature,
+			max_tokens=max_tokens,
+		)
+		try:
+			updated_node = json.loads(updated_node_raw)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid amended node JSON returned by model: {exc}") from exc
+		if not isinstance(updated_node, dict):
+			raise ValueError("Amended node output must be a JSON object.")
+
+		resolved_name = str(updated_node.get("name", "")).strip() or node_name
+		if resolved_name != node_name:
+			updated_node["name"] = node_name
+
+		graph_nodes = graph_plan.get("nodes", []) if isinstance(graph_plan, dict) else []
+		if not isinstance(graph_nodes, list):
+			raise ValueError("Graph plan must contain a top-level 'nodes' list.")
+		graph_nodes[matched_index - 1] = updated_node
+
+		output_target.parent.mkdir(parents=True, exist_ok=True)
+		output_target.write_text(
+			json.dumps(graph_plan, ensure_ascii=False, indent=2),
+			encoding="utf-8",
+		)
+
+		from meta_agent.architect.graph_planner import GraphPlanner
+
+		normalizer = GraphPlanner(
+			provider=self.provider,
+			model=self.model,
+			api_key=self.api_key,
+			zhipu_thinking=self.zhipu_thinking,
+			deepseek_base_url=self.deepseek_base_url,
+			qwen_base_url=self.qwen_base_url,
+			client=self.client,
+		)
+		normalizer._normalize_ext_data_in_file(output_target)
+
+		normalized_plan = json.loads(output_target.read_text(encoding="utf-8"))
+		normalized_nodes = self._extract_nodes(normalized_plan)
+		normalized_node = normalized_nodes[matched_index - 1]
+		return output_target, normalized_node, matched_index
+
+	def _regenerate_single_node_plan(
+		self,
+		node: dict[str, Any],
+		index: int,
+		requirement_text: str,
+		output_path: str,
+		*,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> Path:
+		node_name = str(node.get("name", "")).strip() or f"Node{index}"
+		output_target = Path(output_path)
+		outputs: dict[str, Path] = {}
+		element = _NodePlanElement(
+			planner=self,
+			node=node,
+			index=index,
+			target_dir=output_target.parent,
+			requirement_text=requirement_text,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+			outputs=outputs,
+		)
+		status = element.run()
+		if status.isErr():
+			raise RuntimeError(f"node plan regeneration failed for '{node_name}': {status.getInfo()}")
+
+		written = outputs.get(node_name)
+		if written is None:
+			written = element.target_dir / self._node_filename(node, index)
+		if not written.exists():
+			raise RuntimeError(
+				f"node plan regeneration did not produce expected output file for '{node_name}': {written}"
+			)
+
+		if written.resolve() == output_target.resolve():
+			return written
+
+		if output_target.exists() and not overwrite:
+			raise FileExistsError(f"Output file exists and overwrite=False: {output_target}")
+
+		output_target.parent.mkdir(parents=True, exist_ok=True)
+		output_target.write_text(written.read_text(encoding="utf-8"), encoding="utf-8")
+		return output_target
+
+	def amend_graph_node(
+		self,
+		node_name: str,
+		user_prompt: str,
+		requirement_text: str,
+		graph_plan_text: str,
+		graph_output_path: str,
+		node_output_path: str,
+		*,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> tuple[Path, Path]:
+		"""Amend one node inside graph_plan JSON, then regenerate its markdown plan."""
+		graph_path, normalized_node, node_index = self._write_amended_graph_node(
+			node_name=node_name,
+			user_prompt=user_prompt,
+			requirement_text=requirement_text,
+			graph_plan_text=graph_plan_text,
+			graph_output_path=graph_output_path,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+		)
+		node_plan_path = self._regenerate_single_node_plan(
+			node=normalized_node,
+			index=node_index,
+			requirement_text=requirement_text,
+			output_path=node_output_path,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+		)
+		return graph_path, node_plan_path
+
+	def amend_graph_node_from_files(
+		self,
+		node_name: str,
+		user_prompt: str,
+		requirement_md_path: str,
+		graph_plan_json_path: str,
+		node_output_path: str,
+		graph_output_path: str | None = None,
+		*,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> tuple[Path, Path]:
+		"""File-based wrapper for :meth:`amend_graph_node`."""
+		requirement_path = Path(requirement_md_path)
+		if not requirement_path.exists():
+			raise FileNotFoundError(f"Requirement file not found: {requirement_path}")
+
+		graph_path = Path(graph_plan_json_path)
+		if not graph_path.exists():
+			raise FileNotFoundError(f"Graph plan file not found: {graph_path}")
+
+		requirement_text = requirement_path.read_text(encoding="utf-8")
+		graph_plan_text = graph_path.read_text(encoding="utf-8")
+		dest_graph_path = graph_output_path if graph_output_path is not None else str(graph_path)
+
+		return self.amend_graph_node(
+			node_name=node_name,
+			user_prompt=user_prompt,
+			requirement_text=requirement_text,
+			graph_plan_text=graph_plan_text,
+			graph_output_path=dest_graph_path,
+			node_output_path=node_output_path,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
 		)
 
 	def amend_node_ui(
