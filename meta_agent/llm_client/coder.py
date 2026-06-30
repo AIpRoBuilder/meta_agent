@@ -12,6 +12,7 @@ the ``OPENAI_BASE_URL`` environment variable.
 from __future__ import annotations
 
 import os
+from inspect import Parameter, signature
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,37 @@ def _resolve_max_tokens() -> int:
 MAX_TOKENS = _resolve_max_tokens()
 
 
+def _resolve_timeout(provider: str) -> Optional[float]:
+    provider_env_names = {
+        "openai": "OPENAI_TIMEOUT",
+        "zhipu": "ZHIPU_TIMEOUT",
+        "deepseek": "DEEPSEEK_TIMEOUT",
+        "qwen": "QWEN_TIMEOUT",
+        "111api": "ONEONEONEAPI_TIMEOUT",
+    }
+    raw_value = os.getenv(provider_env_names.get(provider, ""), "").strip()
+    if not raw_value:
+        raw_value = str(os.getenv("LLM_TIMEOUT", 200000)).strip()
+    if not raw_value:
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _accepts_keyword(callable_obj: object, keyword: str) -> bool:
+    try:
+        parameters = signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind == Parameter.VAR_KEYWORD or parameter.name == keyword
+        for parameter in parameters
+    )
+
+
 def _strip_code_fence(text: str) -> str:
     """Remove any Markdown fence lines (```lang) from the text."""
 
@@ -67,9 +99,12 @@ class Coder:
     deepseek_base_url: str = "https://api.deepseek.com"
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     oneoneoneapi_base_url: str = "https://111api.chat/v1"
+    timeout: Optional[float] = None
     client: Optional[object] = None
 
     def __post_init__(self) -> None:
+        self.timeout = self.timeout if self.timeout is not None else _resolve_timeout(self.provider)
+
         # Allow dependency injection of a preconfigured client for tests.
         if self.client is None:
             if self.provider == "openai":
@@ -87,6 +122,8 @@ class Coder:
                 client_kwargs = {"api_key": resolved_key}
                 if resolved_base_url:
                     client_kwargs["base_url"] = resolved_base_url
+                if self.timeout is not None and _accepts_keyword(OpenAI, "timeout"):
+                    client_kwargs["timeout"] = self.timeout
                 self.client = OpenAI(**client_kwargs)
             elif self.provider == "zhipu":
                 if ZhipuAiClient is None:
@@ -97,7 +134,10 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("ZHIPU_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing ZHIPU_API_KEY; set env or pass api_key.")
-                self.client = ZhipuAiClient(api_key=resolved_key)
+                client_kwargs = {"api_key": resolved_key}
+                if self.timeout is not None and _accepts_keyword(ZhipuAiClient, "timeout"):
+                    client_kwargs["timeout"] = self.timeout
+                self.client = ZhipuAiClient(**client_kwargs)
             elif self.provider == "deepseek":
                 if OpenAI is None:
                     raise ImportError(
@@ -107,7 +147,10 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("DEEPSEEK_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing DEEPSEEK_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(api_key=resolved_key, base_url=self.deepseek_base_url)
+                client_kwargs = {"api_key": resolved_key, "base_url": self.deepseek_base_url}
+                if self.timeout is not None and _accepts_keyword(OpenAI, "timeout"):
+                    client_kwargs["timeout"] = self.timeout
+                self.client = OpenAI(**client_kwargs)
             elif self.provider == "qwen":
                 if OpenAI is None:
                     raise ImportError(
@@ -117,7 +160,10 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("DASHSCOPE_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing DASHSCOPE_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(api_key=resolved_key, base_url=self.qwen_base_url)
+                client_kwargs = {"api_key": resolved_key, "base_url": self.qwen_base_url}
+                if self.timeout is not None and _accepts_keyword(OpenAI, "timeout"):
+                    client_kwargs["timeout"] = self.timeout
+                self.client = OpenAI(**client_kwargs)
             elif self.provider == "111api":
                 if OpenAI is None:
                     raise ImportError(
@@ -127,7 +173,10 @@ class Coder:
                 resolved_key = self.api_key or os.getenv("ONEONEONEAPI_API_KEY")
                 if not resolved_key:
                     raise ValueError("Missing ONEONEONEAPI_API_KEY; set env or pass api_key.")
-                self.client = OpenAI(api_key=resolved_key, base_url=self.oneoneoneapi_base_url)
+                client_kwargs = {"api_key": resolved_key, "base_url": self.oneoneoneapi_base_url}
+                if self.timeout is not None and _accepts_keyword(OpenAI, "timeout"):
+                    client_kwargs["timeout"] = self.timeout
+                self.client = OpenAI(**client_kwargs)
             else:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
@@ -146,6 +195,8 @@ class Coder:
         extra_kwargs = {}
         if self.provider == "zhipu":
             extra_kwargs["thinking"] = self.zhipu_thinking or {"type": "enabled"}
+        if self.timeout is not None and _accepts_keyword(self.client.chat.completions.create, "timeout"):
+            extra_kwargs["timeout"] = self.timeout
 
         try:
             response = self.client.chat.completions.create(
