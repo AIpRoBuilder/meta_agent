@@ -377,29 +377,43 @@ class PromptFrontendCoder(Coder):
 		node_view_template_context: str,
 		step_output_card_context: str,
 	) -> str:
-		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
+		app_shell_steps_meta = [
+			{
+				"id": step["id"],
+				"title": step["title"],
+				"dependencies": step.get("dependencies", []),
+				"inputRequired": step.get("inputRequired", True),
+				"nodeKind": step.get("nodeKind", "input"),
+				"extData": {
+					"type": step.get("extData", {}).get("type", "none"),
+					"inputs_format": step.get("extData", {}).get("inputs_format", {}),
+				},
+			}
+			for step in steps_meta
+		]
+		steps_json = json.dumps(app_shell_steps_meta, ensure_ascii=False, indent=2)
 		store_workflow_source = truncate_context(
 			store_workflow_source,
 			label="store_workflow_source",
-			max_chars=self.vue_reference_context_max_chars,
+			max_chars=min(self.vue_reference_context_max_chars, 5000),
 			request_label="frontend generation request",
 		)
 		reference_app_shell_source = truncate_context(
 			reference_app_shell_source,
 			label="reference_app_shell_source",
-			max_chars=self.vue_reference_context_max_chars,
+			max_chars=min(self.vue_reference_context_max_chars, 6000),
 			request_label="frontend generation request",
 		)
 		node_view_template_context = truncate_context(
 			node_view_template_context,
 			label="node_view_template_context",
-			max_chars=self.node_ui_context_max_chars,
+			max_chars=min(self.node_ui_context_max_chars, 5000),
 			request_label="frontend generation request",
 		)
 		step_output_card_context = truncate_context(
 			step_output_card_context,
 			label="step_output_card_context",
-			max_chars=self.step_output_card_context_max_chars,
+			max_chars=min(self.step_output_card_context_max_chars, 4000),
 			request_label="frontend generation request",
 		)
 
@@ -408,16 +422,15 @@ class PromptFrontendCoder(Coder):
 			"Return only runnable Vue SFC code with no markdown fences or explanation.\n"
 			"Never use this.$set or Vue.set anywhere in the component; use direct property assignment, object spread, or Object.assign for reactive updates.\n"
 			"Use the reference component as the baseline for layout rhythm, store interaction, and composition.\n"
-			"This component is the workflow main page and must operate directly on an injected workflowStore.\n"
-			"Prefer Vue Options API to match the example project.\n"
-			"Import ../styles/app.css in the component's style block and keep shared styling there instead of embedding the main stylesheet rules inside the SFC.\n"
-			"If the component needs a few truly local styles, keep them minimal and scoped while leaving the primary visual system in app.css.\n"
+			"This component is the workflow main page, operates on an injected workflowStore, and should stay close to the example's Vue Options API structure.\n"
+			"Import ../styles/app.css in the component's style block and keep the main visual system there; only add minimal scoped local styles when necessary.\n"
 			"Required UI behavior:\n"
 			"- show a top bar with session badge, progress, New Session, and Reset Session actions.\n"
 			"- render one workflow card per step from store.steps and keep cards progressive by unlocked state.\n"
 			"- arrange the step cards in a strict vertical column with exactly one card per row (no multi-column card grid).\n"
+			"- keep the conversation bar centered along the middle bottom of the page when the workflow uses conversational input.\n"
 			"- render status badges for locked/active/running/completed/error.\n"
-			"- expose one input area per selected or active step and submit through workflowStore.submitStep(stepId, serializedInput).\n"
+			"- expose one input area per selected or active step and call workflowStore.submitStep(stepId, payload) so the request flows to /api/run-step.\n"
 			"- for nodeKind='file', use a multi-file picker and serialize files into JSON strings shaped like {files:[{fileName,bytes},...]} before submission.\n"
 			"- for extData.inputs_format, render structured controls by type and submit JSON.stringify(collectedObject).\n"
 			"- render card.rows, card.actions, and schema-aware sections using a helper named renderCardSchemaSections when schema context is available.\n"
@@ -992,6 +1005,7 @@ class PromptFrontendCoder(Coder):
 			node_view_template_context=node_view_template_context,
 			step_output_card_context=step_output_card_context,
 		)
+		print(f"AppShell.vue user prompt length: {len(user_prompt)} characters")
 		print(f"start writing AppShell.vue to: {target_path}")
 		return self.code_to_file(
 			user_prompt,
