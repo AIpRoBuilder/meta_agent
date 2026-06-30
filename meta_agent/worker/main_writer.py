@@ -3,22 +3,14 @@
 from __future__ import annotations
 
 import json
-import sys
-import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-# Resolve package root consistently for both source checkout and pip-installed layouts.
-_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
-if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
-    ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
-else:
-    ROOT_DIR = _DEFAULT_PACKAGE_ROOT
+from meta_agent._paths import bootstrap_package_root
 
-if str(ROOT_DIR.parent) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR.parent))
+
+ROOT_DIR = bootstrap_package_root(__file__)
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 from meta_agent.tools.text_tools import normalize_requirement_analysis_result

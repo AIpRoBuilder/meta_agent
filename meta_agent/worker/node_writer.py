@@ -1,22 +1,14 @@
-import sys
 import json
 import ast
-import importlib.util
 import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-# Resolve package root consistently for both source checkout and pip-installed layouts.
-_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
-if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
-    ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
-else:
-    ROOT_DIR = _DEFAULT_PACKAGE_ROOT
+from meta_agent._paths import bootstrap_package_root
 
-if str(ROOT_DIR.parent) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR.parent))
+
+ROOT_DIR = bootstrap_package_root(__file__)
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 from meta_agent.context_builder.context import Context, GraphContextBuilder
@@ -228,6 +220,52 @@ def _read_node_html_reference(
         if candidate.is_file():
             return candidate.read_text(encoding="utf-8").strip()
     return ""
+
+
+def _resolve_named_root(
+    configured_root_path: str,
+    root_dir_path: str,
+    default_dirname: str,
+) -> Path:
+    if configured_root_path:
+        configured = Path(configured_root_path).expanduser().resolve()
+        if configured.is_dir():
+            return configured
+
+    if root_dir_path:
+        root_dir = Path(root_dir_path).expanduser().resolve()
+        direct = root_dir / default_dirname
+        if direct.is_dir():
+            return direct
+        parent = root_dir.parent / default_dirname
+        if parent.is_dir():
+            return parent
+
+    return ROOT_DIR.parent / default_dirname
+
+
+def _read_named_markdown(root_dir: Path, item_name: str, markdown_name: str) -> str:
+    if not item_name:
+        return ""
+
+    doc_path = root_dir / item_name / markdown_name
+    if not doc_path.is_file():
+        return ""
+    return doc_path.read_text(encoding="utf-8").strip()
+
+
+def _parse_markdown_sections(markdown_text: str) -> dict[str, str]:
+    if not markdown_text.strip():
+        return {}
+
+    try:
+        from meta_agent.tools.file_tools import parse_skill_md
+
+        parsed = parse_skill_md(markdown_text)
+    except Exception:
+        return {}
+
+    return {str(key).strip(): str(value).strip() for key, value in parsed.items()}
     
 
 @dataclass
@@ -814,19 +852,11 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
     services_root_path: str = ""
 
     def _default_services_root(self) -> Path:
-        if self.services_root_path:
-            configured = Path(self.services_root_path).expanduser().resolve()
-            if configured.is_dir():
-                return configured
-        if self.root_dir_path:
-            root_dir = Path(self.root_dir_path).expanduser().resolve()
-            direct = root_dir / self.default_services_dirname
-            if direct.is_dir():
-                return direct
-            parent = root_dir.parent / self.default_services_dirname
-            if parent.is_dir():
-                return parent
-        return ROOT_DIR.parent / self.default_services_dirname
+        return _resolve_named_root(
+            configured_root_path=self.services_root_path,
+            root_dir_path=self.root_dir_path,
+            default_dirname=self.default_services_dirname,
+        )
 
     def _extract_service_name(self, node_meta: NodeMeta) -> str:
         ext_data = node_meta.ext_data
@@ -854,25 +884,14 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
         )
 
     def _read_service_markdown(self, services_root: Path, service_name: str) -> str:
-        if not service_name:
-            return ""
-        service_doc = services_root / service_name / "service.md"
-        if not service_doc.is_file():
-            return ""
-        return service_doc.read_text(encoding="utf-8").strip()
+        return _read_named_markdown(services_root, service_name, "service.md")
 
     def _extract_service_sections(self, service_markdown: str) -> tuple[str, str]:
         """Return (installation_section, start_service_section) from a parsed service.md.
 
         Sections are matched by H2 headings that start with '1.' or '2.' respectively.
         """
-        if not service_markdown.strip():
-            return "", ""
-        try:
-            from meta_agent.tools.file_tools import parse_skill_md
-            sections = parse_skill_md(service_markdown)
-        except Exception:
-            sections = {}
+        sections = _parse_markdown_sections(service_markdown)
         # Match sections by numeric prefix to tolerate slight heading variants.
         installation = ""
         start_service = ""
@@ -967,19 +986,6 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
                 "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
                 "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
             ]
-            if not service_doc_text else [
-                "",
-                "Implementation constraints for this service node:",
-                "- Subclass WorkflowServiceNode.",
-                "- Import workflow_service_registry from ag_ui_workflow.services.",
-                "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
-                "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
-                "- In start_service, after successful launch, call workflow_service_registry.update_service_status(..., status='running', is_running=True, pid=proc.pid, installed=True).",
-                "- Do not override process_operation; the base class orchestrates install + start automatically.",
-                "- Use DEFAULT_WORKDIR or session_state.get('serviceWorkdir') as working directory; do not hardcode absolute paths.",
-                "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
-                "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
-            ]
         )
 
         if not service_doc_text:
@@ -1042,19 +1048,11 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
     skills_root_path: str = ""
 
     def _default_skills_root(self) -> Path:
-        if self.skills_root_path:
-            configured = Path(self.skills_root_path).expanduser().resolve()
-            if configured.is_dir():
-                return configured
-        if self.root_dir_path:
-            root_dir = Path(self.root_dir_path).expanduser().resolve()
-            direct = root_dir / self.default_skills_dirname
-            if direct.is_dir():
-                return direct
-            parent = root_dir.parent / self.default_skills_dirname
-            if parent.is_dir():
-                return parent
-        return ROOT_DIR.parent / self.default_skills_dirname
+        return _resolve_named_root(
+            configured_root_path=self.skills_root_path,
+            root_dir_path=self.root_dir_path,
+            default_dirname=self.default_skills_dirname,
+        )
 
     def _extract_skill_name(self, node_meta: NodeMeta) -> str:
         ext_data = node_meta.ext_data
@@ -1063,22 +1061,11 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         return ""
 
     def _read_skill_markdown(self, skills_root: Path, skill_name: str) -> str:
-        if not skill_name:
-            return ""
-        skill_doc = skills_root / skill_name / "skill.md"
-        if not skill_doc.is_file():
-            return ""
-        return skill_doc.read_text(encoding="utf-8").strip()
+        return _read_named_markdown(skills_root, skill_name, "skill.md")
 
     def _extract_skill_sections(self, skill_markdown: str) -> tuple[str, str]:
         """Return (using_section, examples_section) from a parsed skill.md."""
-        if not skill_markdown.strip():
-            return "", ""
-        try:
-            from meta_agent.tools.file_tools import parse_skill_md
-            sections = parse_skill_md(skill_markdown)
-        except Exception:
-            sections = {}
+        sections = _parse_markdown_sections(skill_markdown)
         return sections.get("Using", "").strip(), sections.get("Examples", "").strip()
 
     def _build_requirement_prompt(

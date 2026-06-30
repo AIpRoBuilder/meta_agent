@@ -2,24 +2,16 @@
 
 from __future__ import annotations
 
-import sys
 import json
 import re
-import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-# Resolve package root consistently for both source checkout and pip-installed layouts.
-_DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-_META_AGENT_SPEC = importlib.util.find_spec("meta_agent")
-if _META_AGENT_SPEC and _META_AGENT_SPEC.origin:
-	ROOT_DIR = Path(_META_AGENT_SPEC.origin).resolve().parent
-else:
-	ROOT_DIR = _DEFAULT_PACKAGE_ROOT
+from meta_agent._paths import bootstrap_package_root
 
-if str(ROOT_DIR.parent) not in sys.path:
-	sys.path.insert(0, str(ROOT_DIR.parent))
+
+ROOT_DIR = bootstrap_package_root(__file__)
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 from meta_agent.architect.graph import NodeMeta
@@ -42,6 +34,8 @@ class PromptFrontendCoder(Coder):
 	graph_plan_context_max_chars: int = 12000
 	step_output_card_context_max_chars: int = 12000
 	vue_reference_context_max_chars: int = 12000
+	generation_request_label: str = "frontend generation request"
+	amendment_request_label: str = "frontend amendment request"
 
 	def __post_init__(self) -> None:
 		prompt_file = ROOT_DIR / self.prompt_path
@@ -50,6 +44,45 @@ class PromptFrontendCoder(Coder):
 
 		self.system_prompt = prompt_file.read_text(encoding="utf-8")
 		super().__post_init__()
+
+	def _truncate_prompt_context(
+		self,
+		text: str,
+		*,
+		label: str,
+		max_chars: int,
+		request_label: str,
+	) -> str:
+		return truncate_context(
+			text,
+			label=label,
+			max_chars=max_chars,
+			request_label=request_label,
+		)
+
+	def _append_prompt_context_block(
+		self,
+		prompt: str,
+		*,
+		heading: str,
+		text: str,
+		label: str,
+		max_chars: int,
+		request_label: str,
+	) -> str:
+		if not text:
+			return prompt
+		return (
+			prompt
+			+ f"\n{heading}:\n"
+			+ self._truncate_prompt_context(
+				text,
+				label=label,
+				max_chars=max_chars,
+				request_label=request_label,
+			)
+			+ "\n"
+		)
 
 	def _normalize_steps(self, steps_meta: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 		normalized: list[dict[str, Any]] = []
@@ -272,11 +305,11 @@ class PromptFrontendCoder(Coder):
 				"- If the cron endpoint returns SSE, parse it exactly like runStep; if it returns JSON only, pass the parsed object to onEvent once when provided.\n\n"
 			)
 
-		reference_api_source = truncate_context(
+		reference_api_source = self._truncate_prompt_context(
 			reference_api_source,
 			label="reference_api_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
 
 		return (
@@ -306,23 +339,23 @@ class PromptFrontendCoder(Coder):
 		step_output_card_context: str,
 	) -> str:
 		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
-		reference_store_source = truncate_context(
+		reference_store_source = self._truncate_prompt_context(
 			reference_store_source,
 			label="reference_store_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		graph_plan_context = truncate_context(
+		graph_plan_context = self._truncate_prompt_context(
 			graph_plan_context,
 			label="graph_plan_context",
 			max_chars=self.graph_plan_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		step_output_card_context = truncate_context(
+		step_output_card_context = self._truncate_prompt_context(
 			step_output_card_context,
 			label="step_output_card_context",
 			max_chars=self.step_output_card_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
 		cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
 		is_cron_task = bool(cron_meta and cron_meta["is_cron_task"])
@@ -392,29 +425,29 @@ class PromptFrontendCoder(Coder):
 			for step in steps_meta
 		]
 		steps_json = json.dumps(app_shell_steps_meta, ensure_ascii=False, indent=2)
-		store_workflow_source = truncate_context(
+		store_workflow_source = self._truncate_prompt_context(
 			store_workflow_source,
 			label="store_workflow_source",
 			max_chars=min(self.vue_reference_context_max_chars, 5000),
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		reference_app_shell_source = truncate_context(
+		reference_app_shell_source = self._truncate_prompt_context(
 			reference_app_shell_source,
 			label="reference_app_shell_source",
 			max_chars=min(self.vue_reference_context_max_chars, 6000),
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		node_view_template_context = truncate_context(
+		node_view_template_context = self._truncate_prompt_context(
 			node_view_template_context,
 			label="node_view_template_context",
 			max_chars=min(self.node_ui_context_max_chars, 5000),
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		step_output_card_context = truncate_context(
+		step_output_card_context = self._truncate_prompt_context(
 			step_output_card_context,
 			label="step_output_card_context",
 			max_chars=min(self.step_output_card_context_max_chars, 4000),
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
 
 		return (
@@ -455,17 +488,17 @@ class PromptFrontendCoder(Coder):
 		node_style_context: str,
 		frontend_style_prompt: str,
 	) -> str:
-		reference_app_css_source = truncate_context(
+		reference_app_css_source = self._truncate_prompt_context(
 			reference_app_css_source,
 			label="reference_app_css_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		node_style_context = truncate_context(
+		node_style_context = self._truncate_prompt_context(
 			node_style_context,
 			label="node_style_context",
 			max_chars=self.node_ui_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
 
 		return (
@@ -494,29 +527,29 @@ class PromptFrontendCoder(Coder):
 		generated_app_shell_source: str,
 	) -> str:
 		node_names_json = json.dumps(list(node_names), ensure_ascii=False, indent=2)
-		reference_app_source = truncate_context(
+		reference_app_source = self._truncate_prompt_context(
 			reference_app_source,
 			label="reference_app_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		generated_api_source = truncate_context(
+		generated_api_source = self._truncate_prompt_context(
 			generated_api_source,
 			label="generated_api_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		generated_store_source = truncate_context(
+		generated_store_source = self._truncate_prompt_context(
 			generated_store_source,
 			label="generated_store_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
-		generated_app_shell_source = truncate_context(
+		generated_app_shell_source = self._truncate_prompt_context(
 			generated_app_shell_source,
 			label="generated_app_shell_source",
 			max_chars=self.vue_reference_context_max_chars,
-			request_label="frontend generation request",
+			request_label=self.generation_request_label,
 		)
 
 		return (
@@ -524,8 +557,9 @@ class PromptFrontendCoder(Coder):
 			"Return only runnable Vue SFC code with no markdown fences or explanation.\n"
 			"Never use this.$set or Vue.set; keep all reactive updates compatible with modern Vue patterns.\n"
 			"Use the reference App.vue as the baseline integration pattern, but adapt it to the generated sources below.\n"
-			"Import { createWorkflowStore } from ./store/workflow and AppShell from './components/AppShell.vue'.\n"
-			"Import one node view component only for the exact visible graph node names listed below, using ./views/<ActualNodeName>.vue paths.\n"
+			"Import createWorkflowStore from ./store/workflow and AppShell from './components/AppShell.vue'.\n"
+			"Use a named import for createWorkflowStore in the generated code.\n"
+			"Import one node view component per visible graph node name, using ./views/<ActualNodeName>.vue paths.\n"
 			"Do not invent extra view imports, do not import hidden or backend-only nodes, and never emit placeholder imports such as ./views/{nodes}.vue or ./views/<NodeName>.vue literally.\n"
 			"Build a viewMap keyed by visible graph node name so App.vue becomes the composition root that wires the generated store, shell, and node views together.\n"
 			"Provide workflowStore for descendants, call workflowStore.initialize() during setup, and keep hash-based routing aligned to known steps or node names.\n"
@@ -590,6 +624,38 @@ class PromptFrontendCoder(Coder):
 		}
 		return contracts[file_kind]
 
+	def _write_app_css_file(
+		self,
+		*,
+		app_css_path: Path,
+		reference_context: Mapping[str, str],
+		target_path: Path,
+		frontend_style_prompt: str | None,
+		overwrite: bool,
+		temperature: float,
+		max_tokens: int,
+	) -> Path:
+		if frontend_style_prompt and frontend_style_prompt.strip():
+			node_style_context = self._load_node_style_context(target_path)
+			app_css_prompt = self._build_app_css_user_prompt(
+				reference_app_css_source=reference_context["app_css"],
+				node_style_context=node_style_context,
+				frontend_style_prompt=frontend_style_prompt,
+			)
+			return self.code_to_file(
+				app_css_prompt,
+				str(app_css_path),
+				overwrite=overwrite,
+				temperature=temperature,
+				max_tokens=max_tokens,
+			)
+
+		return self.write_code_to_file(
+			reference_context["app_css"],
+			str(app_css_path),
+			overwrite=overwrite,
+		)
+
 	def _build_amendment_prompt(
 		self,
 		*,
@@ -626,11 +692,14 @@ class PromptFrontendCoder(Coder):
 
 		if file_kind == "api":
 			reference_api_source = reference_context.get("api", "")
-			if reference_api_source:
-				user_prompt += (
-					"\nReference api/workflow.js context:\n"
-					f"{truncate_context(reference_api_source, label='reference_api_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
-				)
+			user_prompt = self._append_prompt_context_block(
+				user_prompt,
+				heading="Reference api/workflow.js context",
+				text=reference_api_source,
+				label="reference_api_source",
+				max_chars=self.vue_reference_context_max_chars,
+				request_label=self.amendment_request_label,
+			)
 			cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
 			if cron_meta and cron_meta["is_cron_task"]:
 				user_prompt += "\nCron mode is enabled for this frontend; preserve cron-specific behavior if present.\n"
@@ -650,36 +719,48 @@ class PromptFrontendCoder(Coder):
 				output_path=file_path,
 				base_dir=context_base_dir,
 			) if normalized_steps else ""
-			if step_output_card_context:
-				user_prompt += (
-					"\nPer-step StepRunOutput.card schema context:\n"
-					f"{truncate_context(step_output_card_context, label='step_output_card_context', max_chars=self.step_output_card_context_max_chars, request_label='frontend amendment request')}\n"
-				)
+			user_prompt = self._append_prompt_context_block(
+				user_prompt,
+				heading="Per-step StepRunOutput.card schema context",
+				text=step_output_card_context,
+				label="step_output_card_context",
+				max_chars=self.step_output_card_context_max_chars,
+				request_label=self.amendment_request_label,
+			)
 			if file_kind == "store":
 				_, graph_plan_context = self._load_default_frontend_context(file_path, base_dir=context_base_dir)
-				if graph_plan_context:
-					user_prompt += (
-						"\nGraph plan JSON context:\n"
-						f"{truncate_context(graph_plan_context, label='graph_plan_context', max_chars=self.graph_plan_context_max_chars, request_label='frontend amendment request')}\n"
-					)
+				user_prompt = self._append_prompt_context_block(
+					user_prompt,
+					heading="Graph plan JSON context",
+					text=graph_plan_context,
+					label="graph_plan_context",
+					max_chars=self.graph_plan_context_max_chars,
+					request_label=self.amendment_request_label,
+				)
 			reference_key = "store" if file_kind == "store" else "app_shell"
 			reference_source = reference_context.get(reference_key, "")
-			if reference_source:
-				user_prompt += (
-					f"\nReference {reference_key} context:\n"
-					f"{truncate_context(reference_source, label=f'reference_{reference_key}_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
-				)
+			user_prompt = self._append_prompt_context_block(
+				user_prompt,
+				heading=f"Reference {reference_key} context",
+				text=reference_source,
+				label=f"reference_{reference_key}_source",
+				max_chars=self.vue_reference_context_max_chars,
+				request_label=self.amendment_request_label,
+			)
 
 		if file_kind == "app":
 			try:
 				reference_app_source = self._load_reference_app_source(reference_frontend_src_dir)
 			except FileNotFoundError:
 				reference_app_source = ""
-			if reference_app_source:
-				user_prompt += (
-					"\nReference App.vue context:\n"
-					f"{truncate_context(reference_app_source, label='reference_app_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
-				)
+			user_prompt = self._append_prompt_context_block(
+				user_prompt,
+				heading="Reference App.vue context",
+				text=reference_app_source,
+				label="reference_app_source",
+				max_chars=self.vue_reference_context_max_chars,
+				request_label=self.amendment_request_label,
+			)
 			try:
 				generated_context = self._load_generated_frontend_context(file_path)
 			except FileNotFoundError:
@@ -690,11 +771,13 @@ class PromptFrontendCoder(Coder):
 				"app_shell": "Generated AppShell.vue context",
 			}.items():
 				context_text = generated_context.get(context_key, "")
-				if not context_text:
-					continue
-				user_prompt += (
-					f"\n{context_label}:\n"
-					f"{truncate_context(context_text, label=f'generated_{context_key}_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
+				user_prompt = self._append_prompt_context_block(
+					user_prompt,
+					heading=context_label,
+					text=context_text,
+					label=f"generated_{context_key}_source",
+					max_chars=self.vue_reference_context_max_chars,
+					request_label=self.amendment_request_label,
 				)
 			resolved_base_dir = self._resolve_context_base_dir(file_path, context_base_dir)
 			graph_plan_path = resolved_base_dir / "workflow.json"
@@ -708,11 +791,14 @@ class PromptFrontendCoder(Coder):
 
 		if file_kind == "app_css":
 			reference_app_css_source = reference_context.get("app_css", "")
-			if reference_app_css_source:
-				user_prompt += (
-					"\nReference app.css context:\n"
-					f"{truncate_context(reference_app_css_source, label='reference_app_css_source', max_chars=self.vue_reference_context_max_chars, request_label='frontend amendment request')}\n"
-				)
+			user_prompt = self._append_prompt_context_block(
+				user_prompt,
+				heading="Reference app.css context",
+				text=reference_app_css_source,
+				label="reference_app_css_source",
+				max_chars=self.vue_reference_context_max_chars,
+				request_label=self.amendment_request_label,
+			)
 			if frontend_style_prompt and frontend_style_prompt.strip():
 				user_prompt += (
 					"\nUser-defined frontend style guidance:\n"
@@ -924,7 +1010,7 @@ class PromptFrontendCoder(Coder):
 		normalized_steps = self._normalize_steps(steps_meta)
 		target_path = Path(output_path).expanduser()
 		reference_context = self._load_reference_vue_frontend_context(reference_frontend_src_dir)
-		node_ui_context, graph_plan_context = self._load_default_frontend_context(
+		_, graph_plan_context = self._load_default_frontend_context(
 			target_path,
 			base_dir=context_base_dir,
 		)
@@ -977,27 +1063,15 @@ class PromptFrontendCoder(Coder):
 			store_workflow_source = reference_context["store"]
 		node_view_template_context = self._load_node_view_template_context(target_path)
 		app_css_path = target_path.parent.parent / "styles" / "app.css"
-		print(f"start writing app.css to: {app_css_path}")
-		if frontend_style_prompt and frontend_style_prompt.strip():
-			node_style_context = self._load_node_style_context(target_path)
-			app_css_prompt = self._build_app_css_user_prompt(
-				reference_app_css_source=reference_context["app_css"],
-				node_style_context=node_style_context,
-				frontend_style_prompt=frontend_style_prompt,
-			)
-			self.code_to_file(
-				app_css_prompt,
-				str(app_css_path),
-				overwrite=overwrite,
-				temperature=temperature,
-				max_tokens=max_tokens,
-			)
-		else:
-			self.write_code_to_file(
-				reference_context["app_css"],
-				str(app_css_path),
-				overwrite=overwrite,
-			)
+		self._write_app_css_file(
+			app_css_path=app_css_path,
+			reference_context=reference_context,
+			target_path=target_path,
+			frontend_style_prompt=frontend_style_prompt,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+		)
 		user_prompt = self._build_app_shell_user_prompt(
 			steps_meta=normalized_steps,
 			store_workflow_source=store_workflow_source,
@@ -1005,8 +1079,7 @@ class PromptFrontendCoder(Coder):
 			node_view_template_context=node_view_template_context,
 			step_output_card_context=step_output_card_context,
 		)
-		print(f"AppShell.vue user prompt length: {len(user_prompt)} characters")
-		print(f"start writing AppShell.vue to: {target_path}")
+  
 		return self.code_to_file(
 			user_prompt,
 			str(target_path),
