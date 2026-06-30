@@ -218,6 +218,7 @@ class Coder:
             content = getattr(getattr(choice, "message", None), "content", "") or ""
 
         if not content:
+            print(response)
             raise LLMGenerationError("LLM returned empty content.")
 
         return _strip_code_fence(content)
