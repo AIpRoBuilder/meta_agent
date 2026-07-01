@@ -396,8 +396,8 @@ class FrontendAuditor(BaseAuditor):
 				)
 			)
 
-		violations.extend(self._audit_app_vue_imports(app_text, workflow_data))
-		violations.extend(self._audit_app_shell_injections(app_shell_text, app_text))
+		violations.extend(self._audit_app_vue_imports(app_text, workflow_data, resolved_files["app"]))
+		violations.extend(self._audit_app_shell_injections(app_shell_text, app_text, resolved_files["app"]))
 		violations.extend(self._audit_view_store_imports(frontend_dir))
 		violations.extend(self._audit_view_submit_step_calls(frontend_dir))
 		violations.extend(self._collect_forbidden_vue2_syntax_violations(resolved_files))
@@ -474,19 +474,24 @@ class FrontendAuditor(BaseAuditor):
 		return ordered_keys
 
 	@classmethod
-	def _audit_app_shell_injections(cls, app_shell_text: str, app_text: str) -> List[RuleViolation]:
+	def _audit_app_shell_injections(
+		cls,
+		app_shell_text: str,
+		app_text: str,
+		app_file_path: Path,
+	) -> List[RuleViolation]:
 		violations: List[RuleViolation] = []
 		for inject_key in cls._extract_inject_keys(app_shell_text):
-			provide_pattern = rf"provide\s*\(\s*['\"]{re.escape(inject_key)}['\"]\s*,\s*store\s*\)"
+			provide_pattern = rf"provide\s*\(\s*['\"]{re.escape(inject_key)}['\"]\s*,\s*workflowStore\s*\)"
 			if re.search(provide_pattern, app_text):
 				continue
 
 			violations.append(
 				RuleViolation(
-					class_name="(frontend)",
+					class_name=str(app_file_path),
 					rule="app_shell_inject_not_provided",
 					detail=(
-						f"App.vue must provide('{inject_key}', store) for the injected dependency used by AppShell.vue"
+						f"App.vue must provide('{inject_key}', workflowStore) for the injected dependency used by AppShell.vue"
 					),
 					lineno=cls._line_number_for_pattern(app_shell_text, rf"['\"]{re.escape(inject_key)}['\"]"),
 				)
@@ -529,13 +534,14 @@ class FrontendAuditor(BaseAuditor):
 		cls,
 		app_text: str,
 		workflow_data: Mapping[str, Any] | None,
+		app_file_path: Path,
 	) -> List[RuleViolation]:
 		violations: List[RuleViolation] = []
 		app_shell_pattern = r'import\s+AppShell\s+from\s+["\']\./components/AppShell\.vue["\']'
 		if not re.search(app_shell_pattern, app_text):
 			violations.append(
 				RuleViolation(
-					class_name="(frontend)",
+					class_name=str(app_file_path),
 					rule="app_shell_import_missing",
 					detail="App.vue must import AppShell from ./components/AppShell.vue",
 					lineno=1,
@@ -566,7 +572,7 @@ class FrontendAuditor(BaseAuditor):
 
 			violations.append(
 				RuleViolation(
-					class_name="(frontend)",
+					class_name=str(app_file_path),
 					rule="app_view_import_missing",
 					detail=f"App.vue must import {node_name} from ./views/{node_name}.vue",
 					lineno=cls._line_number_for_pattern(app_text, r"<script|import\s"),
