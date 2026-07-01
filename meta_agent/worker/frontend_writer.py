@@ -84,6 +84,22 @@ class PromptFrontendCoder(Coder):
 			+ "\n"
 		)
 
+	def _truncate_prompt_contexts(
+		self,
+		*,
+		request_label: str,
+		contexts: Mapping[str, tuple[str, int]],
+	) -> dict[str, str]:
+		return {
+			label: self._truncate_prompt_context(
+				text,
+				label=label,
+				max_chars=max_chars,
+				request_label=request_label,
+			)
+			for label, (text, max_chars) in contexts.items()
+		}
+
 	def _normalize_steps(self, steps_meta: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 		normalized: list[dict[str, Any]] = []
 		for item in steps_meta:
@@ -167,6 +183,23 @@ class PromptFrontendCoder(Coder):
 			raise ValueError("steps_meta cannot be empty.")
 
 		return normalized
+
+	@staticmethod
+	def _build_app_shell_steps_meta(steps_meta: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+		return [
+			{
+				"id": step["id"],
+				"title": step["title"],
+				"dependencies": step.get("dependencies", []),
+				"inputRequired": step.get("inputRequired", True),
+				"nodeKind": step.get("nodeKind", "input"),
+				"extData": {
+					"type": step.get("extData", {}).get("type", "none"),
+					"inputs_format": step.get("extData", {}).get("inputs_format", {}),
+				},
+			}
+			for step in steps_meta
+		]
 
 	def _resolve_reference_frontend_src_dir(
 		self,
@@ -305,11 +338,11 @@ class PromptFrontendCoder(Coder):
 				"- If the cron endpoint returns SSE, parse it exactly like runStep; if it returns JSON only, pass the parsed object to onEvent once when provided.\n\n"
 			)
 
-		reference_api_source = self._truncate_prompt_context(
-			reference_api_source,
-			label="reference_api_source",
-			max_chars=self.vue_reference_context_max_chars,
+		truncated_contexts = self._truncate_prompt_contexts(
 			request_label=self.generation_request_label,
+			contexts={
+				"reference_api_source": (reference_api_source, self.vue_reference_context_max_chars),
+			},
 		)
 
 		return (
@@ -324,7 +357,7 @@ class PromptFrontendCoder(Coder):
 			"Keep the module framework-agnostic.\n\n"
 			f"{cron_block}"
 			"Reference api/workflow.js example:\n"
-			f"{reference_api_source}\n"
+			f"{truncated_contexts['reference_api_source']}\n"
 		)
 
 	def _build_store_user_prompt(
@@ -339,23 +372,13 @@ class PromptFrontendCoder(Coder):
 		step_output_card_context: str,
 	) -> str:
 		steps_json = json.dumps(steps_meta, ensure_ascii=False, indent=2)
-		reference_store_source = self._truncate_prompt_context(
-			reference_store_source,
-			label="reference_store_source",
-			max_chars=self.vue_reference_context_max_chars,
+		truncated_contexts = self._truncate_prompt_contexts(
 			request_label=self.generation_request_label,
-		)
-		graph_plan_context = self._truncate_prompt_context(
-			graph_plan_context,
-			label="graph_plan_context",
-			max_chars=self.graph_plan_context_max_chars,
-			request_label=self.generation_request_label,
-		)
-		step_output_card_context = self._truncate_prompt_context(
-			step_output_card_context,
-			label="step_output_card_context",
-			max_chars=self.step_output_card_context_max_chars,
-			request_label=self.generation_request_label,
+			contexts={
+				"reference_store_source": (reference_store_source, self.vue_reference_context_max_chars),
+				"graph_plan_context": (graph_plan_context, self.graph_plan_context_max_chars),
+				"step_output_card_context": (step_output_card_context, self.step_output_card_context_max_chars),
+			},
 		)
 		cron_meta = normalize_requirement_analysis_result(requirement_analysis_result)
 		is_cron_task = bool(cron_meta and cron_meta["is_cron_task"])
@@ -392,13 +415,13 @@ class PromptFrontendCoder(Coder):
 			"- keep code plain and robust, matching the reference module organization.\n\n"
 			f"{cron_block}"
 			"Graph plan JSON context:\n"
-			f"{graph_plan_context}\n\n"
+			f"{truncated_contexts['graph_plan_context']}\n\n"
 			"Per-step StepRunOutput.card schema context:\n"
-			f"{step_output_card_context}\n\n"
+			f"{truncated_contexts['step_output_card_context']}\n\n"
 			"Step metadata JSON:\n"
 			f"{steps_json}\n\n"
 			"Reference store/workflow.js example:\n"
-			f"{reference_store_source}\n"
+			f"{truncated_contexts['reference_store_source']}\n"
 		)
 
 	def _build_app_shell_user_prompt(
@@ -410,44 +433,16 @@ class PromptFrontendCoder(Coder):
 		node_view_template_context: str,
 		step_output_card_context: str,
 	) -> str:
-		app_shell_steps_meta = [
-			{
-				"id": step["id"],
-				"title": step["title"],
-				"dependencies": step.get("dependencies", []),
-				"inputRequired": step.get("inputRequired", True),
-				"nodeKind": step.get("nodeKind", "input"),
-				"extData": {
-					"type": step.get("extData", {}).get("type", "none"),
-					"inputs_format": step.get("extData", {}).get("inputs_format", {}),
-				},
-			}
-			for step in steps_meta
-		]
+		app_shell_steps_meta = self._build_app_shell_steps_meta(steps_meta)
 		steps_json = json.dumps(app_shell_steps_meta, ensure_ascii=False, indent=2)
-		store_workflow_source = self._truncate_prompt_context(
-			store_workflow_source,
-			label="store_workflow_source",
-			max_chars=min(self.vue_reference_context_max_chars, 5000),
+		truncated_contexts = self._truncate_prompt_contexts(
 			request_label=self.generation_request_label,
-		)
-		reference_app_shell_source = self._truncate_prompt_context(
-			reference_app_shell_source,
-			label="reference_app_shell_source",
-			max_chars=min(self.vue_reference_context_max_chars, 6000),
-			request_label=self.generation_request_label,
-		)
-		node_view_template_context = self._truncate_prompt_context(
-			node_view_template_context,
-			label="node_view_template_context",
-			max_chars=min(self.node_ui_context_max_chars, 5000),
-			request_label=self.generation_request_label,
-		)
-		step_output_card_context = self._truncate_prompt_context(
-			step_output_card_context,
-			label="step_output_card_context",
-			max_chars=min(self.step_output_card_context_max_chars, 4000),
-			request_label=self.generation_request_label,
+			contexts={
+				"store_workflow_source": (store_workflow_source, min(self.vue_reference_context_max_chars, 5000)),
+				"reference_app_shell_source": (reference_app_shell_source, min(self.vue_reference_context_max_chars, 6000)),
+				"node_view_template_context": (node_view_template_context, min(self.node_ui_context_max_chars, 5000)),
+				"step_output_card_context": (step_output_card_context, min(self.step_output_card_context_max_chars, 4000)),
+			},
 		)
 
 		return (
@@ -470,15 +465,15 @@ class PromptFrontendCoder(Coder):
 			"- include a visible running indicator on the currently running step.\n"
 			"- keep the look polished and modern while staying close to the example structure.\n\n"
 			"Store workflow.js context:\n"
-			f"{store_workflow_source}\n\n"
+			f"{truncated_contexts['store_workflow_source']}\n\n"
 			"Node view template context from frontend/src/views/{Node}.vue:\n"
-			f"{node_view_template_context}\n\n"
+			f"{truncated_contexts['node_view_template_context']}\n\n"
 			"Per-step StepRunOutput.card schema context:\n"
-			f"{step_output_card_context}\n\n"
+			f"{truncated_contexts['step_output_card_context']}\n\n"
 			"Step metadata JSON:\n"
 			f"{steps_json}\n\n"
 			"Reference AppShell.vue example:\n"
-			f"{reference_app_shell_source}\n"
+			f"{truncated_contexts['reference_app_shell_source']}\n"
 		)
 
 	def _build_app_css_user_prompt(
@@ -488,17 +483,12 @@ class PromptFrontendCoder(Coder):
 		node_style_context: str,
 		frontend_style_prompt: str,
 	) -> str:
-		reference_app_css_source = self._truncate_prompt_context(
-			reference_app_css_source,
-			label="reference_app_css_source",
-			max_chars=self.vue_reference_context_max_chars,
+		truncated_contexts = self._truncate_prompt_contexts(
 			request_label=self.generation_request_label,
-		)
-		node_style_context = self._truncate_prompt_context(
-			node_style_context,
-			label="node_style_context",
-			max_chars=self.node_ui_context_max_chars,
-			request_label=self.generation_request_label,
+			contexts={
+				"reference_app_css_source": (reference_app_css_source, self.vue_reference_context_max_chars),
+				"node_style_context": (node_style_context, self.node_ui_context_max_chars),
+			},
 		)
 
 		return (
@@ -510,11 +500,11 @@ class PromptFrontendCoder(Coder):
 			"Use the node stylesheet context to make app.css visually fit and complement the generated frontend/src/styles/{Node}.css files without duplicating their component-scoped rules.\n"
 			"Apply the user-defined frontend style guidance below across colors, spacing, typography, surfaces, and visual polish while keeping the stylesheet production-ready.\n\n"
 			"Node stylesheet context from frontend/src/styles/{Node}.css:\n"
-			f"{node_style_context}\n\n"
+			f"{truncated_contexts['node_style_context']}\n\n"
 			"User-defined frontend style guidance:\n"
 			f"{frontend_style_prompt.strip()}\n\n"
 			"Reference app.css example:\n"
-			f"{reference_app_css_source}\n"
+			f"{truncated_contexts['reference_app_css_source']}\n"
 		)
 
 	def _build_app_vue_user_prompt(
@@ -527,29 +517,14 @@ class PromptFrontendCoder(Coder):
 		generated_app_shell_source: str,
 	) -> str:
 		node_names_json = json.dumps(list(node_names), ensure_ascii=False, indent=2)
-		reference_app_source = self._truncate_prompt_context(
-			reference_app_source,
-			label="reference_app_source",
-			max_chars=self.vue_reference_context_max_chars,
+		truncated_contexts = self._truncate_prompt_contexts(
 			request_label=self.generation_request_label,
-		)
-		generated_api_source = self._truncate_prompt_context(
-			generated_api_source,
-			label="generated_api_source",
-			max_chars=self.vue_reference_context_max_chars,
-			request_label=self.generation_request_label,
-		)
-		generated_store_source = self._truncate_prompt_context(
-			generated_store_source,
-			label="generated_store_source",
-			max_chars=self.vue_reference_context_max_chars,
-			request_label=self.generation_request_label,
-		)
-		generated_app_shell_source = self._truncate_prompt_context(
-			generated_app_shell_source,
-			label="generated_app_shell_source",
-			max_chars=self.vue_reference_context_max_chars,
-			request_label=self.generation_request_label,
+			contexts={
+				"reference_app_source": (reference_app_source, self.vue_reference_context_max_chars),
+				"generated_api_source": (generated_api_source, self.vue_reference_context_max_chars),
+				"generated_store_source": (generated_store_source, self.vue_reference_context_max_chars),
+				"generated_app_shell_source": (generated_app_shell_source, self.vue_reference_context_max_chars),
+			},
 		)
 
 		return (
@@ -569,13 +544,13 @@ class PromptFrontendCoder(Coder):
 			"Visible graph node names for imports:\n"
 			f"{node_names_json}\n\n"
 			"Generated api/workflow.js context:\n"
-			f"{generated_api_source}\n\n"
+			f"{truncated_contexts['generated_api_source']}\n\n"
 			"Generated store/workflow.js context:\n"
-			f"{generated_store_source}\n\n"
+			f"{truncated_contexts['generated_store_source']}\n\n"
 			"Generated components/AppShell.vue context:\n"
-			f"{generated_app_shell_source}\n\n"
+			f"{truncated_contexts['generated_app_shell_source']}\n\n"
 			"Reference App.vue example:\n"
-			f"{reference_app_source}\n"
+			f"{truncated_contexts['reference_app_source']}\n"
 		)
 
 	@staticmethod

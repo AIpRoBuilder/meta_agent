@@ -397,6 +397,7 @@ class FrontendAuditor(BaseAuditor):
 			)
 
 		violations.extend(self._audit_app_vue_imports(app_text, workflow_data))
+		violations.extend(self._audit_app_shell_injections(app_shell_text, app_text))
 		violations.extend(self._audit_view_store_imports(frontend_dir))
 		violations.extend(self._audit_view_submit_step_calls(frontend_dir))
 		violations.extend(self._collect_forbidden_vue2_syntax_violations(resolved_files))
@@ -440,6 +441,54 @@ class FrontendAuditor(BaseAuditor):
 						"use injected workflowStore instead."
 					),
 					lineno=cls._line_number_for_pattern(view_text, r"\.\./stores/workflowStore"),
+				)
+			)
+
+		return violations
+
+	@staticmethod
+	def _extract_inject_keys(component_text: str) -> List[str]:
+		inject_keys: List[str] = []
+
+		array_match = re.search(r"inject\s*:\s*\[(.*?)\]", component_text, flags=re.DOTALL)
+		if array_match:
+			inject_keys.extend(re.findall(r"['\"]([^'\"]+)['\"]", array_match.group(1)))
+
+		object_match = re.search(r"inject\s*:\s*\{(.*?)\}\s*(?:,|\n\s*[A-Za-z_])", component_text, flags=re.DOTALL)
+		if object_match:
+			object_body = object_match.group(1)
+			inject_keys.extend(re.findall(r"from\s*:\s*['\"]([^'\"]+)['\"]", object_body))
+			for property_name in re.findall(r"(^|,)\s*([A-Za-z_$][\w$]*)\s*:", object_body):
+				candidate = property_name[1]
+				if candidate not in inject_keys:
+					inject_keys.append(candidate)
+
+		seen: set[str] = set()
+		ordered_keys: List[str] = []
+		for key in inject_keys:
+			if key in seen:
+				continue
+			seen.add(key)
+			ordered_keys.append(key)
+
+		return ordered_keys
+
+	@classmethod
+	def _audit_app_shell_injections(cls, app_shell_text: str, app_text: str) -> List[RuleViolation]:
+		violations: List[RuleViolation] = []
+		for inject_key in cls._extract_inject_keys(app_shell_text):
+			provide_pattern = rf"provide\s*\(\s*['\"]{re.escape(inject_key)}['\"]\s*,\s*store\s*\)"
+			if re.search(provide_pattern, app_text):
+				continue
+
+			violations.append(
+				RuleViolation(
+					class_name="(frontend)",
+					rule="app_shell_inject_not_provided",
+					detail=(
+						f"App.vue must provide('{inject_key}', store) for the injected dependency used by AppShell.vue"
+					),
+					lineno=cls._line_number_for_pattern(app_shell_text, rf"['\"]{re.escape(inject_key)}['\"]"),
 				)
 			)
 

@@ -32,6 +32,7 @@ export default defineComponent({
   },
   setup() {
     const store = createWorkflowStore()
+    provide('store', store)
     provide('workflowStore', store)
     store.initialize()
 
