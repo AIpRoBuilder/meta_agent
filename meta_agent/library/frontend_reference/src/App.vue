@@ -31,10 +31,9 @@ export default defineComponent({
     AppShell,
   },
   setup() {
-    const store = createWorkflowStore()
-    provide('store', store)
-    provide('workflowStore', store)
-    store.initialize()
+    const workflowStore = createWorkflowStore()
+    provide('workflowStore', workflowStore)
+    workflowStore.initialize()
 
     const currentHash = ref(window.location.hash)
 
@@ -43,12 +42,12 @@ export default defineComponent({
     }
 
     function isKnownStep(stepId) {
-      return store.steps.some((step) => step.id === stepId)
+      return workflowStore.steps.some((step) => step.id === stepId)
     }
 
     const activeStepId = computed(() => {
       const stepId = normalizeStepId(currentHash.value)
-      return isKnownStep(stepId) ? stepId : store.steps[0].id
+      return isKnownStep(stepId) ? stepId : workflowStore.steps[0].id
     })
 
     const activeView = computed(() => viewMap[activeStepId.value] || viewMap.GetSystemTime)
@@ -64,13 +63,13 @@ export default defineComponent({
     function handleHashChange() {
       currentHash.value = window.location.hash
       if (!isKnownStep(normalizeStepId(currentHash.value))) {
-        setRoute(store.steps[0].id)
+        setRoute(workflowStore.steps[0].id)
       }
     }
 
     onMounted(() => {
       if (!window.location.hash) {
-        setRoute(store.steps[0].id)
+        setRoute(workflowStore.steps[0].id)
       }
       window.addEventListener('hashchange', handleHashChange)
     })

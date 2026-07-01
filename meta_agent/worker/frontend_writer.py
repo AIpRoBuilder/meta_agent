@@ -454,7 +454,7 @@ class PromptFrontendCoder(Coder):
 			"Import ../styles/app.css in the component's style block and keep the main visual system there; only add minimal scoped local styles when necessary.\n"
 			"Required UI behavior:\n"
 			"- show a top bar with session badge, progress, New Session, and Reset Session actions.\n"
-			"- render one workflow card per step from store.steps and keep cards progressive by unlocked state.\n"
+			"- render one workflow card per step from workflowStore.steps and keep cards progressive by unlocked state.\n"
 			"- arrange the step cards in a strict vertical column with exactly one card per row (no multi-column card grid).\n"
 			"- keep the conversation bar centered along the middle bottom of the page when the workflow uses conversational input.\n"
 			"- render status badges for locked/active/running/completed/error.\n"
