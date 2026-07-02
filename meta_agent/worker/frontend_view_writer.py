@@ -112,7 +112,6 @@ class FrontendViewCoder(Coder):
 			label="node_python_context",
 			max_chars=self.node_python_context_max_chars,
 		)
-		print("node_name html: ", node_html_context)
 
 		return (
 			f"Generate one Vue single-file component named {node_name}.vue.\n"
