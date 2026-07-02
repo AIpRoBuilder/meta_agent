@@ -806,7 +806,7 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "By default, do not implement any custom methods; rely on WorkflowFileNode base behavior.\n"
             "Only when ext_data.remote_desc is present, implement save_files_remote(files, session_state) according to remote_desc.\n"
-            "saved_files contains uploaded files already persisted by WorkflowFileNode save_files/save_files_remote, including original fileName and saved location.\n"
+            "saved_files contains uploaded files already persisted by WorkflowFileNode save_files/save_files_remote, including original fileName(fileName) and saved location(path).\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
             "Ensure this node expects user file input and supports multiple uploaded files.\n\n"
         )
