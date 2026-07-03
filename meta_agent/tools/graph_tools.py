@@ -59,7 +59,7 @@ def _load_graph_json(source: Any) -> MutableMapping[str, Any]:
     if isinstance(source, (str, Path)):
         path = Path(str(source))
         if path.exists():
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         try:
             return json.loads(str(source))
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
