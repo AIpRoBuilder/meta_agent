@@ -816,6 +816,56 @@ class NodePlanner:
 		output_target.write_text(written.read_text(encoding="utf-8"), encoding="utf-8")
 		return output_target
 
+	def _regenerate_single_node_ui(
+		self,
+		node: dict[str, Any],
+		index: int,
+		requirement_text: str,
+		output_path: str,
+		*,
+		overwrite: bool = True,
+		temperature: float = 0.2,
+		max_tokens: int = MAX_TOKENS,
+	) -> Path:
+		node_name = str(node.get("name", "")).strip() or f"Node{index}"
+		output_target = Path(output_path)
+		outputs: dict[str, Path] = {}
+		element = _NodeUIElement(
+			planner=self,
+			node=node,
+			index=index,
+			target_dir=output_target.parent,
+			requirement_text=requirement_text,
+			overwrite=overwrite,
+			temperature=temperature,
+			max_tokens=max_tokens,
+			outputs=outputs,
+		)
+		status = element.run()
+		if status.isErr():
+			raise RuntimeError(f"node ui regeneration failed for '{node_name}': {status.getInfo()}")
+
+		written = outputs.get(node_name)
+		if written is None:
+			written = element.target_dir / self._node_ui_filename(node, index)
+		if not written.exists():
+			raise RuntimeError(
+				f"node ui regeneration did not produce expected output file for '{node_name}': {written}"
+			)
+
+		if written.resolve() != output_target.resolve():
+			if output_target.exists() and not overwrite:
+				raise FileExistsError(f"Output file exists and overwrite=False: {output_target}")
+			output_target.parent.mkdir(parents=True, exist_ok=True)
+			output_target.write_text(written.read_text(encoding="utf-8"), encoding="utf-8")
+			written = output_target
+
+		if not isinstance(self.ui_elements, dict):
+			self.ui_elements = {}
+		self.ui_elements[node_name] = element
+		self.ui_elements[node_name].outputs[node_name] = written
+		return written
+
 	def amend_graph_node(
 		self,
 		node_name: str,
@@ -824,6 +874,7 @@ class NodePlanner:
 		graph_plan_text: str,
 		graph_output_path: str,
 		node_output_path: str,
+		node_ui_output_path: str | None = None,
 		*,
 		overwrite: bool = True,
 		temperature: float = 0.2,
@@ -849,6 +900,18 @@ class NodePlanner:
 			temperature=temperature,
 			max_tokens=max_tokens,
 		)
+		if self._should_generate_node_ui(normalized_node) and node_ui_output_path:
+			self._regenerate_single_node_ui(
+				node=normalized_node,
+				index=node_index,
+				requirement_text=requirement_text,
+				output_path=node_ui_output_path,
+				overwrite=overwrite,
+				temperature=temperature,
+				max_tokens=max_tokens,
+			)
+		elif isinstance(self.ui_elements, dict):
+			self.ui_elements.pop(node_name, None)
 		return graph_path, node_plan_path
 
 	def amend_graph_node_from_files(
@@ -858,6 +921,7 @@ class NodePlanner:
 		requirement_md_path: str,
 		graph_plan_json_path: str,
 		node_output_path: str,
+		node_ui_output_path: str | None = None,
 		graph_output_path: str | None = None,
 		*,
 		overwrite: bool = True,
@@ -884,6 +948,7 @@ class NodePlanner:
 			graph_plan_text=graph_plan_text,
 			graph_output_path=dest_graph_path,
 			node_output_path=node_output_path,
+			node_ui_output_path=node_ui_output_path,
 			overwrite=overwrite,
 			temperature=temperature,
 			max_tokens=max_tokens,

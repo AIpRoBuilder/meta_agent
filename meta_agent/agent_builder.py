@@ -569,6 +569,8 @@ class AgentBuilder:
         target_markdown_path = output_path or existing_markdown_path
         if target_markdown_path is None:
             target_markdown_path = os.path.join(self.root_dir, "node_docs", f"{node_name}.md")
+        target_html_dir = getattr(self, "node_html_dir", os.path.join(self.root_dir, "node_ui"))
+        target_html_path = os.path.join(target_html_dir, f"{node_name}.html")
 
         print(f"Amending node markdown '{node_name}' -> {target_markdown_path}")
         amended_graph_path, amended_doc_path = self.node_planner.amend_graph_node_from_files(
@@ -577,6 +579,7 @@ class AgentBuilder:
             requirement_md_path=self.requirement_md_path,
             graph_plan_json_path=self.graph_plan_path,
             node_output_path=target_markdown_path,
+            node_ui_output_path=target_html_path,
             overwrite=overwrite,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -594,6 +597,17 @@ class AgentBuilder:
         updated_paths.append(final_path)
         self.node_doc_paths = updated_paths
         self.last_amended_node_doc_path = final_path
+
+        node_meta = self.planned_graph.get_node_meta(node_name)
+        existing_html_paths = list(getattr(self, "node_html_paths", []) or [])
+        expected_html_name = f"{node_name}.html"
+        self.node_html_paths = [
+            path for path in existing_html_paths if Path(path).name != expected_html_name
+        ]
+        if node_meta and node_meta.show_frontend:
+            self.node_html_dir = str(Path(target_html_path).parent)
+            self.node_html_paths.append(target_html_path)
+            self.last_amended_node_ui_path = target_html_path
         return final_path
 
     def _build_steps_meta(self, include_hidden_nodes: bool = False) -> List[Dict[str, Any]]:
