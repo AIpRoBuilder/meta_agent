@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -86,6 +87,14 @@ class FrontendViewCoder(Coder):
 
 		return path.read_text(encoding="utf-8")
 
+	@staticmethod
+	def _strip_script_blocks(html_text: str) -> str:
+		return re.sub(r"<script\b[^>]*>.*?</script>", "", html_text, flags=re.IGNORECASE | re.DOTALL)
+
+	@staticmethod
+	def _strip_style_blocks(html_text: str) -> str:
+		return re.sub(r"<style\b[^>]*>.*?</style>", "", html_text, flags=re.IGNORECASE | re.DOTALL)
+
 	def _build_vue_user_prompt(
 		self,
 		*,
@@ -102,6 +111,7 @@ class FrontendViewCoder(Coder):
 			label="graph_plan_context",
 			max_chars=self.graph_plan_context_max_chars,
 		)
+		node_html_context = self._strip_style_blocks(node_html_context)
 		node_html_context = truncate_context(
 			node_html_context,
 			label="node_html_context",
@@ -126,6 +136,7 @@ class FrontendViewCoder(Coder):
 			f"{style_filename}\"></style> at the end of the file.\n"
 			"Prefer Vue options API to match the reference project.\n"
 			"Treat the provided HTML context as the primary source for the <template> block and preserve it as literally as possible.\n"
+			"Ignore any <style>...</style> blocks from the source context and derive the template only from the remaining markup.\n"
 			"Keep the same tag hierarchy, section ordering, class names, attributes, and visible text unless a change is required to produce valid Vue syntax or wire required workflow behavior.\n"
 			"Do not redesign, summarize, or replace the HTML context with a different layout; only make the smallest Vue-specific edits needed for bindings, events, conditionals, loops, and accessibility.\n"
 			"If the HTML context already contains suitable form controls or actions, keep them and adapt them instead of inventing new markup.\n"
@@ -154,6 +165,7 @@ class FrontendViewCoder(Coder):
 			label="graph_plan_context",
 			max_chars=self.graph_plan_context_max_chars,
 		)
+		node_html_context = self._strip_script_blocks(node_html_context)
 		node_html_context = truncate_context(
 			node_html_context,
 			label="node_html_context",
@@ -164,8 +176,11 @@ class FrontendViewCoder(Coder):
 			f"Generate one CSS stylesheet named {node_name}.css.\n"
 			"Return only runnable CSS with no markdown fences or explanation.\n"
 			"Use the HTML context as the primary source for selectors, section structure, and visual hierarchy.\n"
+			"Preserve the visual style, tone, spacing cues, and component character implied by the HTML context as much as possible.\n"
 			"Preserve the HTML context as literally as possible when deriving selectors and section-level styling targets.\n"
+			"Ignore any <script>...</script> blocks from the source context and derive styles only from the remaining markup.\n"
 			"Keep the same class names, ids, attributes, section ordering, and tag hierarchy assumptions unless a small change is required to produce valid, maintainable CSS.\n"
+			"Do not restyle the page into a different aesthetic; keep the original look-and-feel direction unless a minimal adjustment is required for responsive or maintainable CSS.\n"
 			"Do not redesign, summarize, or replace the HTML-derived structure with a different selector strategy; make the smallest CSS-specific additions needed to style the provided markup.\n"
 			"Scope selectors to the node page so styles stay local to this view.\n"
 			"Implement a dedicated step card surface in this node stylesheet that is sized to approximately one-third of the page (target about one-third viewport width and one-third viewport height, e.g. around 33vw x 33vh) while keeping it responsive on smaller screens.\n"
