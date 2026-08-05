@@ -34,6 +34,7 @@ setup(
 			"auditor/prompts/*.md",
 			"demand_analyzer/prompts/*.md",
 			"worker/prompts/*.md",
+			"worker/templates/*.tmpl",
 			"library/*.md",
 			"library/*.html",
 		],
