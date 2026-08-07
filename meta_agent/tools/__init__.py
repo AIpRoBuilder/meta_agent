@@ -14,6 +14,14 @@ from .file_tools import (
 	filter_merge_python_imports,
 	merge_text_files,
 )
+from .agent_builder_tools import (
+	build_frontend_node_paths,
+	build_frontend_src_file_map,
+	create_minimal_vue_frontend_scaffold,
+	get_language_extension,
+	get_reference_frontend_src_dir,
+	select_python_command,
+)
 from .text_tools import normalize_requirement_analysis_result, truncate_context
 
 __all__ = [
@@ -29,6 +37,12 @@ __all__ = [
 	"filter_merge_python_imports",
 	"compile_node_file_and_get_step_output_card_schema",
 	"compile_node_file_and_get_derived_keys",
+	"get_reference_frontend_src_dir",
+	"get_language_extension",
+	"build_frontend_node_paths",
+	"build_frontend_src_file_map",
+	"select_python_command",
+	"create_minimal_vue_frontend_scaffold",
 	"normalize_requirement_analysis_result",
 	"truncate_context",
 ]
