@@ -27,6 +27,7 @@ from meta_agent.worker.node_writer import (
 from meta_agent.worker.frontend_view_writer import FrontendViewCoder
 from meta_agent.worker.frontend_writer import PromptFrontendCoder
 from meta_agent.demand_analyzer import RequirementDisector
+from meta_agent.logging_utils import configure_runtime_logging, get_logger
 from meta_agent.tools.agent_builder_tools import (
     build_frontend_node_paths,
     build_frontend_src_file_map,
@@ -52,7 +53,13 @@ class _NodeGenerateElement(GElement):
     def run(self) -> CStatus:
         try:
             out_dir = os.path.join(self.builder.root_dir, self.node_name)
-            print(f"[{self.node_index}/{self.total}] Generating node '{self.node_name}' -> {out_dir}.py")
+            self.builder._logger.info(
+                "[%s/%s] Generating node '%s' -> %s.py",
+                self.node_index,
+                self.total,
+                self.node_name,
+                out_dir,
+            )
 
             # create a node-specific coder for this metadata type
             file_path = self.coder.write_node_from_requirement(
@@ -73,10 +80,21 @@ class _NodeGenerateElement(GElement):
                     graph_plan_path=self.builder.graph_plan_path,
                 )
                 if ok:
-                    print(f"[{self.node_index}/{self.total}] Node audit passed: {self.node_name}")
+                    self.builder._logger.info(
+                        "[%s/%s] Node audit passed: %s",
+                        self.node_index,
+                        self.total,
+                        self.node_name,
+                    )
                     break
                 amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-                print(f"[{self.node_index}/{self.total}] Node audit failed: {self.node_name}. {amendment} Applying amendment...")
+                self.builder._logger.warning(
+                    "[%s/%s] Node audit failed: %s. %s Applying amendment...",
+                    self.node_index,
+                    self.total,
+                    self.node_name,
+                    amendment,
+                )
                 self.coder.amend_code_with_feedback(
                     out_dir,
                     amendment,
@@ -92,7 +110,14 @@ class _NodeGenerateElement(GElement):
 
             return CStatus()
         except Exception as exc:
-            print(f"[{self.node_index}/{self.total}] Node generation failed for {self.node_name}: {exc}")
+            self.builder._logger.error(
+                "[%s/%s] Node generation failed for %s: %s",
+                self.node_index,
+                self.total,
+                self.node_name,
+                exc,
+                exc_info=True,
+            )
             return CStatus(1001, f"node generation failed for {self.node_name}: {exc}")
 
 
@@ -132,7 +157,13 @@ class _FrontendViewGenerateElement(GElement):
             style_filename = f"{self.node_name}.css"
             view_path = self.output_base_dir / "views" / f"{self.node_name}.vue"
             style_path = self.output_base_dir / "styles" / style_filename
-            print(f"[{self.node_index}/{self.total}] Generating frontend view '{self.node_name}' -> {view_path}")
+            self.builder._logger.info(
+                "[%s/%s] Generating frontend view '%s' -> %s",
+                self.node_index,
+                self.total,
+                self.node_name,
+                view_path,
+            )
 
             node_html_context = self.coder._read_context_file(
                 self.context_base_dir,
@@ -178,6 +209,14 @@ class _FrontendViewGenerateElement(GElement):
                 self.generated_outputs[self.node_name] = node_generated
             return CStatus()
         except Exception as exc:
+            self.builder._logger.error(
+                "[%s/%s] Frontend view generation failed for %s: %s",
+                self.node_index,
+                self.total,
+                self.node_name,
+                exc,
+                exc_info=True,
+            )
             return CStatus(1002, f"frontend view generation failed for {self.node_name}: {exc}")
                 
 class AgentBuilder:
@@ -192,6 +231,8 @@ class AgentBuilder:
         frontend_style_prompt: Optional[str] = None,
         services_root_path: Optional[str] = None,
         skills_root_path: Optional[str] = None,
+        log_level: str | int | None = None,
+        log_filename: str = "meta_agent_debug.log",
     ):
         self.api_key = api_key
         self.model = model
@@ -201,6 +242,24 @@ class AgentBuilder:
         self.services_root_path = services_root_path.strip() if isinstance(services_root_path, str) else ""
         self.skills_root_path = skills_root_path.strip() if isinstance(skills_root_path, str) else ""
         os.makedirs(self.root_dir, exist_ok=True)
+        self.log_level = log_level or os.getenv("META_AGENT_LOG_LEVEL", "INFO")
+        self.runtime_log_path = str(
+            configure_runtime_logging(
+                self.root_dir,
+                log_filename=log_filename,
+                console_level=self.log_level,
+            )
+        )
+        self._logger = get_logger(__name__)
+        self._logger.info(f"Runtime log file: {self.runtime_log_path}")
+        self._logger.debug(
+            "Initialized AgentBuilder with model=%s provider=%s root_dir=%s services_root_path=%s skills_root_path=%s",
+            self.model,
+            self.provider,
+            Path(self.root_dir).expanduser().resolve(),
+            self.services_root_path,
+            self.skills_root_path,
+        )
 
         self._progress_total = 0
         self._progress_current = 0
@@ -232,6 +291,11 @@ class AgentBuilder:
         self.frontend_server_process: Optional[Any] = None
 
     def _reset_llm_components(self) -> None:
+        self._logger.debug(
+            "Resetting LLM-backed components for model=%s provider=%s",
+            self.model,
+            self.provider,
+        )
         self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
         self.planner = GraphPlanner(
             api_key=self.api_key,
@@ -262,6 +326,7 @@ class AgentBuilder:
             self.model = model
         if provider is not None:
             self.provider = provider
+        self._logger.info("Resetting LLM configuration.")
         self._reset_llm_components()
 
     def _make_node_coder(self, node_meta: Any) -> PromptNodeFileCoderBase:
@@ -521,7 +586,7 @@ class AgentBuilder:
         for audit_round in range(1, max_audit_rounds + 1):
             ok, violations = self.frontend_auditor.audit_frontend_file(frontend_path)
             if ok:
-                print("frontend audit passed for mode=vue_src.")
+                self._logger.info("Frontend audit passed for mode=vue_src.")
                 return
             last_amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
             if audit_round >= max_audit_rounds:
@@ -553,7 +618,7 @@ class AgentBuilder:
                 )
 
             for target_file, file_feedback in grouped_feedback.items():
-                print(f"frontend audit failed. Applying amendment to {target_file} ...")
+                self._logger.warning("Frontend audit failed. Applying amendment to %s ...", target_file)
                 self.frontend_writer.amend_code_with_feedback(
                     file_path=str(target_file),
                     rule_violations="\n".join(file_feedback),
@@ -673,7 +738,7 @@ class AgentBuilder:
     def _start_progress(self, total_steps: int) -> None:
         self._progress_total = max(1, total_steps)
         self._progress_current = 0
-        print(f"Pipeline started. Total steps: {self._progress_total}")
+        self._logger.info(f"Pipeline started. Total steps: {self._progress_total}")
         self._print_progress_bar("Initializing")
 
     def _advance_progress(self, message: str) -> None:
@@ -685,7 +750,7 @@ class AgentBuilder:
         filled = int(self._progress_width * ratio)
         bar = "#" * filled + "-" * (self._progress_width - filled)
         pct = int(ratio * 100)
-        print(f"[{bar}] {self._progress_current}/{self._progress_total} ({pct:3d}%) | {message}")
+        self._logger.info(f"[{bar}] {self._progress_current}/{self._progress_total} ({pct:3d}%) | {message}")
 
     def analyze_requirement(self, requirement_text: Optional[str] = None, requirement_file: Optional[str] = None, out_file: str = "requirement_analysis.md") -> str:
         """Produce a requirement analysis markdown file.
@@ -697,10 +762,16 @@ class AgentBuilder:
         if requirement_file:
             self.requirement_md_path = requirement_file
             self.requirement_analysis_result = None
+            self._logger.info("Using existing requirement file -> %s", requirement_file)
             return requirement_file
 
         out_path = os.path.join(self.root_dir, out_file)
-        print(f"Analyzing requirement -> {out_path}")
+        self._logger.info("Analyzing requirement -> %s", out_path)
+        self._logger.debug(
+            "Requirement analysis input length=%s output_file=%s",
+            len(requirement_text or ""),
+            out_path,
+        )
         result = self.analyzer.analyze(requirement_text or "", out_path)
         self.requirement_md_path = str(result.output_path)
         self.requirement_analysis_result = {
@@ -725,17 +796,17 @@ class AgentBuilder:
             raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
 
         self.graph_plan_path = os.path.join(self.root_dir, graph_plan_filename)
-        print(f"Planning graph -> {self.graph_plan_path}")
+        self._logger.info("Planning graph -> %s", self.graph_plan_path)
         self.planner.plan_from_file(self.requirement_md_path, self.graph_plan_path)
 
         while True:
             self.planned_graph = Graph(self.graph_plan_path)
             ok, violations = self.graph_auditor.audit_graph_json(self.planned_graph)
             if ok:
-                print("Graph plan audit passed.")
+                self._logger.info("Graph plan audit passed.")
                 break
             amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-            print(f"Graph audit failed. Applying amendment {amendment}...")
+            self._logger.warning("Graph audit failed. Applying amendment %s...", amendment)
             self.planner.amend_file_with_feedback(self.graph_plan_path, amendment, temperature=temperature)
         self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
         return self.graph_plan_path
@@ -764,10 +835,10 @@ class AgentBuilder:
             self.planned_graph = Graph(self.graph_plan_path)
             ok, violations = self.graph_auditor.audit_graph_json(self.planned_graph)
             if ok:
-                print("Graph amendment audit passed.")
+                self._logger.info("Graph amendment audit passed.")
                 break
             amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-            print("Graph amendment audit failed. Applying amendment...")
+            self._logger.warning("Graph amendment audit failed. Applying amendment...")
 
         self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
         return self.graph_plan_path
@@ -848,7 +919,7 @@ class AgentBuilder:
         """Generate one markdown planning doc per node using NodePlanner."""
 
         output_dir = os.path.join(self.root_dir, output_dirname)
-        print(f"Generating per-node markdown plans -> {output_dir}")
+        self._logger.info("Generating per-node markdown plans -> %s", output_dir)
         node_doc_paths = self.node_planner.plan_each_from_files(
             requirement_md_path=requirement_md_path,
             graph_plan_json_path=graph_plan_path,
@@ -870,7 +941,7 @@ class AgentBuilder:
         """Generate one HTML interaction file per node using NodePlanner."""
 
         output_dir = os.path.join(self.root_dir, output_dirname)
-        print(f"Generating per-node HTML UIs -> {output_dir}")
+        self._logger.info("Generating per-node HTML UIs -> %s", output_dir)
         node_html_paths = self.node_planner.plan_each_ui_from_files(
             requirement_md_path=requirement_md_path,
             graph_plan_json_path=graph_plan_path,
@@ -1323,7 +1394,7 @@ class AgentBuilder:
         if target_html_path is None:
             target_html_path = os.path.join(self.root_dir, "node_ui", f"{node_name}.html")
 
-        print(f"Amending node UI '{node_name}' -> {target_html_path}")
+        self._logger.info("Amending node UI '%s' -> %s", node_name, target_html_path)
         amended_path = self.node_planner.amend_node_ui_from_files(
             node_name=node_name,
             user_prompt=amendment,
@@ -1374,7 +1445,7 @@ class AgentBuilder:
         target_html_dir = getattr(self, "node_html_dir", os.path.join(self.root_dir, "node_ui"))
         target_html_path = os.path.join(target_html_dir, f"{node_name}.html")
 
-        print(f"Amending node markdown '{node_name}' -> {target_markdown_path}")
+        self._logger.info("Amending node markdown '%s' -> %s", node_name, target_markdown_path)
         amended_graph_path, amended_doc_path = self.node_planner.amend_graph_node_from_files(
             node_name=node_name,
             user_prompt=amendment,
@@ -1518,7 +1589,7 @@ class AgentBuilder:
         frontend_path = os.path.join(self.root_dir, output_filename+"/src")
         frontend_project_dir = os.path.join(self.root_dir, output_filename)
         self._ensure_vue_frontend_project(frontend_project_dir, backend_port=backend_port)
-        print(f"Generating frontend -> {frontend_path}")
+        self._logger.info("Generating frontend -> %s", frontend_path)
         steps_meta = self._build_steps_meta()
         store_steps_meta = self._build_steps_meta(include_hidden_nodes=True)
 
@@ -1530,7 +1601,7 @@ class AgentBuilder:
             effective_style_prompt = self.frontend_style_prompt
         if isinstance(effective_style_prompt, str):
             effective_style_prompt = effective_style_prompt.strip() or None
-        print("starting frontend generation with style prompt:", repr(effective_style_prompt))
+        self._logger.debug("Starting frontend generation with style prompt=%r", effective_style_prompt)
 
         if frontend_mode != "vue_src":
             raise ValueError("frontend_mode must be 'vue_src'.")
@@ -1599,12 +1670,12 @@ class AgentBuilder:
                 vue_executable = shutil.which("vue")
                 if not vue_executable:
                     create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-                    print(
+                    self._logger.warning(
                         "warning: Vue CLI is not installed or not available on PATH; "
                         f"using minimal frontend scaffold at {resolved_frontend_dir}"
                     )
                 else:
-                    print(f"Creating Vue frontend project -> {resolved_frontend_dir}")
+                    self._logger.info("Creating Vue frontend project -> %s", resolved_frontend_dir)
                     try:
                         subprocess.run(
                             [vue_executable, "create", resolved_frontend_dir.name, "--default"],
@@ -1618,14 +1689,14 @@ class AgentBuilder:
                         stdout = exc.stdout.strip() if exc.stdout else ""
                         detail = stderr or stdout or str(exc)
                         create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-                        print(
+                        self._logger.warning(
                             "warning: vue create failed; "
                             f"using minimal frontend scaffold at {resolved_frontend_dir}. "
                             f"Original error: {detail}"
                         )
                     except OSError as exc:
                         create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-                        print(
+                        self._logger.warning(
                             "warning: vue command execution failed; "
                             f"using minimal frontend scaffold at {resolved_frontend_dir}. "
                             f"Original error: {exc}"
@@ -1656,7 +1727,7 @@ class AgentBuilder:
         generated_main_output_path: str | None = None
         if generate_main_entrypoint:
             self.main_output_path = os.path.join(self.root_dir, output_filename)
-            print(f"Generating main entrypoint -> {self.main_output_path}")
+            self._logger.info("Generating main entrypoint -> %s", self.main_output_path)
             self.main_writer.write_main_entrypoint(
                 project_root_path=self.root_dir,
                 graph_plan_json_path=graph_plan_path or "",
@@ -1673,13 +1744,13 @@ class AgentBuilder:
                     str(self.root_dir),
                 )
                 if ok:
-                    print("Main entrypoint audit passed.")
+                    self._logger.info("Main entrypoint audit passed.")
                     break
                 amendment = "\n".join(
                     [f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations]
                 )
-                print(amendment)
-                print("Main entrypoint audit failed. Applying amendment...")
+                self._logger.warning(amendment)
+                self._logger.warning("Main entrypoint audit failed. Applying amendment...")
                 self.main_writer.amend_code_with_feedback(
                     self.main_output_path,
                     amendment,
@@ -1871,7 +1942,8 @@ class AgentBuilder:
             log_file.write(f"\n{'='*50}\n")
             log_file.write(f"Test ended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-        print(f"Test log written to: {self.log_path}")
+        self._logger.info("Test log written to: %s", self.log_path)
+        self._logger.debug("Main entrypoint test log generated for %s", abs_path)
 
         # after writing the log, run the output auditor and apply amendments if needed
         finished = self.amend_by_log(self.log_path)
@@ -1922,7 +1994,7 @@ class AgentBuilder:
                                     break
 
                 try:
-                    print(f"Applying amendment to {fname}: {detail}")
+                    self._logger.warning("Applying amendment to %s: %s", fname, detail)
                     current_node_name = Path(target_path).stem
                     coder.amend_code_with_feedback(
                         target_path,
@@ -1934,7 +2006,7 @@ class AgentBuilder:
                         temperature=0.3,
                     )
                 except Exception as e:
-                    print(f"Failed to amend {fname}: {e}")
+                    self._logger.error("Failed to amend %s: %s", fname, e, exc_info=True)
         return ok
 
     def run_full_pipeline(
@@ -1998,12 +2070,12 @@ class AgentBuilder:
             )
             self._advance_progress("Per-node HTML interaction files generated")
 
-        print("Starting node generation and audit...")
+        self._logger.info("Starting node generation and audit...")
         self.generate_nodes(language="python", temperature=0.0)
-        print("All nodes generated and audited successfully.")
+        self._logger.info("All nodes generated and audited successfully.")
         self._advance_progress("Node files generated and audited")
 
-        print("Generating frontend...")
+        self._logger.info("Generating frontend...")
         self.generate_frontend(
             output_filename=os.path.join("frontend", "src"),
             frontend_mode=frontend_mode,
@@ -2014,7 +2086,7 @@ class AgentBuilder:
         )
         self._advance_progress(f"frontend generated and audited ({frontend_mode})")
 
-        print("Generating main entrypoint...")
+        self._logger.info("Generating main entrypoint...")
         main_entrypoint_path = self.generate_main_entrypoint(
             self.graph_plan_path,
             output_filename="main.py",
@@ -2023,7 +2095,7 @@ class AgentBuilder:
         self._advance_progress("main.py generated and audited")
 
         if test_after_generation:
-            print("Testing main.py...")
+            self._logger.info("Testing main.py...")
             while True:
                 finished = self.test_main_entrypoint(
                     main_entrypoint_path,
@@ -2031,18 +2103,18 @@ class AgentBuilder:
                     graph_plan_path=self.graph_plan_path,
                 )
                 if finished:
-                    print("run sim tests all passed!")
+                    self._logger.info("run sim tests all passed!")
                     break
                 else:
-                    print("Amendments applied based on test log. Retesting...")
+                    self._logger.warning("Amendments applied based on test log. Retesting...")
             self._advance_progress("main.py test and amendment loop completed")
 
-        print("Build outputs:")
-        print(f"- graph_plan_path.json: {self.graph_plan_path}")
+        self._logger.info("Build outputs:")
+        self._logger.info("- graph_plan_path.json: %s", self.graph_plan_path)
         if generate_node_docs:
-            print(f"- node_docs/: {getattr(self, 'node_docs_dir', '')}")
+            self._logger.info("- node_docs/: %s", getattr(self, "node_docs_dir", ""))
         if generate_node_html:
-            print(f"- node_ui/: {getattr(self, 'node_html_dir', '')}")
-        print(f"- frontend: {self.frontend_output_path}")
-        print(f"- main.py: {self.main_output_path}")
+            self._logger.info("- node_ui/: %s", getattr(self, "node_html_dir", ""))
+        self._logger.info("- frontend: %s", self.frontend_output_path)
+        self._logger.info("- main.py: %s", self.main_output_path)
 

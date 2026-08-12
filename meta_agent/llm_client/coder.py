@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from meta_agent.logging_utils import get_logger
+
 try:  # Optional dependency for OpenAI-compatible clients (OpenAI + DeepSeek)
     from openai import OpenAI
 except Exception:  # pragma: no cover - handled at runtime
@@ -42,6 +44,7 @@ def _resolve_max_tokens() -> int:
 
 
 MAX_TOKENS = _resolve_max_tokens()
+LOGGER = get_logger(__name__)
 
 
 def _resolve_timeout(provider: str) -> Optional[float]:
@@ -198,6 +201,15 @@ class Coder:
         if self.timeout is not None and _accepts_keyword(self.client.chat.completions.create, "timeout"):
             extra_kwargs["timeout"] = self.timeout
 
+        LOGGER.debug(
+            "Submitting LLM request provider=%s model=%s temperature=%s max_tokens=%s prompt_chars=%s",
+            self.provider,
+            self.model,
+            temperature,
+            max_tokens,
+            len(user_prompt),
+        )
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -210,6 +222,13 @@ class Coder:
                 **extra_kwargs,
             )
         except Exception as exc:  # pragma: no cover - runtime failures
+            LOGGER.error(
+                "LLM call failed provider=%s model=%s: %s",
+                self.provider,
+                self.model,
+                exc,
+                exc_info=True,
+            )
             raise LLMGenerationError(f"LLM call failed: {exc}") from exc
 
         content = ""
@@ -218,7 +237,12 @@ class Coder:
             content = getattr(getattr(choice, "message", None), "content", "") or ""
 
         if not content:
-            print(response)
+            LOGGER.error(
+                "LLM returned empty content provider=%s model=%s response=%r",
+                self.provider,
+                self.model,
+                response,
+            )
             raise LLMGenerationError("LLM returned empty content.")
 
         return _strip_code_fence(content)
@@ -232,6 +256,7 @@ class Coder:
         if path.exists() and not overwrite:
             raise FileExistsError(f"File already exists and overwrite is False: {path}")
 
+        LOGGER.debug("Writing generated code to %s overwrite=%s", path, overwrite)
         path.write_text(code, encoding="utf-8")
         return path
 

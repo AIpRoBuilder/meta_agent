@@ -15,6 +15,7 @@ ROOT_DIR = bootstrap_package_root(__file__)
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
 from meta_agent.architect.graph import NodeMeta
+from meta_agent.logging_utils import get_logger
 from meta_agent.tools import graph_to_nodes
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
 from meta_agent.tools.function_tools import _run_stage
@@ -23,6 +24,7 @@ from meta_agent.tools.text_tools import normalize_requirement_analysis_result, t
 
 _DEFAULT_VUE_FRONTEND_REFERENCE_DIR = Path("/Users/xiechuxi/Desktop/codes/education_workflow/frontend/src")
 _BUNDLED_VUE_FRONTEND_REFERENCE_DIR = ROOT_DIR / "library" / "frontend_reference" / "src"
+LOGGER = get_logger(__name__)
 
 
 @dataclass
@@ -1174,7 +1176,7 @@ class PromptFrontendCoder(Coder):
 			temperature=temperature,
 			max_tokens=app_max_tokens,
 		)
-		print(f"finished writing frontend files to: {base_dir}")
+		LOGGER.info("finished writing frontend files to: %s", base_dir)
 
 		return {
 			"api": api_output,
