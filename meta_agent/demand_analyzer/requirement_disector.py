@@ -110,16 +110,14 @@ class RequirementDisector(Coder):
 		if target_path.suffix.lower() != ".md":
 			target_path = target_path.with_suffix(".md")
 
-		requirement_analysis = self.generate_code(
+		written_path = self.code_to_file(
 			user_prompt,
+			str(target_path),
+			overwrite=overwrite,
 			temperature=temperature,
 			max_tokens=max_tokens,
 		)
-		written_path = self.write_code_to_file(
-			requirement_analysis,
-			str(target_path),
-			overwrite=overwrite,
-		)
+		requirement_analysis = written_path.read_text(encoding="utf-8")
 		classification = self._classify_cron_task(
 			user_prompt,
 			requirement_analysis,

@@ -3,7 +3,8 @@
 The `Coder` class wraps a chat model call and writes the generated code
 to disk. By default it uses the `openai` Python client but you can supply
 any drop-in client exposing a `chat.completions.create` method that
-returns a response with `choices[0].message.content`.
+returns a response with `choices[0].message.content` or a streaming iterator
+of chunk objects.
 
 For OpenAI-compatible gateways such as D-API, set ``openai_base_url`` or
 the ``OPENAI_BASE_URL`` environment variable.
@@ -15,7 +16,7 @@ import os
 from inspect import Parameter, signature
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Iterator, Optional
 
 from meta_agent.logging_utils import get_logger
 
@@ -86,6 +87,59 @@ def _strip_code_fence(text: str) -> str:
     return "\n".join(cleaned)
 
 
+def _coerce_text_fragments(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        fragments: list[str] = []
+        for item in value:
+            fragments.extend(_coerce_text_fragments(item))
+        return fragments
+    if isinstance(value, dict):
+        fragments = []
+        for key in ("text", "content", "value", "delta"):
+            if key in value:
+                fragments.extend(_coerce_text_fragments(value[key]))
+        return fragments
+
+    fragments = []
+    for attr in ("text", "content", "value", "delta"):
+        attr_value = getattr(value, attr, None)
+        if attr_value is not None:
+            fragments.extend(_coerce_text_fragments(attr_value))
+    return fragments
+
+
+class _StreamingCodeFenceStripper:
+    def __init__(self) -> None:
+        self._buffer = ""
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        self._buffer += text
+        emitted: list[str] = []
+        while True:
+            newline_index = self._buffer.find("\n")
+            if newline_index == -1:
+                break
+            line = self._buffer[: newline_index + 1]
+            self._buffer = self._buffer[newline_index + 1 :]
+            if line.lstrip().startswith("```"):
+                continue
+            emitted.append(line)
+        return "".join(emitted)
+
+    def finish(self) -> str:
+        trailing = self._buffer
+        self._buffer = ""
+        if trailing and not trailing.lstrip().startswith("```"):
+            return trailing
+        return ""
+
+
 @dataclass
 class Coder:
     """Use a language model to generate code and write it to a file."""
@@ -104,6 +158,7 @@ class Coder:
     oneoneoneapi_base_url: str = "https://111api.chat/v1"
     timeout: Optional[float] = None
     client: Optional[object] = None
+    use_streaming: bool = True
 
     def __post_init__(self) -> None:
         self.timeout = self.timeout if self.timeout is not None else _resolve_timeout(self.provider)
@@ -192,35 +247,123 @@ class Coder:
     ) -> str:
         """Call the LLM and return the generated code as plain text."""
 
+        content = "".join(
+            self.iter_code_chunks(
+                user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        )
+        return _strip_code_fence(content)
+
+    def _build_completion_kwargs(
+        self,
+        user_prompt: str,
+        *,
+        temperature: float,
+        max_tokens: int,
+        stream: bool,
+    ) -> dict[str, Any]:
         if self.client is None:
             raise RuntimeError("LLM client is not configured.")
 
-        extra_kwargs = {}
+        extra_kwargs: dict[str, Any] = {}
         if self.provider == "zhipu":
             extra_kwargs["thinking"] = self.zhipu_thinking or {"type": "enabled"}
         if self.timeout is not None and _accepts_keyword(self.client.chat.completions.create, "timeout"):
             extra_kwargs["timeout"] = self.timeout
+        if stream and _accepts_keyword(self.client.chat.completions.create, "stream"):
+            extra_kwargs["stream"] = True
+
+        return {
+            "model": self.model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            **extra_kwargs,
+        }
+
+    def _extract_choice_text(self, choice: Any) -> str:
+        if choice is None:
+            return ""
+        for attr in ("delta", "message"):
+            value = getattr(choice, attr, None)
+            if value is None:
+                continue
+            fragments = _coerce_text_fragments(value)
+            if fragments:
+                return "".join(fragments)
+        return ""
+
+    def _iter_response_text_chunks(self, response: Any) -> Iterator[str]:
+        choices = getattr(response, "choices", None)
+        if choices is not None:
+            for choice in choices:
+                text = self._extract_choice_text(choice)
+                if text:
+                    yield text
+            return
+
+        if hasattr(response, "__iter__"):
+            for event in response:
+                event_choices = getattr(event, "choices", None) or []
+                for choice in event_choices:
+                    text = self._extract_choice_text(choice)
+                    if text:
+                        yield text
+
+    def _request_completion(self, request_kwargs: dict[str, Any]) -> tuple[Any, bool]:
+        stream_requested = bool(request_kwargs.get("stream"))
+        try:
+            return self.client.chat.completions.create(**request_kwargs), stream_requested
+        except Exception as exc:
+            if not stream_requested:
+                raise exc
+
+            fallback_kwargs = dict(request_kwargs)
+            fallback_kwargs.pop("stream", None)
+            LOGGER.warning(
+                "Streaming LLM request failed for provider=%s model=%s; retrying without stream: %s",
+                self.provider,
+                self.model,
+                exc,
+            )
+            return self.client.chat.completions.create(**fallback_kwargs), False
+
+    def iter_code_chunks(
+        self,
+        user_prompt: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = MAX_TOKENS,
+    ) -> Iterator[str]:
+        """Yield generated text chunks from the LLM, using streaming when available."""
+
+        if self.client is None:
+            raise RuntimeError("LLM client is not configured.")
+
+        request_kwargs = self._build_completion_kwargs(
+            user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=self.use_streaming,
+        )
 
         LOGGER.debug(
-            "Submitting LLM request provider=%s model=%s temperature=%s max_tokens=%s prompt_chars=%s",
+            "Submitting LLM request provider=%s model=%s temperature=%s max_tokens=%s prompt_chars=%s stream=%s",
             self.provider,
             self.model,
             temperature,
             max_tokens,
             len(user_prompt),
+            bool(request_kwargs.get("stream")),
         )
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                **extra_kwargs,
-            )
+            response, used_stream = self._request_completion(request_kwargs)
         except Exception as exc:  # pragma: no cover - runtime failures
             LOGGER.error(
                 "LLM call failed provider=%s model=%s: %s",
@@ -231,12 +374,16 @@ class Coder:
             )
             raise LLMGenerationError(f"LLM call failed: {exc}") from exc
 
-        content = ""
-        if getattr(response, "choices", None):
-            choice = response.choices[0]
-            content = getattr(getattr(choice, "message", None), "content", "") or ""
+        saw_content = False
+        total_chars = 0
+        for chunk in self._iter_response_text_chunks(response):
+            if not chunk:
+                continue
+            saw_content = True
+            total_chars += len(chunk)
+            yield chunk
 
-        if not content:
+        if not saw_content:
             LOGGER.error(
                 "LLM returned empty content provider=%s model=%s response=%r",
                 self.provider,
@@ -245,7 +392,13 @@ class Coder:
             )
             raise LLMGenerationError("LLM returned empty content.")
 
-        return _strip_code_fence(content)
+        LOGGER.debug(
+            "Completed LLM response provider=%s model=%s chars=%s streamed=%s",
+            self.provider,
+            self.model,
+            total_chars,
+            used_stream,
+        )
 
     def write_code_to_file(self, code: str, file_path: str, *, overwrite: bool = True) -> Path:
         """Write code to the target file, creating parent directories as needed."""
@@ -260,6 +413,46 @@ class Coder:
         path.write_text(code, encoding="utf-8")
         return path
 
+    def write_code_chunks_to_file(
+        self,
+        code_chunks: Iterator[str],
+        file_path: str,
+        *,
+        overwrite: bool = True,
+    ) -> Path:
+        """Write generated code chunks to disk as they arrive from the model."""
+
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if path.exists() and not overwrite:
+            raise FileExistsError(f"File already exists and overwrite is False: {path}")
+
+        stripper = _StreamingCodeFenceStripper()
+        wrote_output = False
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                for chunk in code_chunks:
+                    sanitized = stripper.feed(chunk)
+                    if not sanitized:
+                        continue
+                    handle.write(sanitized)
+                    handle.flush()
+                    wrote_output = True
+
+                trailing = stripper.finish()
+                if trailing:
+                    handle.write(trailing)
+                    handle.flush()
+                    wrote_output = True
+        except Exception:
+            if not wrote_output and path.exists():
+                path.unlink(missing_ok=True)
+            raise
+
+        LOGGER.debug("Progressively wrote generated code to %s overwrite=%s", path, overwrite)
+        return path
+
     def code_to_file(
         self,
         user_prompt: str,
@@ -271,7 +464,10 @@ class Coder:
     ) -> Path:
         """Generate code from the prompt and persist it to `file_path`."""
 
-        code = self.generate_code(user_prompt, temperature=temperature, max_tokens=max_tokens)
-        return self.write_code_to_file(code, file_path, overwrite=overwrite)
+        return self.write_code_chunks_to_file(
+            self.iter_code_chunks(user_prompt, temperature=temperature, max_tokens=max_tokens),
+            file_path,
+            overwrite=overwrite,
+        )
 
 
