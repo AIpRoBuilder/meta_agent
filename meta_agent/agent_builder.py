@@ -38,6 +38,9 @@ from meta_agent.tools.agent_builder_tools import (
 )
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
 
+
+DEFAULT_MAX_AUDIT_ROUNDS = 7
+
 class _NodeGenerateElement(GElement):
     def __init__(self, builder: "AgentBuilder", node_name: str,total: int, node_index: int, language: str, temperature: float) -> None:
         super().__init__()
@@ -72,8 +75,8 @@ class _NodeGenerateElement(GElement):
                 temperature=self.temperature,
             )
 
-            # audit/amend loop remains the same
-            while True:
+            max_audit_rounds = self.builder._resolve_max_audit_rounds()
+            for audit_round in range(1, max_audit_rounds + 1):
                 ok, violations = self.builder.node_auditor.audit_node_file(
                     file_path,
                     self.node_meta,
@@ -88,6 +91,11 @@ class _NodeGenerateElement(GElement):
                     )
                     break
                 amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+                if audit_round >= max_audit_rounds:
+                    raise RuntimeError(
+                        f"node audit did not pass for {self.node_name} after "
+                        f"{max_audit_rounds} attempt(s). Last feedback:\n{amendment}"
+                    )
                 self.builder._logger.warning(
                     "[%s/%s] Node audit failed: %s. %s Applying amendment...",
                     self.node_index,
@@ -233,6 +241,7 @@ class AgentBuilder:
         skills_root_path: Optional[str] = None,
         log_level: str | int | None = None,
         log_filename: str = "meta_agent_debug.log",
+        max_audit_rounds: int = DEFAULT_MAX_AUDIT_ROUNDS,
     ):
         self.api_key = api_key
         self.model = model
@@ -241,6 +250,7 @@ class AgentBuilder:
         self.frontend_style_prompt = frontend_style_prompt.strip() if frontend_style_prompt else None
         self.services_root_path = services_root_path.strip() if isinstance(services_root_path, str) else ""
         self.skills_root_path = skills_root_path.strip() if isinstance(skills_root_path, str) else ""
+        self.max_audit_rounds = self._validate_max_audit_rounds(max_audit_rounds)
         os.makedirs(self.root_dir, exist_ok=True)
         self.log_level = log_level or os.getenv("META_AGENT_LOG_LEVEL", "INFO")
         self.runtime_log_path = str(
@@ -253,12 +263,13 @@ class AgentBuilder:
         self._logger = get_logger(__name__)
         self._logger.info(f"Runtime log file: {self.runtime_log_path}")
         self._logger.debug(
-            "Initialized AgentBuilder with model=%s provider=%s root_dir=%s services_root_path=%s skills_root_path=%s",
+            "Initialized AgentBuilder with model=%s provider=%s root_dir=%s services_root_path=%s skills_root_path=%s max_audit_rounds=%s",
             self.model,
             self.provider,
             Path(self.root_dir).expanduser().resolve(),
             self.services_root_path,
             self.skills_root_path,
+            self.max_audit_rounds,
         )
 
         self._progress_total = 0
@@ -289,6 +300,17 @@ class AgentBuilder:
         }
         self.backend_server_process: Optional[Any] = None
         self.frontend_server_process: Optional[Any] = None
+
+    @staticmethod
+    def _validate_max_audit_rounds(max_audit_rounds: int) -> int:
+        if max_audit_rounds < 1:
+            raise ValueError("max_audit_rounds must be at least 1.")
+        return max_audit_rounds
+
+    def _resolve_max_audit_rounds(self, max_audit_rounds: Optional[int] = None) -> int:
+        if max_audit_rounds is None:
+            return self.max_audit_rounds
+        return self._validate_max_audit_rounds(max_audit_rounds)
 
     def _reset_llm_components(self) -> None:
         self._logger.debug(
@@ -799,13 +821,19 @@ class AgentBuilder:
         self._logger.info("Planning graph -> %s", self.graph_plan_path)
         self.planner.plan_from_file(self.requirement_md_path, self.graph_plan_path)
 
-        while True:
+        max_audit_rounds = self._resolve_max_audit_rounds()
+        for audit_round in range(1, max_audit_rounds + 1):
             self.planned_graph = Graph(self.graph_plan_path)
             ok, violations = self.graph_auditor.audit_graph_json(self.planned_graph)
             if ok:
                 self._logger.info("Graph plan audit passed.")
                 break
             amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+            if audit_round >= max_audit_rounds:
+                raise RuntimeError(
+                    "graph plan audit did not pass after "
+                    f"{max_audit_rounds} attempt(s). Last feedback:\n{amendment}"
+                )
             self._logger.warning("Graph audit failed. Applying amendment %s...", amendment)
             self.planner.amend_file_with_feedback(self.graph_plan_path, amendment, temperature=temperature)
         self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
@@ -826,10 +854,12 @@ class AgentBuilder:
         if not isinstance(amendment, str) or not amendment.strip():
             raise ValueError("amendment must be a non-empty string.")
 
-        while True:
+        current_amendment = amendment
+        max_audit_rounds = self._resolve_max_audit_rounds()
+        for audit_round in range(1, max_audit_rounds + 1):
             self.planner.amend_file_with_feedback(
                 self.graph_plan_path,
-                amendment,
+                current_amendment,
                 temperature=temperature,
             )
             self.planned_graph = Graph(self.graph_plan_path)
@@ -837,7 +867,12 @@ class AgentBuilder:
             if ok:
                 self._logger.info("Graph amendment audit passed.")
                 break
-            amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+            current_amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
+            if audit_round >= max_audit_rounds:
+                raise RuntimeError(
+                    "graph amendment audit did not pass after "
+                    f"{max_audit_rounds} attempt(s). Last feedback:\n{current_amendment}"
+                )
             self._logger.warning("Graph amendment audit failed. Applying amendment...")
 
         self.planner._write_mermaid_from_graph_json(Path(self.graph_plan_path))
@@ -1198,7 +1233,7 @@ class AgentBuilder:
         temperature: float = 0.3,
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
-        max_frontend_audit_rounds: int = 4,
+        max_frontend_audit_rounds: Optional[int] = None,
         backend_port: int = 8000,
         main_output_filename: str = "main.py",
     ) -> Dict[str, Any]:
@@ -1241,6 +1276,7 @@ class AgentBuilder:
             effective_style_prompt = self.frontend_style_prompt
         if isinstance(effective_style_prompt, str):
             effective_style_prompt = effective_style_prompt.strip() or None
+        resolved_frontend_audit_rounds = self._resolve_max_audit_rounds(max_frontend_audit_rounds)
         reference_frontend_src_dir = get_reference_frontend_src_dir()
 
         shared_frontend_outputs = self.frontend_writer.write_frontend_src_files(
@@ -1263,7 +1299,7 @@ class AgentBuilder:
             reference_frontend_src_dir=reference_frontend_src_dir,
             frontend_style_prompt=effective_style_prompt,
             temperature=temperature,
-            max_audit_rounds=max_frontend_audit_rounds,
+            max_audit_rounds=resolved_frontend_audit_rounds,
         )
 
         main_output_target = getattr(self, "main_output_path", os.path.join(self.root_dir, main_output_filename))
@@ -1582,7 +1618,7 @@ class AgentBuilder:
         temperature: float = 0.3,
         frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
-        max_audit_rounds: int = 4,
+        max_audit_rounds: Optional[int] = None,
         backend_port: int = 8000,
     ) -> str:
         """Generate and audit frontend output in vue_src mode."""
@@ -1592,9 +1628,7 @@ class AgentBuilder:
         self._logger.info("Generating frontend -> %s", frontend_path)
         steps_meta = self._build_steps_meta()
         store_steps_meta = self._build_steps_meta(include_hidden_nodes=True)
-
-        if max_audit_rounds < 1:
-            raise ValueError("max_audit_rounds must be at least 1.")
+        max_audit_rounds = self._resolve_max_audit_rounds(max_audit_rounds)
 
         effective_style_prompt = frontend_style_prompt
         if effective_style_prompt is None:
@@ -1738,7 +1772,8 @@ class AgentBuilder:
                 temperature=temperature,
             )
 
-            while True:
+            max_audit_rounds = self._resolve_max_audit_rounds()
+            for audit_round in range(1, max_audit_rounds + 1):
                 ok, violations = self.main_entry_auditor.audit_main_entrypoint_file(
                     str(self.main_output_path),
                     str(self.root_dir),
@@ -1749,6 +1784,11 @@ class AgentBuilder:
                 amendment = "\n".join(
                     [f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations]
                 )
+                if audit_round >= max_audit_rounds:
+                    raise RuntimeError(
+                        "main entrypoint audit did not pass after "
+                        f"{max_audit_rounds} attempt(s). Last feedback:\n{amendment}"
+                    )
                 self._logger.warning(amendment)
                 self._logger.warning("Main entrypoint audit failed. Applying amendment...")
                 self.main_writer.amend_code_with_feedback(
@@ -2096,7 +2136,8 @@ class AgentBuilder:
 
         if test_after_generation:
             self._logger.info("Testing main.py...")
-            while True:
+            max_audit_rounds = self._resolve_max_audit_rounds()
+            for audit_round in range(1, max_audit_rounds + 1):
                 finished = self.test_main_entrypoint(
                     main_entrypoint_path,
                     log_filename="test_log.txt",
@@ -2105,8 +2146,12 @@ class AgentBuilder:
                 if finished:
                     self._logger.info("run sim tests all passed!")
                     break
-                else:
-                    self._logger.warning("Amendments applied based on test log. Retesting...")
+                if audit_round >= max_audit_rounds:
+                    raise RuntimeError(
+                        "main.py test/amendment loop did not pass after "
+                        f"{max_audit_rounds} attempt(s)."
+                    )
+                self._logger.warning("Amendments applied based on test log. Retesting...")
             self._advance_progress("main.py test and amendment loop completed")
 
         self._logger.info("Build outputs:")
