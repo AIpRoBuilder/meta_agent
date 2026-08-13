@@ -10,7 +10,7 @@ from pydaograph import CStatus, GElement, GPipeline
 
 from meta_agent.architect import GraphPlanner, NodePlanner, Graph
 from meta_agent.auditor import GraphJsonAuditor, NodeAuditor, MainEntryPointAuditor, OutputAuditor, FrontendAuditor
-from meta_agent.llm_client.coder import MAX_TOKENS
+from meta_agent.llm_client.coder import MAX_TOKENS, compose_session_marking_prompt
 from meta_agent.worker.main_writer import PromptMainFileCoder
 from meta_agent.worker.node_writer import (
     PromptNodeFileCoderBase,
@@ -242,6 +242,7 @@ class AgentBuilder:
         log_level: str | int | None = None,
         log_filename: str = "meta_agent_debug.log",
         max_audit_rounds: int = DEFAULT_MAX_AUDIT_ROUNDS,
+        session_marking_prompt: Optional[str] = None,
     ):
         self.api_key = api_key
         self.model = model
@@ -251,6 +252,7 @@ class AgentBuilder:
         self.services_root_path = services_root_path.strip() if isinstance(services_root_path, str) else ""
         self.skills_root_path = skills_root_path.strip() if isinstance(skills_root_path, str) else ""
         self.max_audit_rounds = self._validate_max_audit_rounds(max_audit_rounds)
+        self.session_marking_prompt = compose_session_marking_prompt(session_marking_prompt)
         os.makedirs(self.root_dir, exist_ok=True)
         self.log_level = log_level or os.getenv("META_AGENT_LOG_LEVEL", "INFO")
         self.runtime_log_path = str(
@@ -318,23 +320,45 @@ class AgentBuilder:
             self.model,
             self.provider,
         )
-        self.analyzer = RequirementDisector(api_key=self.api_key, model=self.model, provider=self.provider)
+        self.analyzer = RequirementDisector(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            session_marking_prompt=self.session_marking_prompt,
+        )
         self.planner = GraphPlanner(
             api_key=self.api_key,
             model=self.model,
             provider=self.provider,
             services_root_path=self.services_root_path,
             skills_root_path=self.skills_root_path,
+            session_marking_prompt=self.session_marking_prompt,
         )
         self.node_planner = NodePlanner(
             api_key=self.api_key,
             model=self.model,
             provider=self.provider,
             skills_root_path=self.skills_root_path,
+            session_marking_prompt=self.session_marking_prompt,
         )
-        self.main_writer = PromptMainFileCoder(api_key=self.api_key, model=self.model, provider=self.provider)
-        self.frontend_writer = PromptFrontendCoder(api_key=self.api_key, model=self.model, provider=self.provider)
-        self.frontend_view_writer = FrontendViewCoder(api_key=self.api_key, model=self.model, provider=self.provider)
+        self.main_writer = PromptMainFileCoder(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            session_marking_prompt=self.session_marking_prompt,
+        )
+        self.frontend_writer = PromptFrontendCoder(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            session_marking_prompt=self.session_marking_prompt,
+        )
+        self.frontend_view_writer = FrontendViewCoder(
+            api_key=self.api_key,
+            model=self.model,
+            provider=self.provider,
+            session_marking_prompt=self.session_marking_prompt,
+        )
 
     def reset_llm_config(
         self,
@@ -360,6 +384,7 @@ class AgentBuilder:
                 provider=self.provider,
                 root_dir_path=self.root_dir,
                 services_root_path=self.services_root_path,
+                session_marking_prompt=self.session_marking_prompt,
             )
         if is_skill_ext_data(ext_data):
             return WorkflowSkillNodeCoder(
@@ -368,6 +393,7 @@ class AgentBuilder:
                 provider=self.provider,
                 root_dir_path=self.root_dir,
                 skills_root_path=self.skills_root_path,
+                session_marking_prompt=self.session_marking_prompt,
             )
         if is_none_ext_data(ext_data):
             return WorkflowOperationNodeCoder(
@@ -375,6 +401,7 @@ class AgentBuilder:
                 model=self.model,
                 provider=self.provider,
                 root_dir_path=self.root_dir,
+                session_marking_prompt=self.session_marking_prompt,
             )
         if is_file_ext_data(ext_data):
             return WorkflowFileNodeCoder(
@@ -382,12 +409,14 @@ class AgentBuilder:
                 model=self.model,
                 provider=self.provider,
                 root_dir_path=self.root_dir,
+                session_marking_prompt=self.session_marking_prompt,
             )
         return WorkflowStepNodeCoder(
             api_key=self.api_key,
             model=self.model,
             provider=self.provider,
             root_dir_path=self.root_dir,
+            session_marking_prompt=self.session_marking_prompt,
         )
 
     def _make_frontend_view_writer(self, node_meta: Any) -> FrontendViewCoder:
@@ -395,6 +424,7 @@ class AgentBuilder:
             api_key=self.api_key,
             model=self.model,
             provider=self.provider,
+            session_marking_prompt=self.session_marking_prompt,
         )
 
     def _set_services_root_path(self, services_root: Optional[str]) -> None:
@@ -2026,7 +2056,12 @@ class AgentBuilder:
                         if hasattr(self, 'main_output_path'):
                             target_path = self.main_output_path
                     else:
-                        coder = PromptNodeFileCoderBase(api_key=self.api_key, model=self.model, provider=self.provider)
+                        coder = PromptNodeFileCoderBase(
+                            api_key=self.api_key,
+                            model=self.model,
+                            provider=self.provider,
+                            session_marking_prompt=self.session_marking_prompt,
+                        )
                         if hasattr(self, 'node_location_map'):
                             for node_file_location in self.node_location_map.values():
                                 if os.path.basename(node_file_location) == os.path.basename(fname):

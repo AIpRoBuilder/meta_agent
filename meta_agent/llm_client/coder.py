@@ -48,6 +48,35 @@ MAX_TOKENS = _resolve_max_tokens()
 LOGGER = get_logger(__name__)
 
 
+def append_instruction_block(base_prompt: str, instruction_block: str | None) -> str:
+    base_text = str(base_prompt or "").rstrip()
+    extra_text = str(instruction_block or "").strip()
+    if not extra_text:
+        return base_text
+    if not base_text:
+        return extra_text
+    return f"{base_text}\n\n{extra_text}"
+
+
+def compose_session_marking_prompt(extra_prompt: str | None = None) -> str:
+    base_prompt = (
+        "Request-scoped session marking policy (authoritative):\n"
+        "- Treat the current planning/generation request as building of a workflow service which is session-scoped.\n"
+        "- For node and workflow inputs/outputs involving files or text, keep them per-request session marked.\n"
+        "- Prefer explicit identifiers such as session_id, request_id, session_marker, or request_marker.\n"
+        "- File names, directories, temp paths, caches, exports, logs, and persisted artifacts must include the session/request marker to avoid cross-request collisions.\n"
+        "- Structured text/JSON outputs, derived payloads, and user-visible summaries that refer to request-scoped artifacts should preserve the same session/request marker.\n"
+        "- Reuse the workflow's existing session context when available instead of inventing unrelated identifiers.\n"
+        "- Do not mix files or text across different requests unless the requirement explicitly asks for shared global state."
+    )
+    if not extra_prompt or not extra_prompt.strip():
+        return base_prompt
+    return append_instruction_block(
+        base_prompt,
+        "Additional session-marking guidance:\n" + extra_prompt.strip(),
+    )
+
+
 def _resolve_timeout(provider: str) -> Optional[float]:
     provider_env_names = {
         "openai": "OPENAI_TIMEOUT",
@@ -159,8 +188,13 @@ class Coder:
     timeout: Optional[float] = None
     client: Optional[object] = None
     use_streaming: bool = True
+    session_marking_prompt: str = ""
 
     def __post_init__(self) -> None:
+        self.system_prompt = append_instruction_block(
+            self.system_prompt,
+            self.session_marking_prompt,
+        )
         self.timeout = self.timeout if self.timeout is not None else _resolve_timeout(self.provider)
 
         # Allow dependency injection of a preconfigured client for tests.

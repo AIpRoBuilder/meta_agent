@@ -9,7 +9,7 @@ from meta_agent._paths import bootstrap_package_root
 
 ROOT_DIR = bootstrap_package_root(__file__)
 
-from meta_agent.llm_client.coder import Coder, MAX_TOKENS
+from meta_agent.llm_client.coder import Coder, MAX_TOKENS, append_instruction_block
 
 
 class _NodePlanElement(GElement):
@@ -158,6 +158,7 @@ class NodePlanner:
 	deepseek_base_url: str = "https://api.deepseek.com"
 	qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 	client: Optional[object] = None
+	session_marking_prompt: str = ""
 	ui_elements: dict[str, _NodeUIElement] = None  # type: ignore
 
 	def __post_init__(self) -> None:
@@ -179,6 +180,10 @@ class NodePlanner:
 			"When recommending tools/functions and implementation contracts,\n"
 			"strictly follow the following workflow node reference.\n\n"
 			f"{nodes_reference}\n"
+		)
+		self.system_prompt = append_instruction_block(
+			self.system_prompt,
+			self.session_marking_prompt,
 		)
 		# Build the shared coder used by _NodePlanElement / code_to_file.
 		self._coder: Coder = self._make_coder()
@@ -202,7 +207,7 @@ class NodePlanner:
 			provider=self.provider,
 			model=self.model,
 			api_key=self.api_key,
-			system_prompt=system_prompt,
+			system_prompt=append_instruction_block(system_prompt, self.session_marking_prompt),
 			zhipu_thinking=self.zhipu_thinking,
 			deepseek_base_url=self.deepseek_base_url,
 			qwen_base_url=self.qwen_base_url,
@@ -761,6 +766,7 @@ class NodePlanner:
 			deepseek_base_url=self.deepseek_base_url,
 			qwen_base_url=self.qwen_base_url,
 			client=self.client,
+			session_marking_prompt=self.session_marking_prompt,
 		)
 		normalizer._normalize_ext_data_in_file(output_target)
 

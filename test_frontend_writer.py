@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 from meta_agent.architect.graph import NodeMeta
 import meta_agent.worker.frontend_writer as frontend_writer_module
+from meta_agent.llm_client.coder import compose_session_marking_prompt
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
+from meta_agent.worker.node_writer import WorkflowStepNodeCoder
 from meta_agent.worker.frontend_view_writer import FrontendViewCoder
 from meta_agent.worker.frontend_writer import PromptFrontendCoder
 
@@ -85,6 +87,24 @@ def test_build_api_user_prompt_includes_sse_and_reset_requirements():
     assert "Export runStep(payload, onEvent) targeting /api/run-step." in prompt
     assert "Export resetSession(sessionId) targeting /api/reset-session." in prompt
     assert "handle lines starting with 'data: '" in prompt
+
+
+def test_session_marking_prompt_is_appended_to_frontend_and_node_coders():
+    session_prompt = compose_session_marking_prompt(
+        "Propagate request_marker through generated file and text payloads."
+    )
+
+    frontend_writer = PromptFrontendCoder(
+        client=_FakeClient(),
+        session_marking_prompt=session_prompt,
+    )
+    node_writer = WorkflowStepNodeCoder(
+        client=_FakeClient(),
+        session_marking_prompt=session_prompt,
+    )
+
+    assert session_prompt in frontend_writer.system_prompt
+    assert session_prompt in node_writer.system_prompt
 
 
 def test_build_store_user_prompt_includes_store_contracts():

@@ -66,6 +66,7 @@ class PromptMainFileCoder:
     system_prompt: str = ""
     timeout: float | None = None
     client: object | None = None
+    session_marking_prompt: str = ""
     template_path: str = "worker/templates/pydaograph_main.py.tmpl"
     _template_source: str = field(init=False, repr=False)
     _render_context_by_target: dict[Path, _MainEntrypointRenderContext] = field(
