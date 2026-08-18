@@ -26,7 +26,7 @@ Guidelines:
 Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
 
 - Prefer `WorkflowServiceNode` for service startup/bootstrap flows driven by service run guides, `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
-- Import `register_class` from `pydaograph`, workflow node base class(es) from `ag_ui_workflow.nodes`, and `StepRunOutput` from `ag_ui_workflow.types`.
+- Import `register_class` from `pydaograph`, workflow node base class(es) from `ag_ui_workflow.nodes`, and `StepRunOutput` from `ag_ui_workflow.workflow_types`.
 - For `WorkflowServiceNode`, always import `workflow_service_registry` from `ag_ui_workflow.services`.
 - For `WorkflowStepNode` / `WorkflowOperationNode`, import `workflow_service_registry` only when node logic needs direct service registry access beyond `self.use_service(session_state)`.
 - Decorate each step class with `@register_class`.
@@ -91,7 +91,7 @@ from pydaograph import register_class, CStatus
 
 from ag_ui_workflow.nodes import WorkflowFileNode, WorkflowOperationNode, WorkflowServiceNode, WorkflowStepNode
 from ag_ui_workflow.services import workflow_service_registry
-from ag_ui_workflow.types import StepRunOutput
+from ag_ui_workflow.workflow_types import StepRunOutput
 
 
 def _parse_float(text: str, field_name: str) -> float:
