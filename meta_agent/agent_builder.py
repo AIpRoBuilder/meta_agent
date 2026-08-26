@@ -49,19 +49,20 @@ class _NodeGenerateElement(GElement):
         self.node_index = node_index
         self.node_meta = self.builder.planned_graph.get_node_meta(self.node_name)
         self.coder = self.builder._make_node_coder(self.node_meta)
+        self.builder._sync_node_coder_root_dir(self.coder)
         self.total = total
         self.temperature = temperature
         self.language = language
 
     def run(self) -> CStatus:
         try:
-            out_dir = os.path.join(self.builder.root_dir, self.node_name)
+            target_path = self.builder._expected_backend_node_path(self.node_name, self.language)
             self.builder._logger.info(
-                "[%s/%s] Generating node '%s' -> %s.py",
+                "[%s/%s] Generating node '%s' -> %s",
                 self.node_index,
                 self.total,
                 self.node_name,
-                out_dir,
+                target_path,
             )
 
             # create a node-specific coder for this metadata type
@@ -69,7 +70,7 @@ class _NodeGenerateElement(GElement):
                 self.node_name,
                 self.node_meta,
                 self.builder.requirement_md_path,
-                out_dir,
+                str(target_path),
                 graph_plan_path=self.builder.graph_plan_path,
                 language=self.language,
                 temperature=self.temperature,
@@ -439,6 +440,15 @@ class AgentBuilder:
             resolved_path = Path(self.root_dir).expanduser() / resolved_path
         return resolved_path.resolve()
 
+    def _resolve_backend_node_base_dir(self) -> Path:
+        if self.graph_plan_path:
+            return Path(self.graph_plan_path).expanduser().resolve().parent
+        return Path(self.root_dir).expanduser().resolve()
+
+    def _sync_node_coder_root_dir(self, coder: PromptNodeFileCoderBase) -> None:
+        if hasattr(coder, "root_dir_path"):
+            coder.root_dir_path = str(self._resolve_backend_node_base_dir())
+
     def _load_planned_graph(self, graph_plan_path: Optional[str] = None) -> Graph:
         if graph_plan_path:
             self.graph_plan_path = graph_plan_path
@@ -495,7 +505,7 @@ class AgentBuilder:
         return self.workflow_json_path
 
     def _expected_backend_node_path(self, node_name: str, language: str = "python") -> Path:
-        return self._resolve_root_path(Path(f"{node_name}{get_language_extension(language)}"))
+        return (self._resolve_backend_node_base_dir() / f"{node_name}{get_language_extension(language)}").resolve()
 
     def _collect_current_frontend_node_outputs(self, frontend_src_dir: Path, node_names: List[str]) -> Dict[str, Dict[str, str]]:
         output_map: Dict[str, Dict[str, str]] = {}
