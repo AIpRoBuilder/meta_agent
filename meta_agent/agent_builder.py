@@ -105,7 +105,7 @@ class _NodeGenerateElement(GElement):
                     amendment,
                 )
                 self.coder.amend_code_with_feedback(
-                    out_dir,
+                    file_path,
                     amendment,
                     graph_plan_path=self.builder.graph_plan_path or "",
                     requirement_md_path=self.builder.requirement_md_path or "",
