@@ -1,3 +1,95 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "meta_agent"
+dynamic = ["version"]
+description = "A meta agent to build agents of many kinds"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = [
+	"License :: OSI Approved :: Apache Software License",
+	"Operating System :: OS Independent",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+]
+dependencies = [
+	"ag-ui-workflow @ git+https://github.com/AIpRoBuilder/ag_ui_worflow.git@5bbec6a70bf7ee84686d51fb093860f4da27b095",
+	"croniter>=6.2.2",
+	"openai>=2.17.0",
+	"pydaograph @ git+https://github.com/AIpRoBuilder/meta_ai_builder.git@ecf9358442ece819c70048986ee70d8f85108da6#subdirectory=python",
+]
+
+[project.optional-dependencies]
+zhipu = ["zai-sdk>=0.2.2"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = { attr = "meta_agent.__version__" }
+
+[tool.setuptools.packages.find]
+exclude = [
+	"example",
+	"example.*",
+	"example_agent",
+	"example_agent.*",
+	"__pycache__",
+	"__pycache__.*",
+	"tests",
+	"tests.*",
+]
+
+[tool.setuptools.package-data]
+meta_agent = [
+	"architect/prompts/*.md",
+	"auditor/prompts/*.md",
+	"demand_analyzer/prompts/*.md",
+	"worker/prompts/*.md",
+	"worker/templates/*.tmpl",
+	"library/*.md",
+	"library/*.html",
+	"library/frontend_reference/src/*.vue",
+	"library/frontend_reference/src/api/*.js",
+	"library/frontend_reference/src/components/*.vue",
+	"library/frontend_reference/src/store/*.js",
+	"library/frontend_reference/src/styles/*.css",
+	"library/frontend_reference/src/views/*.vue",
+]
+
+[tool.poetry]
+name = "meta_agent"
+version = "0.2.0"
+description = "A meta agent to build agents of many kinds"
+license = "Apache-2.0"
+readme = "README.md"
+authors = ["meta_agent maintainers"]
+packages = [{ include = "meta_agent" }]
+include = [
+	"LICENSE",
+	"meta_agent/architect/prompts/*.md",
+	"meta_agent/auditor/prompts/*.md",
+	"meta_agent/demand_analyzer/prompts/*.md",
+	"meta_agent/worker/prompts/*.md",
+	"meta_agent/worker/templates/*.tmpl",
+	"meta_agent/library/*.md",
+	"meta_agent/library/*.html",
+	"meta_agent/library/frontend_reference/src/**/*.vue",
+	"meta_agent/library/frontend_reference/src/**/*.js",
+	"meta_agent/library/frontend_reference/src/**/*.css",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+ag-ui-workflow = { git = "https://github.com/AIpRoBuilder/ag_ui_worflow.git", rev = "5bbec6a70bf7ee84686d51fb093860f4da27b095" }
+croniter = ">=6.2.2"
+openai = ">=2.17.0"
+pydaograph = { git = "https://github.com/AIpRoBuilder/meta_ai_builder.git#subdirectory=python", rev = "ecf9358442ece819c70048986ee70d8f85108da6" }
+zai-sdk = { version = ">=0.2.2", optional = true }
+
+[tool.poetry.extras]
+zhipu = ["zai-sdk"]

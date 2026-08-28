@@ -12,6 +12,7 @@ def _write_required_frontend_src(
     workflow_nodes=None,
     include_schema_renderer=True,
     view_files=None,
+    css_files=None,
 ):
     if workflow_nodes is None:
         workflow_nodes = []
@@ -40,6 +41,10 @@ def _write_required_frontend_src(
     (tmp_path / "App.vue").write_text(app_text, encoding="utf-8")
     for view_name, view_text in (view_files or {}).items():
         (tmp_path / "views" / view_name).write_text(view_text, encoding="utf-8")
+    if css_files:
+        (tmp_path / "styles").mkdir(exist_ok=True)
+        for css_name, css_text in css_files.items():
+            (tmp_path / "styles" / css_name).write_text(css_text, encoding="utf-8")
 
 
 def test_audit_frontend_requires_schema_renderer_when_step_card_schema_exists(tmp_path):
@@ -49,7 +54,7 @@ def test_audit_frontend_requires_schema_renderer_when_step_card_schema_exists(tm
     )
     (tmp_path / "CollectInput.py").write_text(
         """
-from ag_ui_workflow.types import StepRunOutput
+from ag_ui_workflow.workflow_types import StepRunOutput
 from ag_ui_workflow.nodes import WorkflowStepNode
 
 
@@ -82,7 +87,7 @@ def test_audit_frontend_passes_with_schema_renderer_when_step_card_schema_exists
     )
     (tmp_path / "CollectInput.py").write_text(
         """
-from ag_ui_workflow.types import StepRunOutput
+from ag_ui_workflow.workflow_types import StepRunOutput
 from ag_ui_workflow.nodes import WorkflowStepNode
 
 
@@ -128,7 +133,7 @@ def test_audit_frontend_src_requires_schema_renderer_when_step_card_schema_exist
     )
     (tmp_path / "CollectInput.py").write_text(
         """
-from ag_ui_workflow.types import StepRunOutput
+from ag_ui_workflow.workflow_types import StepRunOutput
 from ag_ui_workflow.nodes import WorkflowStepNode
 
 
@@ -186,7 +191,75 @@ def test_audit_frontend_src_requires_app_shell_import_in_app_vue(tmp_path):
     ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
 
     assert ok is False
-    assert any(v.rule == "app_shell_import_missing" for v in violations)
+    assert any(
+        v.rule == "app_shell_import_missing" and v.class_name == str(tmp_path / "App.vue")
+        for v in violations
+    )
+
+
+def test_audit_frontend_src_requires_app_vue_to_provide_app_shell_inject_keys(tmp_path):
+    _write_required_frontend_src(
+        tmp_path,
+        app_text="""
+<script>
+import AppShell from './components/AppShell.vue'
+</script>
+""".strip(),
+    )
+    (tmp_path / "components" / "AppShell.vue").write_text(
+        """
+<script>
+export default {
+    inject: ['workflowStore']
+}
+</script>
+""".strip(),
+        encoding="utf-8",
+    )
+
+    ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
+
+    assert ok is False
+    assert any(
+        v.rule == "app_shell_inject_not_provided"
+        and "workflowStore" in v.detail
+        and v.class_name == str(tmp_path / "App.vue")
+        for v in violations
+    )
+
+
+def test_audit_frontend_src_accepts_app_shell_inject_keys_when_app_vue_provides_store_binding(tmp_path):
+    _write_required_frontend_src(
+        tmp_path,
+        app_text="""
+<script>
+import AppShell from './components/AppShell.vue'
+
+export default {
+    setup() {
+        const store = {}
+        provide('workflowStore', store)
+        return { store }
+    },
+}
+</script>
+""".strip(),
+    )
+    (tmp_path / "components" / "AppShell.vue").write_text(
+        """
+<script>
+export default {
+    inject: ['workflowStore']
+}
+</script>
+""".strip(),
+        encoding="utf-8",
+    )
+
+    ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
+
+    assert ok is True
+    assert violations == []
 
 
 def test_audit_frontend_src_requires_all_graph_node_view_imports_in_app_vue(tmp_path):
@@ -204,7 +277,12 @@ import CollectInput from './views/CollectInput.vue'
     ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
 
     assert ok is False
-    assert any(v.rule == "app_view_import_missing" and "ReviewResult" in v.detail for v in violations)
+    assert any(
+        v.rule == "app_view_import_missing"
+        and "ReviewResult" in v.detail
+        and v.class_name == str(tmp_path / "App.vue")
+        for v in violations
+    )
 
 
 def test_audit_frontend_src_rejects_invalid_stores_workflow_store_import_in_views(tmp_path):
@@ -498,3 +576,54 @@ export default {
 
     assert ok is False
     assert any(v.rule == "vue_set_syntax_forbidden" for v in violations)
+
+
+def test_audit_frontend_src_rejects_invalid_css_syntax(tmp_path):
+        _write_required_frontend_src(
+                tmp_path,
+                app_text="""
+<script>
+import AppShell from './components/AppShell.vue'
+</script>
+""".strip(),
+                css_files={
+                        "app.css": """
+.panel {
+    color: #333;
+""".strip()
+                },
+        )
+
+        ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
+
+        assert ok is False
+        assert any(v.rule == "frontend_css_syntax_error" for v in violations)
+
+
+def test_audit_frontend_src_accepts_valid_css_syntax(tmp_path):
+        _write_required_frontend_src(
+                tmp_path,
+                app_text="""
+<script>
+import AppShell from './components/AppShell.vue'
+</script>
+""".strip(),
+                css_files={
+                        "app.css": """
+.panel {
+    color: #333;
+}
+
+@media (max-width: 640px) {
+    .panel {
+        color: #111;
+    }
+}
+""".strip()
+                },
+        )
+
+        ok, violations = FrontendAuditor().audit_frontend_file(str(tmp_path))
+
+        assert ok is True
+        assert violations == []
