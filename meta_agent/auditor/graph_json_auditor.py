@@ -100,29 +100,6 @@ class GraphJsonAuditor(BaseJsonAuditor):
 					)
 				)
 
-			if "show_frontend" not in node:
-				violations.append(
-					JsonRuleViolation(
-						parts_name="graph",
-						rule="show_frontend_missing",
-						detail=(
-							f"Node '{name or '<empty>'}' must define show_frontend explicitly as a boolean."
-						),
-						lineno=index,
-					)
-				)
-			elif not isinstance(node.get("show_frontend"), bool):
-				violations.append(
-					JsonRuleViolation(
-						parts_name="graph",
-						rule="show_frontend_not_boolean",
-						detail=(
-							f"Node '{name or '<empty>'}' has non-boolean show_frontend={node.get('show_frontend')!r}."
-						),
-						lineno=index,
-					)
-				)
-
 			ext_type = self._extract_ext_type(node)
 			if ext_type == "image":
 				violations.append(

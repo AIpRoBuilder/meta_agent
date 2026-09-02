@@ -17,7 +17,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from ag_ui_workflow import WorkflowEngine
 
@@ -54,9 +54,9 @@ def _get_engine(session_id: str) -> WorkflowEngine:
     return engine
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
-    return HTMLResponse("ok")
+@app.get("/")
+async def index() -> dict[str, str | bool]:
+    return {{"ok": True, "service": "ag-ui-lifecycle-backend"}}
 
 
 @app.post("/api/run-step")

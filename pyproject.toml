@@ -53,12 +53,6 @@ meta_agent = [
 	"worker/templates/*.tmpl",
 	"library/*.md",
 	"library/*.html",
-	"library/frontend_reference/src/*.vue",
-	"library/frontend_reference/src/api/*.js",
-	"library/frontend_reference/src/components/*.vue",
-	"library/frontend_reference/src/store/*.js",
-	"library/frontend_reference/src/styles/*.css",
-	"library/frontend_reference/src/views/*.vue",
 ]
 
 [tool.poetry]
@@ -78,9 +72,6 @@ include = [
 	"meta_agent/worker/templates/*.tmpl",
 	"meta_agent/library/*.md",
 	"meta_agent/library/*.html",
-	"meta_agent/library/frontend_reference/src/**/*.vue",
-	"meta_agent/library/frontend_reference/src/**/*.js",
-	"meta_agent/library/frontend_reference/src/**/*.css",
 ]
 
 [tool.poetry.dependencies]

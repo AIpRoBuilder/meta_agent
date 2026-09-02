@@ -16,7 +16,7 @@ def _write_graph(payload: dict) -> Graph:
         return graph
 
 
-def test_graph_json_auditor_requires_show_frontend() -> None:
+def test_graph_json_auditor_accepts_graph_without_show_frontend() -> None:
     graph = _write_graph(
         {
             "nodes": [
@@ -27,31 +27,11 @@ def test_graph_json_auditor_requires_show_frontend() -> None:
 
     is_valid, violations = GraphJsonAuditor().audit_graph_json(graph)
 
-    assert not is_valid
-    assert any(v.rule == "show_frontend_missing" for v in violations)
+    assert is_valid
+    assert violations == []
 
 
-def test_graph_json_auditor_rejects_non_boolean_show_frontend() -> None:
-    graph = _write_graph(
-        {
-            "nodes": [
-                {
-                    "name": "VisibleStep",
-                    "type": "VisibleStep",
-                    "desc": "visible step",
-                    "show_frontend": "yes",
-                },
-            ]
-        }
-    )
-
-    is_valid, violations = GraphJsonAuditor().audit_graph_json(graph)
-
-    assert not is_valid
-    assert any(v.rule == "show_frontend_not_boolean" for v in violations)
-
-
-def test_graph_json_auditor_accepts_boolean_show_frontend() -> None:
+def test_graph_json_auditor_accepts_legacy_show_frontend_field() -> None:
     graph = _write_graph(
         {
             "nodes": [
@@ -65,7 +45,6 @@ def test_graph_json_auditor_accepts_boolean_show_frontend() -> None:
                     "name": "HiddenStep",
                     "type": "HiddenStep",
                     "desc": "hidden step",
-                    "show_frontend": False,
                     "depends": ["VisibleStep"],
                 },
             ]
@@ -78,7 +57,7 @@ def test_graph_json_auditor_accepts_boolean_show_frontend() -> None:
     assert violations == []
 
 
-def test_graph_planner_normalizes_show_frontend_field(tmp_path) -> None:
+def test_graph_planner_strips_legacy_show_frontend_field(tmp_path) -> None:
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(
         json.dumps(
@@ -111,6 +90,6 @@ def test_graph_planner_normalizes_show_frontend_field(tmp_path) -> None:
     planner._normalize_ext_data_in_file(graph_path)
     normalized = json.loads(graph_path.read_text(encoding="utf-8"))
 
-    assert normalized["nodes"][0]["show_frontend"] is True
-    assert normalized["nodes"][1]["show_frontend"] is False
-    assert normalized["nodes"][2]["show_frontend"] is True
+    assert "show_frontend" not in normalized["nodes"][0]
+    assert "show_frontend" not in normalized["nodes"][1]
+    assert "show_frontend" not in normalized["nodes"][2]

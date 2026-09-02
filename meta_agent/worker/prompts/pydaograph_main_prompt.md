@@ -11,7 +11,7 @@ Required imports:
 - `from pathlib import Path`
 - `from dotenv import load_dotenv`
 - `from fastapi import FastAPI, HTTPException`
-- `from fastapi.responses import HTMLResponse, StreamingResponse`
+- `from fastapi.responses import StreamingResponse`
 - `from pydantic import BaseModel`
 - `from ag_ui_workflow import WorkflowEngine`
 - `import uvicorn`
@@ -47,8 +47,8 @@ Required functions and endpoints:
         - `steps_meta=STEP_CHAIN`
         - `thread_id` derived from session id
     - Store and return the created engine
-- `GET /` with `response_class=HTMLResponse`
-    - Return `frontend.html` content from same directory
+- `GET /`
+    - Return a simple JSON-serializable health payload confirming the backend is running
 - For normal workflows, `POST /api/run-step`
     - Resolve engine via `_get_engine(payload.sessionId)`
     - Resolve step metadata by `payload.stepId` (from `STEP_CHAIN`) and branch by `extData.type`.

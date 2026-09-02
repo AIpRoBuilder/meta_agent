@@ -19,10 +19,6 @@
   - name: 字符串，唯一、可读，且必须为英文标识符（仅英文字母和数字，建议 PascalCase）；必须体现业务语义（如 FileUpload、ImageAnalysis、ReportGeneration）。
   - type: 字符串，必须与 name 完全一致。
   - desc: 字符串，对应节点的功能描述（中文）。
-  - show_frontend: 必填，布尔值。
-    - `true` 表示该节点需要在生成的前端流程中向用户展示。
-    - `false` 表示该节点仅用于后台处理、服务启动、内部编排或其他无需直接展示给用户的步骤。
-    - 除非节点明确属于后台/基础设施用途，否则默认使用 `true`。
   - ext_data: 必填，JSON 对象，格式为 {"type": "...", "desc": "..."}。
     - 若节点需要用户输入，type 必须为 "user_input"。
     - 若节点是通用文件上传/存储，type 使用 "user_file_input"。
@@ -40,7 +36,6 @@
         "name": "UserInput",
         "type": "UserInput",
         "desc": "接收用户输入的目标用户画像与教学大纲文本",
-          "show_frontend": true,
         "loop": 2,
         "ext_data": {
           "type": "user_input",
@@ -64,7 +59,6 @@
       "name": "OtherNode",
       "type": "OtherNode",
       "desc": "calculate the result of 2+2",
-      "show_frontend": false,
       "ext_data": {"type": "none", "desc": "no need for ext data"},
       "enable": true
     },
@@ -72,7 +66,6 @@
       "name": "MyNode",
       "type": "MyNode",
       "desc": "calculate the result of 1+2 plus or minus the result from the previous node",
-      "show_frontend": true,
       "ext_data": {"type": "user_input", "desc": "need to get user's choice to either plus or minus the result from previous node"},
       "services": [{"service_name": "media_crawler", "use_desc": "use media_crawler to fetch web media context before calculation"}],
       "enable": true,
@@ -83,7 +76,6 @@
       "name": "NewNode",
       "type": "NewNode",
       "desc": "calculate the result of 1+1",
-      "show_frontend": false,
       "ext_data": {"type": "none", "desc": "no need for ext data"},
       "enable": true,
       "loop": 1,
@@ -97,6 +89,5 @@
 - 依赖关系根据流程/交互顺序判断；不确定时保持独立并省略 depends。
 - 节点 name/type 一律使用英文，且二者保持相同；禁止使用 MyNode、NewNode、Node1、N1、A 这类无语义占位名。
 - 即使信息不完整，也要基于节点功能写出语义化名称（如 UserInputCollection、ContentSearchExecution、FinalSummaryOutput）。
-- 每个节点都必须显式输出 show_frontend，禁止省略该字段。
 - 若有可并行的模块，避免互相依赖。
 - 对任意服务节点的下游节点（包含传递依赖），必须补充 services 字段声明该节点使用了哪些服务及用途。

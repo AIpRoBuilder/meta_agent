@@ -20,14 +20,21 @@ class _FakeClient:
 		self.chat = SimpleNamespace(completions=_FakeCompletions(responses))
 
 
-def test_node_context_lists_selectable_types_and_skill_descriptions() -> None:
-	planner = NodePlanner(client=_FakeClient([]))
+def _write_skill(skills_root, skill_name: str, body: str = "# Skill\n\nsearch helper"):
+	skill_dir = skills_root / skill_name
+	skill_dir.mkdir(parents=True, exist_ok=True)
+	(skill_dir / "skill.md").write_text(body, encoding="utf-8")
+
+
+def test_node_context_lists_selectable_types_and_skill_descriptions(tmp_path) -> None:
+	skills_root = tmp_path / "skills"
+	_write_skill(skills_root, "baidu_search", "# Skill\n\nBaidu search helper")
+	planner = NodePlanner(client=_FakeClient([]), skills_root_path=str(skills_root))
 
 	context = planner._node_context(
 		{
 			"name": "SearchSkill",
 			"desc": "search for external data",
-			"show_frontend": True,
 			"depends": [],
 			"ext_data": {
 				"type": "skill",
@@ -49,6 +56,8 @@ def test_node_context_lists_selectable_types_and_skill_descriptions() -> None:
 def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp_path) -> None:
 	requirement_path = tmp_path / "requirement.md"
 	requirement_path.write_text("# Requirement\n\nCollect a search query and call a skill.", encoding="utf-8")
+	skills_root = tmp_path / "skills"
+	_write_skill(skills_root, "baidu_search", "# Skill\n\nBaidu search helper")
 
 	graph_path = tmp_path / "graph_plan.json"
 	graph_path.write_text(
@@ -59,7 +68,6 @@ def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp
 						"name": "SearchSkill",
 						"type": "SearchSkill",
 						"desc": "search for data",
-						"show_frontend": True,
 						"enable": True,
 						"depends": [],
 						"ext_data": {
@@ -79,6 +87,7 @@ def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp
 
 	node_plan_path = tmp_path / "node_docs" / "SearchSkill.md"
 	planner = NodePlanner(
+		skills_root_path=str(skills_root),
 		client=_FakeClient(
 			[
 				json.dumps(
@@ -86,7 +95,6 @@ def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp
 						"name": "SearchSkill",
 						"type": "SearchSkill",
 						"desc": "collect query and search with optional locale",
-						"show_frontend": True,
 						"enable": True,
 						"depends": [],
 						"ext_data": {

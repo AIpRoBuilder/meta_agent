@@ -69,12 +69,12 @@ class MainEntryPointAuditor:
 				)
 			)
 
-		if not self._has_import_from_with_names(tree, "fastapi.responses", {"HTMLResponse", "StreamingResponse"}):
+		if not self._has_import_from_with_names(tree, "fastapi.responses", {"StreamingResponse"}):
 			violations.append(
 				RuleViolation(
 					class_name="(file)",
 					rule="fastapi_response_imports_missing",
-					detail="Missing response imports from fastapi.responses: HTMLResponse and StreamingResponse are required.",
+					detail="Missing response import from fastapi.responses: StreamingResponse is required.",
 					lineno=1,
 				)
 			)
@@ -212,15 +212,6 @@ class MainEntryPointAuditor:
 					rule="index_route_missing",
 					detail="Missing GET '/' route.",
 					lineno=1,
-				)
-			)
-		elif not self._route_has_keyword(index_fn, method="get", path="/", keyword="response_class", expected_name="HTMLResponse"):
-			violations.append(
-				RuleViolation(
-					class_name="(file)",
-					rule="index_route_response_class_missing",
-					detail="GET '/' route should declare response_class=HTMLResponse.",
-					lineno=index_fn.lineno,
 				)
 			)
 

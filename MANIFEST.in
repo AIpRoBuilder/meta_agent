@@ -1,3 +1,3 @@
 include LICENSE
 include README.md
-recursive-include meta_agent *.md *.html *.tmpl *.vue *.js *.css
+recursive-include meta_agent *.md *.html *.tmpl

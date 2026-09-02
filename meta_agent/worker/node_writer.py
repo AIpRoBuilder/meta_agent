@@ -161,67 +161,6 @@ def _read_node_markdown_reference(
     return ""
 
 
-def _read_node_html_reference(
-    node_name: str,
-    output_or_code_path: Path,
-    *,
-    requirement_md_path: Path | None = None,
-    root_dir_path: str = "",
-) -> str:
-    # Read generated node HTML reference if available.
-
-    # Search order (first existing file is used):
-    # 1) <requirement_dir>/node_ui/<node_name>.html
-    # 2) <requirement_dir>/node_html/<node_name>.html
-    # 3) <requirement_dir>/<node_name>.html
-    # 4) <output_parent>/node_ui/<node_name>.html
-    # 5) <output_parent>/node_html/<node_name>.html
-    # 6) <output_parent>/<node_name>.html
-    # 7) <root_dir>/node_ui/<node_name>.html
-    # 8) <root_dir>/node_html/<node_name>.html
-
-    filename = f"{node_name}.html"
-    output_parent = output_or_code_path.expanduser().resolve().parent
-
-    candidates: list[Path] = []
-
-    if requirement_md_path:
-        requirement_dir = requirement_md_path.expanduser().resolve().parent
-        candidates.extend(
-            [
-                requirement_dir / "node_ui" / filename,
-                requirement_dir / "node_html" / filename,
-                requirement_dir / filename,
-            ]
-        )
-
-    candidates.extend(
-        [
-            output_parent / "node_ui" / filename,
-            output_parent / "node_html" / filename,
-            output_parent / filename,
-        ]
-    )
-
-    if root_dir_path:
-        root_dir = Path(root_dir_path).expanduser().resolve()
-        candidates.extend(
-            [
-                root_dir / "node_ui" / filename,
-                root_dir / "node_html" / filename,
-            ]
-        )
-
-    visited: set[Path] = set()
-    for candidate in candidates:
-        if candidate in visited:
-            continue
-        visited.add(candidate)
-        if candidate.is_file():
-            return candidate.read_text(encoding="utf-8").strip()
-    return ""
-
-
 def _resolve_named_root(
     configured_root_path: str,
     root_dir_path: str,
@@ -363,7 +302,6 @@ class PromptNodeFileCoderBase(Coder):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
-        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -414,14 +352,6 @@ class PromptNodeFileCoderBase(Coder):
             f"{requirement_text}\n\n"
         )
 
-        if not node_meta.show_frontend:
-            user_prompt += (
-                "Hidden frontend rule (authoritative):\n"
-                "- node_meta.show_frontend is False for this node.\n"
-                "- Define class constant INPUT_REQUIRED = False in the generated node class.\n"
-                "- Treat this node as non-interactive from the frontend; do not require direct frontend user input.\n\n"
-            )
-
         ext_data = node_meta.ext_data if isinstance(node_meta.ext_data, Mapping) else {}
         ext_type = str(ext_data.get("type", "none")).strip().lower()
         if ext_type in ("user_input", "skill") and inputs_format_text != "none":
@@ -447,14 +377,6 @@ class PromptNodeFileCoderBase(Coder):
             user_prompt += (
                 "Node-specific markdown reference (authoritative for this node's implementation focus):\n"
                 f"{node_markdown_reference}\n\n"
-            )
-
-        if node_html_reference:
-            user_prompt += (
-                "Node-specific HTML interaction reference (authoritative for user interaction expectations):\n"
-                "- Use this as context for expected user-facing input/output shape and UI intent.\n"
-                "- Keep node backend logic aligned with the referenced interaction model where applicable.\n"
-                f"{node_html_reference}\n\n"
             )
 
         self.context_text = ""
@@ -536,12 +458,6 @@ class PromptNodeFileCoderBase(Coder):
             requirement_md_path=requirement_path,
             output_path=Path(output_path),
         )
-        node_html_reference = _read_node_html_reference(
-            node_name=node_name,
-            output_or_code_path=Path(output_path),
-            requirement_md_path=requirement_path,
-            root_dir_path=self.root_dir_path,
-        )
 
         language_clean = language.strip().lower() if language else "python"
         target_ext = self._language_extension(language_clean)
@@ -551,7 +467,6 @@ class PromptNodeFileCoderBase(Coder):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
-            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -644,22 +559,6 @@ class PromptNodeFileCoderBase(Coder):
             language_clean=language_clean,
             contract_text=contract_text,
         )
-
-        requirement_path = Path(requirement_md_path).expanduser() if requirement_md_path else None
-        if requirement_path and not requirement_path.exists():
-            requirement_path = None
-        node_html_reference = _read_node_html_reference(
-            node_name=inferred_node_name,
-            output_or_code_path=target_path,
-            requirement_md_path=requirement_path,
-            root_dir_path=self.root_dir_path,
-        )
-        if node_html_reference:
-            user_prompt += (
-                "\n\nNode-specific HTML interaction reference (authoritative for user interaction expectations):\n"
-                "- Keep amendments consistent with this interaction context where applicable.\n"
-                f"{node_html_reference}\n"
-            )
 
         dependency_names = _extract_declared_dependencies_from_code(original_code)
         dependency_context = _build_dependency_derived_context(
@@ -758,7 +657,6 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
-        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -770,7 +668,6 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
-            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -909,7 +806,6 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
-        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -921,7 +817,6 @@ class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
-            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
@@ -1074,7 +969,6 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         node_meta: NodeMeta,
         requirement_text: str,
         node_markdown_reference: str,
-        node_html_reference: str,
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
@@ -1086,7 +980,6 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
             node_meta=node_meta,
             requirement_text=requirement_text,
             node_markdown_reference=node_markdown_reference,
-            node_html_reference=node_html_reference,
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,

@@ -18,7 +18,6 @@ class NodeMeta:
     ext_data: Optional[Dict[str, Any] | str] = None
     inputs_format: Dict[str, str] = field(default_factory=dict)
     enable: bool = True
-    show_frontend: bool = True
     depends: List[str] = field(default_factory=list)
     services: List[Dict[str, str]] = field(default_factory=list)
 
@@ -44,7 +43,6 @@ class NodeMeta:
             ext_data=node.get('ext_data'),
             inputs_format=inputs_format,
             enable=bool(node.get('enable', True)),
-            show_frontend=bool(node.get('show_frontend', True)),
             depends=list(depends) if isinstance(depends, list) else [],
             services=list(services) if isinstance(services, list) else [],
         )

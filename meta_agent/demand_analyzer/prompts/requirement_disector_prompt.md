@@ -26,8 +26,7 @@
        - WorkflowServiceNode（nodeKind=service）：服务启动/调用类节点，对应 ext_data.type="service"，用于按服务流程安装环境、启动服务并消费服务结果。
        - WorkflowSkillNode（nodeKind=skill）：技能封装类节点，对应 ext_data.type="skill"，用于调用预置 skill 能力并输出结构化结果。
        - 不得虚构上述五类实现基类之外的节点能力模型。
-   - 节点设计输出格式固定为表格，字段为【节点ID | 节点类型 | ext_data.type | 是否展示前端(show_frontend) | 作用 | depends】。
-   - 是否展示前端(show_frontend) 必须为 true/false：需要用户在生成的前端界面中看到、填写、触发或直接消费结果的节点填 true；纯后端处理、调度、内部服务、仅供中间转换的节点填 false。
+   - 节点设计输出格式固定为表格，字段为【节点ID | 节点类型 | ext_data.type | 作用 | depends】。
     - 仅输出最少必要节点；避免冗余节点与重复说明。
 
 ## 书写规则

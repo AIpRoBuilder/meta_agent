@@ -1,6 +1,5 @@
 from typing import Optional, List, Dict, Any, Mapping
 import os
-import shutil
 import subprocess
 import json
 from datetime import datetime
@@ -9,7 +8,7 @@ from pathlib import Path
 from pydaograph import CStatus, GElement, GPipeline
 
 from meta_agent.architect import GraphPlanner, NodePlanner, Graph
-from meta_agent.auditor import GraphJsonAuditor, NodeAuditor, MainEntryPointAuditor, OutputAuditor, FrontendAuditor
+from meta_agent.auditor import GraphJsonAuditor, NodeAuditor, MainEntryPointAuditor, OutputAuditor
 from meta_agent.llm_client.coder import MAX_TOKENS, compose_session_marking_prompt
 from meta_agent.worker.main_writer import PromptMainFileCoder
 from meta_agent.worker.node_writer import (
@@ -24,16 +23,10 @@ from meta_agent.worker.node_writer import (
     is_skill_ext_data,
     is_file_ext_data,
 )
-from meta_agent.worker.frontend_view_writer import FrontendViewCoder
-from meta_agent.worker.frontend_writer import PromptFrontendCoder
 from meta_agent.demand_analyzer import RequirementDisector
 from meta_agent.logging_utils import configure_runtime_logging, get_logger
 from meta_agent.tools.agent_builder_tools import (
-    build_frontend_node_paths,
-    build_frontend_src_file_map,
-    create_minimal_vue_frontend_scaffold,
     get_language_extension,
-    get_reference_frontend_src_dir,
     select_python_command,
 )
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
@@ -130,104 +123,6 @@ class _NodeGenerateElement(GElement):
             return CStatus(1001, f"node generation failed for {self.node_name}: {exc}")
 
 
-class _FrontendViewGenerateElement(GElement):
-    def __init__(
-        self,
-        builder: "AgentBuilder",
-        node_name: str,
-        total: int,
-        node_index: int,
-        output_base_dir: str,
-        context_base_dir: str,
-        graph_plan_context: str,
-        temperature: float,
-        overwrite_existing: bool = True,
-        generated_outputs: Optional[Dict[str, Dict[str, str]]] = None,
-    ) -> None:
-        super().__init__()
-        self.builder = builder
-        self.node_name = node_name
-        self.total = total
-        self.node_index = node_index
-        self.output_base_dir = Path(output_base_dir)
-        self.context_base_dir = Path(context_base_dir)
-        self.graph_plan_context = graph_plan_context
-        self.temperature = temperature
-        self.overwrite_existing = overwrite_existing
-        self.generated_outputs = generated_outputs if generated_outputs is not None else {}
-        self.node_meta = self.builder.planned_graph.get_node_meta(self.node_name)
-        self.coder = self.builder._make_frontend_view_writer(self.node_meta)
-
-    def run(self) -> CStatus:
-        try:
-            if self.node_meta is None:
-                raise ValueError(f"node metadata not found for {self.node_name}")
-
-            style_filename = f"{self.node_name}.css"
-            view_path = self.output_base_dir / "views" / f"{self.node_name}.vue"
-            style_path = self.output_base_dir / "styles" / style_filename
-            self.builder._logger.info(
-                "[%s/%s] Generating frontend view '%s' -> %s",
-                self.node_index,
-                self.total,
-                self.node_name,
-                view_path,
-            )
-
-            node_html_context = self.coder._read_context_file(
-                self.context_base_dir,
-                self.node_name,
-                ".html",
-            )
-            node_python_context = self.coder._read_context_file(
-                self.context_base_dir,
-                self.node_name,
-                ".py",
-            )
-
-            node_generated: Dict[str, str] = {}
-            if self.overwrite_existing or not view_path.exists():
-                self.coder.write_node_vue_file(
-                    node_name=self.node_name,
-                    node_meta=self.node_meta,
-                    graph_plan_context=self.graph_plan_context,
-                    node_html_context=node_html_context,
-                    node_python_context=node_python_context,
-                    output_path=view_path,
-                    style_filename=style_filename,
-                    overwrite=True,
-                    temperature=self.temperature,
-                )
-                node_generated["view"] = str(view_path)
-            if self.overwrite_existing or not style_path.exists():
-                self.coder.write_node_css_file(
-                    node_name=self.node_name,
-                    node_meta=self.node_meta,
-                    graph_plan_context=self.graph_plan_context,
-                    node_html_context=node_html_context,
-                    output_path=style_path,
-                    overwrite=True,
-                    temperature=self.temperature,
-                )
-                node_generated["style"] = str(style_path)
-            self.builder.frontend_view_output_map[self.node_name] = {
-                "view": str(view_path),
-                "style": str(style_path),
-            }
-            if node_generated:
-                self.generated_outputs[self.node_name] = node_generated
-            return CStatus()
-        except Exception as exc:
-            self.builder._logger.error(
-                "[%s/%s] Frontend view generation failed for %s: %s",
-                self.node_index,
-                self.total,
-                self.node_name,
-                exc,
-                exc_info=True,
-            )
-            return CStatus(1002, f"frontend view generation failed for {self.node_name}: {exc}")
-                
 class AgentBuilder:
     """Build AG-UI workflow artifacts with generation, auditing, and progress display."""
 
@@ -287,7 +182,6 @@ class AgentBuilder:
         self.graph_auditor = GraphJsonAuditor()
         self.node_auditor = NodeAuditor()
         self.main_entry_auditor = MainEntryPointAuditor()
-        self.frontend_auditor = FrontendAuditor(base_dir=self.root_dir)
         # output auditor will inspect test logs and help trigger amendments
         self.output_auditor = OutputAuditor()
         self.dynamic_graph_cache: Dict[str, Any] = {
@@ -348,18 +242,14 @@ class AgentBuilder:
             provider=self.provider,
             session_marking_prompt=self.session_marking_prompt,
         )
-        self.frontend_writer = PromptFrontendCoder(
-            api_key=self.api_key,
-            model=self.model,
-            provider=self.provider,
-            session_marking_prompt=self.session_marking_prompt,
-        )
-        self.frontend_view_writer = FrontendViewCoder(
-            api_key=self.api_key,
-            model=self.model,
-            provider=self.provider,
-            session_marking_prompt=self.session_marking_prompt,
-        )
+
+    @staticmethod
+    def _frontend_removed_error() -> RuntimeError:
+        return RuntimeError("Frontend generation has been removed from meta_agent.")
+
+    @staticmethod
+    def _node_ui_removed_error() -> RuntimeError:
+        return RuntimeError("Node UI planning has been removed from meta_agent.")
 
     def reset_llm_config(
         self,
@@ -417,14 +307,6 @@ class AgentBuilder:
             model=self.model,
             provider=self.provider,
             root_dir_path=self.root_dir,
-            session_marking_prompt=self.session_marking_prompt,
-        )
-
-    def _make_frontend_view_writer(self, node_meta: Any) -> FrontendViewCoder:
-        return FrontendViewCoder(
-            api_key=self.api_key,
-            model=self.model,
-            provider=self.provider,
             session_marking_prompt=self.session_marking_prompt,
         )
 
@@ -507,19 +389,6 @@ class AgentBuilder:
     def _expected_backend_node_path(self, node_name: str, language: str = "python") -> Path:
         return (self._resolve_backend_node_base_dir() / f"{node_name}{get_language_extension(language)}").resolve()
 
-    def _collect_current_frontend_node_outputs(self, frontend_src_dir: Path, node_names: List[str]) -> Dict[str, Dict[str, str]]:
-        output_map: Dict[str, Dict[str, str]] = {}
-        for node_name in node_names:
-            expected_paths = build_frontend_node_paths(frontend_src_dir, node_name)
-            view_path = expected_paths["view"]
-            style_path = expected_paths["style"]
-            if view_path.is_file() and style_path.is_file():
-                output_map[node_name] = {
-                    "view": str(view_path),
-                    "style": str(style_path),
-                }
-        return output_map
-
     def _generate_selected_nodes(
         self,
         node_names: List[str],
@@ -575,63 +444,8 @@ class AgentBuilder:
         temperature: float = 0.3,
         overwrite_existing: bool = False,
     ) -> Dict[str, Dict[str, str]]:
-        planned_graph = self._load_planned_graph()
-        requested_names = {name for name in node_names if isinstance(name, str) and name.strip()}
-        ordered_names = [
-            name for name in planned_graph.get_topological_sorted_nodes()
-            if name in requested_names
-            and planned_graph.get_node_meta(name) is not None
-            and planned_graph.get_node_meta(name).show_frontend
-        ]
-        if not ordered_names:
-            return {}
-
-        resolved_output_dir = self._resolve_root_path(output_base_dir)
-        resolved_context_dir = self._resolve_root_path(context_base_dir or self.root_dir)
-        (resolved_output_dir / "views").mkdir(parents=True, exist_ok=True)
-        (resolved_output_dir / "styles").mkdir(parents=True, exist_ok=True)
-
-        graph_plan_context = Path(self.graph_plan_path).expanduser().resolve().read_text(encoding="utf-8")
-        if not hasattr(self, "frontend_view_writer_map"):
-            self.frontend_view_writer_map = {}
-        if not hasattr(self, "frontend_view_output_map"):
-            self.frontend_view_output_map = {}
-        self.frontend_views_output_path = str(resolved_output_dir)
-
-        generated_outputs: Dict[str, Dict[str, str]] = {}
-        pipeline = GPipeline()
-        elements: Dict[str, _FrontendViewGenerateElement] = {}
-        total = len(ordered_names)
-        for index, node_name in enumerate(ordered_names, start=1):
-            element = _FrontendViewGenerateElement(
-                self,
-                node_name,
-                total,
-                index,
-                output_base_dir=str(resolved_output_dir),
-                context_base_dir=str(resolved_context_dir),
-                graph_plan_context=graph_plan_context,
-                temperature=temperature,
-                overwrite_existing=overwrite_existing,
-                generated_outputs=generated_outputs,
-            )
-            elements[node_name] = element
-            self.frontend_view_writer_map[node_name] = element.coder
-
-        for node_name in ordered_names:
-            node_meta = planned_graph.get_node_meta(node_name)
-            depends = set()
-            if node_meta and node_meta.depends:
-                depends = {elements[dep] for dep in node_meta.depends if dep in elements}
-            status = pipeline.registerGElement(elements[node_name], depends, node_name, 1)
-            if status.isErr():
-                raise RuntimeError(f"registerGElement failed for frontend view {node_name}: {status.getInfo()}")
-
-        process_status = pipeline.process()
-        if process_status.isErr():
-            raise RuntimeError(f"generate_frontend_views pipeline.process failed: {process_status.getInfo()}")
-
-        return generated_outputs
+        del node_names, output_base_dir, context_base_dir, temperature, overwrite_existing
+        raise self._frontend_removed_error()
 
     def _audit_frontend_src(
         self,
@@ -644,83 +458,32 @@ class AgentBuilder:
         temperature: float,
         max_audit_rounds: int,
     ) -> None:
-        last_amendment = ""
-        for audit_round in range(1, max_audit_rounds + 1):
-            ok, violations = self.frontend_auditor.audit_frontend_file(frontend_path)
-            if ok:
-                self._logger.info("Frontend audit passed for mode=vue_src.")
-                return
-            last_amendment = "\n".join([f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations])
-            if audit_round >= max_audit_rounds:
-                raise RuntimeError(
-                    "frontend audit did not pass after "
-                    f"{max_audit_rounds} attempt(s). Last feedback:\n{last_amendment}"
-                )
-            grouped_feedback: Dict[Path, List[str]] = {}
-            unresolved_feedback: List[str] = []
-            for violation in violations:
-                target_file = self._resolve_frontend_violation_target(frontend_path, violation)
-                message = f"Line {violation.lineno}: {violation.rule} - {violation.detail}"
-                if target_file is None or not target_file.is_file():
-                    unresolved_feedback.append(message)
-                    continue
-                grouped_feedback.setdefault(target_file, []).append(message)
-
-            if not grouped_feedback:
-                raise RuntimeError(
-                    "frontend src audit failed and no amendable target files could be resolved. "
-                    f"Last feedback:\n{last_amendment}"
-                )
-
-            if unresolved_feedback:
-                unresolved_feedback_text = "\n".join(unresolved_feedback)
-                raise RuntimeError(
-                    "frontend src audit failed and some violations could not be routed to an existing frontend file. "
-                    f"Unresolved feedback:\n{unresolved_feedback_text}"
-                )
-
-            for target_file, file_feedback in grouped_feedback.items():
-                self._logger.warning("Frontend audit failed. Applying amendment to %s ...", target_file)
-                self.frontend_writer.amend_code_with_feedback(
-                    file_path=str(target_file),
-                    rule_violations="\n".join(file_feedback),
-                    steps_meta=steps_meta,
-                    context_base_dir=context_base_dir,
-                    requirement_analysis_result=self.requirement_analysis_result,
-                    reference_frontend_src_dir=reference_frontend_src_dir,
-                    frontend_style_prompt=frontend_style_prompt,
-                    overwrite=True,
-                    temperature=temperature,
-                )
+        del frontend_path, steps_meta, context_base_dir, reference_frontend_src_dir, frontend_style_prompt, temperature, max_audit_rounds
+        raise self._frontend_removed_error()
 
     def _validate_generated_artifacts(
         self,
         *,
-        frontend_project_dir: str | Path,
+        frontend_project_dir: str | Path | None = None,
         graph_plan_path: Optional[str] = None,
         node_docs_dirname: str = "node_docs",
         node_ui_dirname: str = "node_ui",
         backend_language: str = "python",
         main_entrypoint_path: Optional[str] = None,
     ) -> Dict[str, Any]:
+        del frontend_project_dir, node_ui_dirname
         planned_graph = self._load_planned_graph(graph_plan_path)
         doc_dir = self._resolve_root_path(getattr(self, "node_docs_dir", node_docs_dirname))
-        ui_dir = self._resolve_root_path(getattr(self, "node_html_dir", node_ui_dirname))
-        resolved_frontend_dir = self._resolve_root_path(frontend_project_dir)
-        frontend_src_dir = resolved_frontend_dir / "src"
         main_path = Path(main_entrypoint_path or getattr(self, "main_output_path", self._resolve_root_path("main.py"))).expanduser()
         if not main_path.is_absolute():
             main_path = self._resolve_root_path(main_path)
 
         node_names = planned_graph.get_topological_sorted_nodes()
         plan_outputs: Dict[str, str] = {}
-        node_ui_outputs: Dict[str, str] = {}
         backend_outputs: Dict[str, str] = {}
-        frontend_outputs: Dict[str, Dict[str, str]] = {}
         missing: List[str] = []
 
         for node_name in node_names:
-            node_meta = planned_graph.get_node_meta(node_name)
             doc_path = doc_dir / f"{node_name}.md"
             backend_path = self._expected_backend_node_path(node_name, backend_language)
             if doc_path.is_file():
@@ -731,30 +494,6 @@ class AgentBuilder:
                 backend_outputs[node_name] = str(backend_path)
             else:
                 missing.append(str(backend_path))
-
-            if node_meta and node_meta.show_frontend:
-                html_path = ui_dir / f"{node_name}.html"
-                expected_frontend_paths = build_frontend_node_paths(frontend_src_dir, node_name)
-                view_path = expected_frontend_paths["view"]
-                style_path = expected_frontend_paths["style"]
-                if html_path.is_file():
-                    node_ui_outputs[node_name] = str(html_path)
-                else:
-                    missing.append(str(html_path))
-                if view_path.is_file() and style_path.is_file():
-                    frontend_outputs[node_name] = {
-                        "view": str(view_path),
-                        "style": str(style_path),
-                    }
-                else:
-                    if not view_path.is_file():
-                        missing.append(str(view_path))
-                    if not style_path.is_file():
-                        missing.append(str(style_path))
-
-        package_json_path = resolved_frontend_dir / "package.json"
-        if not package_json_path.is_file():
-            missing.append(str(package_json_path))
         if not main_path.is_file():
             missing.append(str(main_path))
 
@@ -765,11 +504,7 @@ class AgentBuilder:
 
         return {
             "node_plan": plan_outputs,
-            "node_ui": node_ui_outputs,
             "backend_nodes": backend_outputs,
-            "frontend_nodes": frontend_outputs,
-            "frontend_project_dir": str(resolved_frontend_dir),
-            "frontend_src_dir": str(frontend_src_dir),
             "main_entrypoint": str(main_path),
         }
 
@@ -1013,20 +748,8 @@ class AgentBuilder:
         output_dirname: str = "node_ui",
         temperature: float = 0.3,
     ) -> List[str]:
-        """Generate one HTML interaction file per node using NodePlanner."""
-
-        output_dir = os.path.join(self.root_dir, output_dirname)
-        self._logger.info("Generating per-node HTML UIs -> %s", output_dir)
-        node_html_paths = self.node_planner.plan_each_ui_from_files(
-            requirement_md_path=requirement_md_path,
-            graph_plan_json_path=graph_plan_path,
-            output_dir=output_dir,
-            overwrite=True,
-            temperature=temperature,
-        )
-        self.node_html_dir = output_dir
-        self.node_html_paths = [str(path) for path in node_html_paths]
-        return self.node_html_paths
+        del requirement_md_path, graph_plan_path, output_dirname, temperature
+        raise self._node_ui_removed_error()
 
     def update_nodes_plan(
         self,
@@ -1037,18 +760,13 @@ class AgentBuilder:
         temperature: float = 0.2,
         max_tokens: int = MAX_TOKENS,
     ) -> Dict[str, Any]:
+        del node_ui_dirname
         requirement_text = self._read_requirement_text(requirement_md_path)
         planned_graph = self._load_planned_graph(graph_plan_path)
         node_names = planned_graph.get_topological_sorted_nodes()
-        visible_node_names = [
-            node_name for node_name in node_names
-            if planned_graph.get_node_meta(node_name) and planned_graph.get_node_meta(node_name).show_frontend
-        ]
 
         node_docs_dir = self._resolve_root_path(node_docs_dirname)
-        node_ui_dir = self._resolve_root_path(node_ui_dirname)
         node_docs_dir.mkdir(parents=True, exist_ok=True)
-        node_ui_dir.mkdir(parents=True, exist_ok=True)
 
         existing_plan_map: Dict[str, str] = {}
         missing_plan_names: List[str] = []
@@ -1072,48 +790,19 @@ class AgentBuilder:
             )
             generated_plan_map = {Path(path).stem: str(path) for path in generated_plan_paths}
 
-        existing_ui_map: Dict[str, str] = {}
-        missing_ui_names: List[str] = []
-        for node_name in visible_node_names:
-            ui_path = node_ui_dir / f"{node_name}.html"
-            if ui_path.is_file():
-                existing_ui_map[node_name] = str(ui_path)
-            else:
-                missing_ui_names.append(node_name)
-
-        generated_ui_map: Dict[str, str] = {}
-        if missing_ui_names:
-            filtered_ui_graph_plan = self._build_filtered_graph_plan_payload(missing_ui_names)
-            generated_ui_paths = self.node_planner.plan_each_ui(
-                requirement_text=requirement_text,
-                graph_plan_text=json.dumps(filtered_ui_graph_plan, ensure_ascii=False, indent=2),
-                output_dir=str(node_ui_dir),
-                overwrite=True,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            generated_ui_map = {Path(path).stem: str(path) for path in generated_ui_paths}
-
         all_plan_map = {
             node_name: str(node_docs_dir / f"{node_name}.md")
             for node_name in node_names
             if (node_docs_dir / f"{node_name}.md").is_file()
         }
-        all_ui_map = {
-            node_name: str(node_ui_dir / f"{node_name}.html")
-            for node_name in visible_node_names
-            if (node_ui_dir / f"{node_name}.html").is_file()
-        }
 
         self.node_docs_dir = str(node_docs_dir)
         self.node_doc_paths = [all_plan_map[node_name] for node_name in node_names if node_name in all_plan_map]
-        self.node_html_dir = str(node_ui_dir)
-        self.node_html_paths = [all_ui_map[node_name] for node_name in visible_node_names if node_name in all_ui_map]
 
         self.dynamic_graph_cache["graph_nodes"] = node_names
         self.dynamic_graph_cache["graph_plan_path"] = str(Path(self.graph_plan_path).expanduser().resolve())
         self.dynamic_graph_cache["node_plans"] = all_plan_map
-        self.dynamic_graph_cache["node_ui"] = all_ui_map
+        self.dynamic_graph_cache["node_ui"] = {}
 
         return {
             "graph_plan_path": self.dynamic_graph_cache["graph_plan_path"],
@@ -1121,11 +810,6 @@ class AgentBuilder:
                 "existing": existing_plan_map,
                 "generated": generated_plan_map,
                 "all": all_plan_map,
-            },
-            "node_ui": {
-                "existing": existing_ui_map,
-                "generated": generated_ui_map,
-                "all": all_ui_map,
             },
         }
 
@@ -1147,22 +831,12 @@ class AgentBuilder:
         )
         planned_graph = self._load_planned_graph()
         node_names = planned_graph.get_topological_sorted_nodes()
-        visible_node_names = [
-            node_name for node_name in node_names
-            if planned_graph.get_node_meta(node_name) and planned_graph.get_node_meta(node_name).show_frontend
-        ]
 
         missing_plan_names = [node_name for node_name in node_names if node_name not in plan_result["node_plan"]["all"]]
-        missing_ui_names = [node_name for node_name in visible_node_names if node_name not in plan_result["node_ui"]["all"]]
-        if missing_plan_names or missing_ui_names:
-            missing_sections: List[str] = []
-            if missing_plan_names:
-                missing_sections.append(f"missing node plan files for: {missing_plan_names}")
-            if missing_ui_names:
-                missing_sections.append(f"missing node ui files for: {missing_ui_names}")
+        if missing_plan_names:
             raise FileNotFoundError(
-                "update_backend_nodes requires node plan/ui artifacts before code generation. "
-                + "; ".join(missing_sections)
+                "update_backend_nodes requires node plan artifacts before code generation. "
+                f"missing node plan files for: {missing_plan_names}"
             )
 
         existing_backend_map: Dict[str, str] = {}
@@ -1195,7 +869,6 @@ class AgentBuilder:
 
         return {
             "node_plan": plan_result["node_plan"],
-            "node_ui": plan_result["node_ui"],
             "backend_nodes": {
                 "existing": existing_backend_map,
                 "generated": generated_backend_map,
@@ -1285,62 +958,8 @@ class AgentBuilder:
             language=language,
             temperature=temperature,
         )
-        planned_graph = self._load_planned_graph()
-        node_names = planned_graph.get_topological_sorted_nodes()
-        visible_node_names = [
-            node_name for node_name in node_names
-            if planned_graph.get_node_meta(node_name) and planned_graph.get_node_meta(node_name).show_frontend
-        ]
-
-        frontend_project_dir = self._ensure_vue_frontend_project(frontend_output_dir, backend_port=backend_port)
-        self.frontend_project_dir = frontend_project_dir
-        frontend_src_dir = self._resolve_root_path(Path(frontend_project_dir) / "src")
-
-        existing_frontend_map = self._collect_current_frontend_node_outputs(frontend_src_dir, visible_node_names)
-        missing_frontend_names = [node_name for node_name in visible_node_names if node_name not in existing_frontend_map]
-        generated_frontend_map = self._generate_selected_frontend_views(
-            missing_frontend_names,
-            output_base_dir=str(frontend_src_dir),
-            context_base_dir=context_base_dir,
-            temperature=temperature,
-            overwrite_existing=False,
-        )
-        all_frontend_map = self._collect_current_frontend_node_outputs(frontend_src_dir, visible_node_names)
-
         resolved_context_dir = str(self._resolve_root_path(context_base_dir or self.root_dir))
         workflow_json_path = self._sync_workflow_graph_json(context_base_dir=resolved_context_dir)
-        steps_meta = self._build_steps_meta()
-        store_steps_meta = self._build_steps_meta(include_hidden_nodes=True)
-        effective_style_prompt = frontend_style_prompt
-        if effective_style_prompt is None:
-            effective_style_prompt = self.frontend_style_prompt
-        if isinstance(effective_style_prompt, str):
-            effective_style_prompt = effective_style_prompt.strip() or None
-        resolved_frontend_audit_rounds = self._resolve_max_audit_rounds(max_frontend_audit_rounds)
-        reference_frontend_src_dir = get_reference_frontend_src_dir()
-
-        shared_frontend_outputs = self.frontend_writer.write_frontend_src_files(
-            steps_meta=steps_meta,
-            store_steps_meta=store_steps_meta,
-            output_base_dir=str(frontend_src_dir),
-            context_base_dir=resolved_context_dir,
-            run_step_endpoint="/api/run-step",
-            reset_session_endpoint="/api/reset-session",
-            requirement_analysis_result=self.requirement_analysis_result,
-            reference_frontend_src_dir=reference_frontend_src_dir,
-            frontend_style_prompt=effective_style_prompt,
-            overwrite=True,
-            temperature=temperature,
-        )
-        self._audit_frontend_src(
-            frontend_path=str(frontend_src_dir),
-            steps_meta=steps_meta,
-            context_base_dir=resolved_context_dir,
-            reference_frontend_src_dir=reference_frontend_src_dir,
-            frontend_style_prompt=effective_style_prompt,
-            temperature=temperature,
-            max_audit_rounds=resolved_frontend_audit_rounds,
-        )
 
         main_output_target = getattr(self, "main_output_path", os.path.join(self.root_dir, main_output_filename))
         main_output_path = self.generate_main_entrypoint(
@@ -1350,24 +969,12 @@ class AgentBuilder:
             fastapi_port=backend_port,
         )
 
-        self.frontend_output_path = str(frontend_src_dir)
-        self.dynamic_graph_cache["frontend_nodes"] = all_frontend_map
-        self.dynamic_graph_cache["frontend_shared"] = {
-            key: str(path) for key, path in shared_frontend_outputs.items()
-        }
+        self.dynamic_graph_cache["frontend_nodes"] = {}
+        self.dynamic_graph_cache["frontend_shared"] = {}
 
         return {
             "node_plan": backend_result["node_plan"],
-            "node_ui": backend_result["node_ui"],
             "backend_nodes": backend_result["backend_nodes"],
-            "frontend_nodes": {
-                "existing": existing_frontend_map,
-                "generated": generated_frontend_map,
-                "all": all_frontend_map,
-            },
-            "frontend_shared": {
-                key: str(path) for key, path in shared_frontend_outputs.items()
-            },
             "workflow_json_path": workflow_json_path,
             "main_entrypoint": main_output_path,
         }
@@ -1389,9 +996,7 @@ class AgentBuilder:
         if not self.graph_plan_path:
             raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
 
-        resolved_frontend_project_dir = frontend_project_dir or getattr(self, "frontend_project_dir", "frontend")
         artifact_state = self._validate_generated_artifacts(
-            frontend_project_dir=resolved_frontend_project_dir,
             graph_plan_path=self.graph_plan_path,
             node_docs_dirname=node_docs_dirname,
             node_ui_dirname=node_ui_dirname,
@@ -1399,26 +1004,18 @@ class AgentBuilder:
             main_entrypoint_path=main_entrypoint_path,
         )
 
-        resolved_frontend_dir = Path(artifact_state["frontend_project_dir"]).expanduser().resolve()
         main_path = Path(artifact_state["main_entrypoint"]).expanduser().resolve()
-        self._write_vue_proxy_config(resolved_frontend_dir, backend_port=backend_port)
 
         self._stop_managed_server_process(self.backend_server_process)
         self._stop_managed_server_process(self.frontend_server_process)
+        self.frontend_server_process = None
 
         python_cmd = select_python_command()
-        npm_cmd = shutil.which("npm") or "npm"
         backend_command = [python_cmd, str(main_path)]
-        frontend_command = [npm_cmd, "run", "serve", "--", "--host", frontend_host, "--port", str(frontend_port)]
 
         self.backend_server_process = subprocess.Popen(
             backend_command,
             cwd=str(main_path.parent),
-            env=os.environ.copy(),
-        )
-        self.frontend_server_process = subprocess.Popen(
-            frontend_command,
-            cwd=str(resolved_frontend_dir),
             env=os.environ.copy(),
         )
 
@@ -1427,11 +1024,6 @@ class AgentBuilder:
                 "pid": getattr(self.backend_server_process, "pid", None),
                 "command": backend_command,
                 "cwd": str(main_path.parent),
-            },
-            "frontend": {
-                "pid": getattr(self.frontend_server_process, "pid", None),
-                "command": frontend_command,
-                "cwd": str(resolved_frontend_dir),
             },
             "artifacts": artifact_state,
         }
@@ -1450,42 +1042,8 @@ class AgentBuilder:
         max_tokens: int = MAX_TOKENS,
         overwrite: bool = True,
     ) -> str:
-        """Amend a single node UI HTML file using file-based planner wrapper."""
-        if not isinstance(node_name, str) or not node_name.strip():
-            raise ValueError("node_name must be a non-empty string.")
-        if not isinstance(amendment, str) or not amendment.strip():
-            raise ValueError("amendment must be a non-empty string.")
-
-        if requirement_md_path:
-            self.requirement_md_path = requirement_md_path
-        if graph_plan_path:
-            self.graph_plan_path = graph_plan_path
-
-        if not self.requirement_md_path:
-            raise ValueError("requirement_md_path is not set. Call analyze_requirement(...) first or pass requirement_md_path.")
-        if not self.graph_plan_path:
-            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
-
-        target_html_path = existing_html_path
-        if target_html_path is None:
-            target_html_path = os.path.join(self.root_dir, "node_ui", f"{node_name}.html")
-
-        self._logger.info("Amending node UI '%s' -> %s", node_name, target_html_path)
-        amended_path = self.node_planner.amend_node_ui_from_files(
-            node_name=node_name,
-            user_prompt=amendment,
-            existing_html_path=target_html_path,
-            requirement_md_path=self.requirement_md_path,
-            graph_plan_json_path=self.graph_plan_path,
-            output_path=output_path,
-            overwrite=overwrite,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-        final_path = str(amended_path)
-        self.last_amended_node_ui_path = final_path
-        return final_path
+        del node_name, amendment, existing_html_path, requirement_md_path, graph_plan_path, output_path, temperature, max_tokens, overwrite
+        raise self._node_ui_removed_error()
 
     def amend_node_markdown(
         self,
@@ -1518,8 +1076,6 @@ class AgentBuilder:
         target_markdown_path = output_path or existing_markdown_path
         if target_markdown_path is None:
             target_markdown_path = os.path.join(self.root_dir, "node_docs", f"{node_name}.md")
-        target_html_dir = getattr(self, "node_html_dir", os.path.join(self.root_dir, "node_ui"))
-        target_html_path = os.path.join(target_html_dir, f"{node_name}.html")
 
         self._logger.info("Amending node markdown '%s' -> %s", node_name, target_markdown_path)
         amended_graph_path, amended_doc_path = self.node_planner.amend_graph_node_from_files(
@@ -1528,7 +1084,6 @@ class AgentBuilder:
             requirement_md_path=self.requirement_md_path,
             graph_plan_json_path=self.graph_plan_path,
             node_output_path=target_markdown_path,
-            node_ui_output_path=target_html_path,
             overwrite=overwrite,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -1546,110 +1101,16 @@ class AgentBuilder:
         updated_paths.append(final_path)
         self.node_doc_paths = updated_paths
         self.last_amended_node_doc_path = final_path
-
-        node_meta = self.planned_graph.get_node_meta(node_name)
-        existing_html_paths = list(getattr(self, "node_html_paths", []) or [])
-        expected_html_name = f"{node_name}.html"
-        self.node_html_paths = [
-            path for path in existing_html_paths if Path(path).name != expected_html_name
-        ]
-        if node_meta and node_meta.show_frontend:
-            self.node_html_dir = str(Path(target_html_path).parent)
-            self.node_html_paths.append(target_html_path)
-            self.last_amended_node_ui_path = target_html_path
         return final_path
 
     def _build_steps_meta(self, include_hidden_nodes: bool = False) -> List[Dict[str, Any]]:
-        """Build step metadata for frontend generation from planned graph."""
-        steps_meta: List[Dict[str, Any]] = []
-        for node_name in self.planned_graph.get_topological_sorted_nodes():
-            node_meta = self.planned_graph.get_node_meta(node_name)
-            if node_meta and not node_meta.show_frontend and not include_hidden_nodes:
-                continue
-            title = (node_meta.desc or node_name) if node_meta else node_name
-            prompt = (node_meta.desc or f"Provide input for {node_name}") if node_meta else f"Provide input for {node_name}"
-            dependencies = node_meta.depends if node_meta and node_meta.depends else []
-            services = node_meta.services if node_meta and node_meta.services else []
-            ext_data = node_meta.ext_data if node_meta and node_meta.ext_data else {"type": "none", "desc": "no need for ext data"}
-            inputs_format = node_meta.inputs_format if node_meta and getattr(node_meta, "inputs_format", None) else {}
-            if not isinstance(inputs_format, Mapping):
-                inputs_format = {}
-            normalized_inputs_format: Dict[str, str] = {}
-            for key, value in inputs_format.items():
-                field_name = str(key).strip()
-                field_type = str(value).strip().lower()
-                if field_name and field_type:
-                    normalized_inputs_format[field_name] = field_type
-            if isinstance(ext_data, dict):
-                ext_type = str(ext_data.get("type", "none")).strip().lower()
-                ext_desc = str(ext_data.get("desc", "")).strip()
-                service_name = str(ext_data.get("service_name", "")).strip()
-            else:
-                ext_type = str(ext_data).strip().lower() or "none"
-                ext_desc = ""
-                service_name = ""
-
-            input_required = ext_type in {"user_input", "user_file_input"}
-            if ext_type == "user_file_input":
-                node_kind = "file"
-            elif ext_type == "service" or service_name:
-                node_kind = "service"
-            elif ext_type == "skill" or str(ext_data.get("skill_name", "") if isinstance(ext_data, Mapping) else "").strip():
-                node_kind = "skill"
-            elif input_required:
-                node_kind = "input"
-            else:
-                node_kind = "operation"
-            steps_meta.append(
-                {
-                    "id": node_name,
-                    "title": title,
-                    "prompt": prompt,
-                    "dependencies": dependencies,
-                    "services": services,
-                    "inputRequired": input_required,
-                    "nodeKind": node_kind,
-                    "extData": {
-                        "type": ext_type,
-                        "desc": ext_desc,
-                        "inputs_format": normalized_inputs_format if ext_type in ("user_input", "skill") else {},
-                    },
-                }
-            )
-        return steps_meta
+        del include_hidden_nodes
+        raise self._frontend_removed_error()
 
     @classmethod
     def _resolve_frontend_violation_target(cls, frontend_src_dir: str | Path, violation: Any) -> Optional[Path]:
-        file_map = build_frontend_src_file_map(frontend_src_dir)
-        rule_to_target = {
-            "execution_endpoint_missing": "api",
-            "reset_session_endpoint_missing": "api",
-            "step_card_handler_missing": "store",
-            "session_id_usage_missing": "store",
-            "step_output_schema_renderer_missing": "app_shell",
-            "app_shell_import_missing": "app",
-            "app_view_import_missing": "app",
-        }
-
-        frontend_src_path = Path(frontend_src_dir).expanduser().resolve()
-        for raw_path in [
-            getattr(violation, "class_name", ""),
-            str(getattr(violation, "detail", "")).split(":", 1)[0].strip(),
-        ]:
-            if not raw_path:
-                continue
-            candidate = Path(raw_path).expanduser()
-            if candidate.is_file():
-                return candidate.resolve()
-            if not candidate.is_absolute():
-                relative_candidate = (frontend_src_path / candidate).resolve()
-                if relative_candidate.is_file():
-                    return relative_candidate
-
-        target_key = rule_to_target.get(getattr(violation, "rule", ""))
-        if target_key is None:
-            return None
-        return file_map[target_key]
+        del cls, frontend_src_dir, violation
+        raise RuntimeError("Frontend auditing has been removed from meta_agent.")
 
     def generate_frontend(
         self,
@@ -1661,57 +1122,8 @@ class AgentBuilder:
         max_audit_rounds: Optional[int] = None,
         backend_port: int = 8000,
     ) -> str:
-        """Generate and audit frontend output in vue_src mode."""
-        frontend_path = os.path.join(self.root_dir, output_filename+"/src")
-        frontend_project_dir = os.path.join(self.root_dir, output_filename)
-        self._ensure_vue_frontend_project(frontend_project_dir, backend_port=backend_port)
-        self._logger.info("Generating frontend -> %s", frontend_path)
-        steps_meta = self._build_steps_meta()
-        store_steps_meta = self._build_steps_meta(include_hidden_nodes=True)
-        max_audit_rounds = self._resolve_max_audit_rounds(max_audit_rounds)
-
-        effective_style_prompt = frontend_style_prompt
-        if effective_style_prompt is None:
-            effective_style_prompt = self.frontend_style_prompt
-        if isinstance(effective_style_prompt, str):
-            effective_style_prompt = effective_style_prompt.strip() or None
-        self._logger.debug("Starting frontend generation with style prompt=%r", effective_style_prompt)
-
-        if frontend_mode != "vue_src":
-            raise ValueError("frontend_mode must be 'vue_src'.")
-        reference_frontend_src_dir = get_reference_frontend_src_dir()
-        self.frontend_project_dir = frontend_project_dir
-        self.generate_frontend_views(
-            output_base_dir=frontend_path,
-            context_base_dir=context_base_dir,
-            temperature=temperature,
-        )
-
-        self.frontend_writer.write_frontend_src_files(
-            steps_meta=steps_meta,
-            store_steps_meta=store_steps_meta,
-            output_base_dir=frontend_path,
-            context_base_dir=context_base_dir,
-            run_step_endpoint="/api/run-step",
-            reset_session_endpoint="/api/reset-session",
-            requirement_analysis_result=self.requirement_analysis_result,
-            reference_frontend_src_dir=reference_frontend_src_dir,
-            frontend_style_prompt=effective_style_prompt,
-            overwrite=True,
-            temperature=temperature,
-        )
-        self._audit_frontend_src(
-            frontend_path=frontend_path,
-            steps_meta=steps_meta,
-            context_base_dir=context_base_dir,
-            reference_frontend_src_dir=reference_frontend_src_dir,
-            frontend_style_prompt=effective_style_prompt,
-            temperature=temperature,
-            max_audit_rounds=max_audit_rounds,
-        )
-
-        self.frontend_output_path = frontend_path
-        return frontend_path
+        del output_filename, frontend_mode, temperature, frontend_style_prompt, context_base_dir, max_audit_rounds, backend_port
+        raise self._frontend_removed_error()
 
     def _prepare_frontend_project_and_main_entrypoint(
         self,
@@ -1735,68 +1147,10 @@ class AgentBuilder:
             resolved_frontend_dir = resolved_frontend_dir.resolve()
 
         if ensure_frontend_project:
-            if resolved_frontend_dir is None:
-                raise ValueError("frontend_project_dir is required when ensure_frontend_project=True.")
-
-            if resolved_frontend_dir.exists():
-                pass
-            else:
-                vue_executable = shutil.which("vue")
-                if not vue_executable:
-                    create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-                    self._logger.warning(
-                        "warning: Vue CLI is not installed or not available on PATH; "
-                        f"using minimal frontend scaffold at {resolved_frontend_dir}"
-                    )
-                else:
-                    self._logger.info("Creating Vue frontend project -> %s", resolved_frontend_dir)
-                    try:
-                        subprocess.run(
-                            [vue_executable, "create", resolved_frontend_dir.name, "--default"],
-                            cwd=str(resolved_frontend_dir.parent),
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                        )
-                    except subprocess.CalledProcessError as exc:
-                        stderr = exc.stderr.strip() if exc.stderr else ""
-                        stdout = exc.stdout.strip() if exc.stdout else ""
-                        detail = stderr or stdout or str(exc)
-                        create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-                        self._logger.warning(
-                            "warning: vue create failed; "
-                            f"using minimal frontend scaffold at {resolved_frontend_dir}. "
-                            f"Original error: {detail}"
-                        )
-                    except OSError as exc:
-                        create_minimal_vue_frontend_scaffold(resolved_frontend_dir)
-                        self._logger.warning(
-                            "warning: vue command execution failed; "
-                            f"using minimal frontend scaffold at {resolved_frontend_dir}. "
-                            f"Original error: {exc}"
-                        )
+            raise self._frontend_removed_error()
 
         if write_proxy_config:
-            if resolved_frontend_dir is None:
-                raise ValueError("frontend_project_dir is required when write_proxy_config=True.")
-            if not isinstance(backend_port, int) or not (1 <= backend_port <= 65535):
-                raise ValueError("backend_port must be an integer in range 1..65535.")
-
-            vue_config_path = resolved_frontend_dir / "vue.config.js"
-            vue_config_path.write_text(
-                "const { defineConfig } = require('@vue/cli-service')\n"
-                "module.exports = defineConfig({\n"
-                "  devServer: {\n"
-                "    proxy: {\n"
-                "      '/api': {\n"
-                f"        target: 'http://127.0.0.1:{backend_port}',\n"
-                "        changeOrigin: true,\n"
-                "      },\n"
-                "    },\n"
-                "  },\n"
-                "})\n",
-                encoding="utf-8",
-            )
+            raise self._frontend_removed_error()
 
         generated_main_output_path: str | None = None
         if generate_main_entrypoint:
@@ -1846,23 +1200,12 @@ class AgentBuilder:
         )
 
     def _ensure_vue_frontend_project(self, frontend_project_dir: str, backend_port: int = 8000) -> str:
-        """Create the Vue frontend project with Vue CLI when it is missing."""
-        resolved_frontend_dir, _ = self._prepare_frontend_project_and_main_entrypoint(
-            frontend_project_dir=frontend_project_dir,
-            backend_port=backend_port,
-            ensure_frontend_project=True,
-            write_proxy_config=True,
-        )
-        if resolved_frontend_dir is None:
-            raise RuntimeError("frontend project preparation did not return a directory path.")
-        return resolved_frontend_dir
+        del frontend_project_dir, backend_port
+        raise self._frontend_removed_error()
 
     def _write_vue_proxy_config(self, frontend_dir: Path, backend_port: int = 8000) -> None:
-        self._prepare_frontend_project_and_main_entrypoint(
-            frontend_project_dir=frontend_dir,
-            backend_port=backend_port,
-            write_proxy_config=True,
-        )
+        del frontend_dir, backend_port
+        raise self._frontend_removed_error()
 
     def generate_frontend_views(
         self,
@@ -1871,69 +1214,8 @@ class AgentBuilder:
         context_base_dir: Optional[str] = None,
         temperature: float = 0.3,
     ) -> Dict[str, Dict[str, str]]:
-        """Generate one Vue view and stylesheet per graph node in dependency order."""
-        if graph_plan_path:
-            self.graph_plan_path = graph_plan_path
-        if not self.graph_plan_path:
-            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
-
-        graph_path = Path(self.graph_plan_path).expanduser().resolve()
-        planned_graph = getattr(self, "planned_graph", None)
-        if planned_graph is None or Path(planned_graph.graph_json_path).resolve() != graph_path:
-            self.planned_graph = Graph(str(graph_path))
-
-        resolved_output_dir = Path(output_base_dir).expanduser()
-        if not resolved_output_dir.is_absolute():
-            resolved_output_dir = Path(self.root_dir).expanduser() / resolved_output_dir
-        resolved_output_dir = resolved_output_dir.resolve()
-
-        if context_base_dir is None:
-            resolved_context_dir = Path(self.root_dir).expanduser().resolve()
-        else:
-            resolved_context_dir = Path(context_base_dir).expanduser().resolve()
-
-        graph_plan_context = graph_path.read_text(encoding="utf-8")
-        self.frontend_view_writer_map = {}
-        self.frontend_view_output_map = {}
-        self.frontend_views_output_path = str(resolved_output_dir)
-
-        nodes = [
-            node_name
-            for node_name in self.planned_graph.get_topological_sorted_nodes()
-            if not self.planned_graph.get_node_meta(node_name)
-            or self.planned_graph.get_node_meta(node_name).show_frontend
-        ]
-        total = len(nodes)
-        pipeline = GPipeline()
-
-        elements: Dict[str, _FrontendViewGenerateElement] = {}
-        for index, name in enumerate(nodes, start=1):
-            elements[name] = _FrontendViewGenerateElement(
-                self,
-                name,
-                total,
-                index,
-                output_base_dir=str(resolved_output_dir),
-                context_base_dir=str(resolved_context_dir),
-                graph_plan_context=graph_plan_context,
-                temperature=temperature,
-            )
-            self.frontend_view_writer_map[name] = elements[name].coder
-
-        for name in nodes:
-            node_meta = self.planned_graph.get_node_meta(name)
-            depends = set()
-            if node_meta and node_meta.depends:
-                depends = {elements[dep] for dep in node_meta.depends if dep in elements}
-            status = pipeline.registerGElement(elements[name], depends, name, 1)
-            if status.isErr():
-                raise RuntimeError(f"registerGElement failed for frontend view {name}: {status.getInfo()}")
-
-        process_status = pipeline.process()
-        if process_status.isErr():
-            raise RuntimeError(f"generate_frontend_views pipeline.process failed: {process_status.getInfo()}")
-
-        return self.frontend_view_output_map
+        del graph_plan_path, output_base_dir, context_base_dir, temperature
+        raise self._frontend_removed_error()
 
     def generate_main_entrypoint(
         self,
@@ -2106,30 +1388,25 @@ class AgentBuilder:
         context_base_dir: Optional[str] = None,
         backend_port: int = 8000,
     ) -> None:
-        """Run full build pipeline and generate AG-UI deliverables.
+        """Run full build pipeline and generate backend workflow deliverables.
 
         Args:
             requirement_text: Raw requirement text to analyze.
             requirement_file: Path to an existing requirement file (takes precedence).
             test_after_generation: Whether to test generated main.py after generation.
             generate_node_docs: Whether to generate per-node markdown planning docs.
-            generate_node_html: Whether to generate per-node HTML interaction files for node writing context.
-            frontend_mode: Frontend output mode. Only 'vue_src' is supported.
-            frontend_style_prompt: Optional style guidance for generated frontend output.
-            context_base_dir: Optional base directory for loading workflow.json and node_ui/*.html used as frontend generation context.
-            backend_port: Backend API port used by the generated Vue devServer proxy.
+            generate_node_html: Reserved for backward compatibility; ignored.
+            frontend_mode: Reserved for backward compatibility; ignored.
+            frontend_style_prompt: Reserved for backward compatibility; ignored.
+            context_base_dir: Optional base directory for syncing workflow.json.
+            backend_port: Backend API port used by the generated FastAPI app.
         """
-        total_steps = 5
+        total_steps = 4
         if generate_node_docs:
-            total_steps += 1
-        if generate_node_html:
             total_steps += 1
         if test_after_generation:
             total_steps += 1
         self._start_progress(total_steps=total_steps)
-
-        if frontend_style_prompt is not None:
-            self.frontend_style_prompt = frontend_style_prompt.strip() or None
 
         req_path = self.analyze_requirement(requirement_text=requirement_text, requirement_file=requirement_file)
         self._advance_progress("Requirement analyzed")
@@ -2146,30 +1423,10 @@ class AgentBuilder:
             )
             self._advance_progress("Per-node markdown plans generated")
 
-        if generate_node_html:
-            self.generate_node_html(
-                requirement_md_path=req_path,
-                graph_plan_path=self.graph_plan_path,
-                output_dirname="node_ui",
-                temperature=0.0,
-            )
-            self._advance_progress("Per-node HTML interaction files generated")
-
         self._logger.info("Starting node generation and audit...")
         self.generate_nodes(language="python", temperature=0.0)
         self._logger.info("All nodes generated and audited successfully.")
         self._advance_progress("Node files generated and audited")
-
-        self._logger.info("Generating frontend...")
-        self.generate_frontend(
-            output_filename=os.path.join("frontend", "src"),
-            frontend_mode=frontend_mode,
-            temperature=0.0,
-            frontend_style_prompt=self.frontend_style_prompt,
-            context_base_dir=context_base_dir,
-            backend_port=backend_port,
-        )
-        self._advance_progress(f"frontend generated and audited ({frontend_mode})")
 
         self._logger.info("Generating main entrypoint...")
         main_entrypoint_path = self.generate_main_entrypoint(
@@ -2203,8 +1460,5 @@ class AgentBuilder:
         self._logger.info("- graph_plan_path.json: %s", self.graph_plan_path)
         if generate_node_docs:
             self._logger.info("- node_docs/: %s", getattr(self, "node_docs_dir", ""))
-        if generate_node_html:
-            self._logger.info("- node_ui/: %s", getattr(self, "node_html_dir", ""))
-        self._logger.info("- frontend: %s", self.frontend_output_path)
         self._logger.info("- main.py: %s", self.main_output_path)
 

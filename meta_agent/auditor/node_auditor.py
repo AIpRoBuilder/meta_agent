@@ -92,7 +92,6 @@ class NodeAuditor(BaseAuditor):
             self._check_clone(cls, violations)
             self._check_init(cls, violations)
             self._check_step_id_matches_class_name(cls, violations)
-            self._check_hidden_frontend_nodes_disable_input(cls, violations, node_meta)
             self._check_step_node_dependency_results(cls, path, violations)
             self._check_file_node_no_build_step_output(cls, violations)
             self._check_operation_node_dependency_results(cls, path, violations)
@@ -270,63 +269,6 @@ class NodeAuditor(BaseAuditor):
                     rule="step_id_mismatch",
                     detail=f"STEP_ID must match class name '{cls.name}'.",
                     lineno=step_id_lineno,
-                )
-            )
-
-    def _check_hidden_frontend_nodes_disable_input(
-        self,
-        cls: ast.ClassDef,
-        violations: List[RuleViolation],
-        node_meta: Optional[NodeMeta] = None,
-    ) -> None:
-        """Ensure hidden nodes explicitly disable input in class metadata."""
-        if node_meta is None or node_meta.show_frontend:
-            return
-        if not self._is_registered_class(cls):
-            return
-        if not self._is_workflow_step_node_subclass(cls):
-            return
-
-        input_required_value: ast.expr | None = None
-        input_required_lineno = cls.lineno
-        for node in cls.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "INPUT_REQUIRED":
-                        input_required_value = node.value
-                        input_required_lineno = node.lineno
-                        break
-            elif isinstance(node, ast.AnnAssign):
-                if isinstance(node.target, ast.Name) and node.target.id == "INPUT_REQUIRED":
-                    input_required_value = node.value
-                    input_required_lineno = node.lineno
-            if input_required_value is not None:
-                break
-
-        if input_required_value is None:
-            violations.append(
-                RuleViolation(
-                    class_name=cls.name,
-                    rule="hidden_frontend_input_required_missing",
-                    detail=(
-                        "When node_meta.show_frontend is False, the node class must define "
-                        "INPUT_REQUIRED = False."
-                    ),
-                    lineno=cls.lineno,
-                )
-            )
-            return
-
-        if not (isinstance(input_required_value, ast.Constant) and input_required_value.value is False):
-            violations.append(
-                RuleViolation(
-                    class_name=cls.name,
-                    rule="hidden_frontend_input_required_invalid",
-                    detail=(
-                        "When node_meta.show_frontend is False, INPUT_REQUIRED must be the "
-                        "literal False."
-                    ),
-                    lineno=input_required_lineno,
                 )
             )
 

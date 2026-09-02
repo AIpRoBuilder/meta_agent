@@ -1,6 +1,6 @@
 # meta_agent
 
-meta_agent is a Python library for generating AG-UI workflow projects, including backend workflow nodes, FastAPI entrypoints, and Vue frontend files.
+meta_agent is a Python library for generating AG-UI workflow projects, including backend workflow nodes, FastAPI entrypoints, and workflow planning artifacts.
 
 ## Requirements
 
