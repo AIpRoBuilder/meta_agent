@@ -247,15 +247,6 @@ class AgentBuilder:
     def _node_ui_removed_error() -> RuntimeError:
         return RuntimeError("Node UI planning has been removed from meta_agent.")
 
-    @staticmethod
-    def _has_legacy_service_metadata(ext_data: Any) -> bool:
-        if isinstance(ext_data, Mapping):
-            ext_type = str(ext_data.get("type", "")).strip().lower()
-            return ext_type == "service" or "service_name" in ext_data
-        if isinstance(ext_data, str):
-            return ext_data.strip().lower() == "service"
-        return False
-
     def reset_llm_config(
         self,
         api_key: Optional[str] = None,
@@ -273,8 +264,6 @@ class AgentBuilder:
 
     def _make_node_coder(self, node_meta: Any) -> PromptNodeFileCoderBase:
         ext_data = node_meta.ext_data if node_meta and hasattr(node_meta, 'ext_data') else None
-        if self._has_legacy_service_metadata(ext_data):
-            raise ValueError("Service-related node metadata is no longer supported in meta_agent.")
         if is_skill_ext_data(ext_data):
             return WorkflowSkillNodeCoder(
                 api_key=self.api_key,

@@ -21,18 +21,6 @@ class GraphJsonAuditor(BaseJsonAuditor):
 			return ext_data.strip().lower()
 		return ""
 
-	def _has_legacy_service_metadata(self, node: Dict[str, Any]) -> bool:
-		ext_data = node.get("ext_data")
-		if isinstance(ext_data, dict):
-			if str(ext_data.get("type", "")).strip().lower() == "service":
-				return True
-			if "service_name" in ext_data:
-				return True
-		elif isinstance(ext_data, str) and ext_data.strip().lower() == "service":
-			return True
-
-		return "services" in node
-
 	def _collect_transitive_dependencies(
 		self,
 		node_name: str,
@@ -121,19 +109,6 @@ class GraphJsonAuditor(BaseJsonAuditor):
 						detail=(
 							f"Node '{name or '<empty>'}' uses deprecated ext_data.type='image'. "
 							"Use supported node kinds such as user_file_input, user_input, skill, spatial_temporal_contract, or none."
-						),
-						lineno=index,
-					)
-				)
-
-			if self._has_legacy_service_metadata(node):
-				violations.append(
-					JsonRuleViolation(
-						parts_name="graph",
-						rule="service_metadata_unsupported",
-						detail=(
-							f"Node '{name or '<empty>'}' uses deprecated service-related metadata. "
-							"Fields ext_data.type='service', ext_data.service_name, and node.services are no longer supported."
 						),
 						lineno=index,
 					)

@@ -516,7 +516,6 @@ class NodeAuditor(BaseAuditor):
         Rules:
         - ext_data.type == "user_input" => class must subclass WorkflowStepNode
         - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
-        - service-related ext_data metadata is unsupported
         - ext_data.type == "spatial_temporal_contract" => class must subclass SpatialTemporalContractNode
         - ext_data.type == "none" => class must subclass WorkflowOperationNode
         """
@@ -527,10 +526,8 @@ class NodeAuditor(BaseAuditor):
 
         ext_type = ""
         ext_data = node_meta.ext_data
-        service_name_present = False
         if isinstance(ext_data, Mapping):
             ext_type = str(ext_data.get("type", "")).strip().lower()
-            service_name_present = "service_name" in ext_data
         elif isinstance(ext_data, str):
             ext_type = ext_data.strip().lower()
 
@@ -560,15 +557,6 @@ class NodeAuditor(BaseAuditor):
                     class_name=cls.name,
                     rule="ext_data_image_unsupported",
                     detail="ext_data.type='image' is no longer supported.",
-                    lineno=cls.lineno,
-                )
-            )
-        elif ext_type == "service" or service_name_present:
-            violations.append(
-                RuleViolation(
-                    class_name=cls.name,
-                    rule="ext_data_service_unsupported",
-                    detail="Service-related node metadata is no longer supported in meta_agent.",
                     lineno=cls.lineno,
                 )
             )

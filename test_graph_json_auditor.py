@@ -94,27 +94,3 @@ def test_graph_planner_strips_legacy_show_frontend_field(tmp_path) -> None:
     assert "show_frontend" not in normalized["nodes"][1]
     assert "show_frontend" not in normalized["nodes"][2]
 
-
-def test_graph_json_auditor_rejects_legacy_service_metadata() -> None:
-    graph = _write_graph(
-        {
-            "nodes": [
-                {
-                    "name": "BootstrapService",
-                    "type": "BootstrapService",
-                    "desc": "bootstrap service",
-                    "ext_data": {
-                        "type": "service",
-                        "desc": "start crawler service",
-                        "service_name": "media_crawler",
-                    },
-                    "services": [{"service_name": "media_crawler", "use_desc": "legacy"}],
-                }
-            ]
-        }
-    )
-
-    is_valid, violations = GraphJsonAuditor().audit_graph_json(graph)
-
-    assert is_valid is False
-    assert any(v.rule == "service_metadata_unsupported" for v in violations)

@@ -197,35 +197,6 @@ def test_agent_builder_make_node_coder_routes_spatial_temporal_contract(monkeypa
     )
 
 
-def test_agent_builder_make_node_coder_rejects_service_metadata(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent_builder_module, "RequirementDisector", _FakeComponent)
-    monkeypatch.setattr(agent_builder_module, "GraphPlanner", _FakeComponent)
-    monkeypatch.setattr(agent_builder_module, "NodePlanner", _FakeComponent)
-    monkeypatch.setattr(agent_builder_module, "PromptMainFileCoder", _FakeComponent)
-
-    builder = AgentBuilder(
-        api_key="key",
-        model="model",
-        provider="provider",
-        root_dir=str(tmp_path),
-        session_marking_prompt="Keep request scope in generated node IO.",
-    )
-
-    with pytest.raises(ValueError, match="Service-related node metadata"):
-        builder._make_node_coder(
-            NodeMeta(
-                name="BootstrapCrawler",
-                type="",
-                desc="Bootstrap the crawler service",
-                ext_data={
-                    "type": "service",
-                    "desc": "start crawler service",
-                    "service_name": "media_crawler",
-                },
-            )
-        )
-
-
 def test_node_planner_system_prompt_includes_session_marking_prompt():
     planner = NodePlanner(
         client=_FakeClient(),

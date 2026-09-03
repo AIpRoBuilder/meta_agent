@@ -45,49 +45,6 @@ def test_node_auditor_accepts_spatial_temporal_contract_node(tmp_path):
     assert violations == []
 
 
-def test_node_auditor_rejects_service_ext_data(tmp_path):
-    node_file_path = tmp_path / "LegacyServiceNode.py"
-    node_file_path.write_text(
-        "from typing import Any\n"
-        "from pydaograph import register_class\n"
-        "from ag_ui_workflow.nodes import WorkflowOperationNode\n"
-        "from ag_ui_workflow.workflow_types import StepRunOutput\n\n"
-        "@register_class\n"
-        "class LegacyServiceNode(WorkflowOperationNode):\n"
-        "    STEP_ID = \"LegacyServiceNode\"\n"
-        "    TITLE = \"Legacy Service\"\n"
-        "    PROMPT = \"\"\n"
-        "    DEPENDENCIES = []\n"
-        "    def process_operation(\n"
-        "        self,\n"
-        "        dependency_results: dict[str, StepRunOutput],\n"
-        "        session_state: dict[str, Any],\n"
-        "    ) -> StepRunOutput:\n"
-        "        return StepRunOutput(card={\"status\": \"ok\"}, derived={\"status\": \"ok\"})\n\n"
-        "    def clone(self):\n"
-        "        return self\n",
-        encoding="utf-8",
-    )
-
-    ok, violations = NodeAuditor().audit_node_file(
-        str(node_file_path),
-        node_meta=NodeMeta(
-            name="LegacyServiceNode",
-            type="LegacyServiceNode",
-            desc="Legacy service node",
-            ext_data={
-                "type": "service",
-                "desc": "start crawler service",
-                "service_name": "media_crawler",
-            },
-            depends=[],
-        ),
-    )
-
-    assert ok is False
-    assert any(v.rule == "ext_data_service_unsupported" for v in violations)
-
-
 def test_file_tools_fallback_to_spatial_temporal_contract_base_methods(tmp_path):
     node_file_path = tmp_path / "BuildContract.py"
     _write_spatial_temporal_node(node_file_path)
