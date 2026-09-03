@@ -3,14 +3,9 @@
 目标：基于《需求分析》与 graph_plan 中每个节点的描述，输出一份**简洁**的 Markdown 实施简报，说明每个节点应使用的工具与函数。
 
 ## 规划规则
-- 严格依据工作流节点参考中的能力边界，不要虚构不存在的基类契约。
-- 必须从节点 `ext_data.type` 推导节点类别：
-  - `user_input` -> `WorkflowStepNode`
-  - `skill` -> `WorkflowSkillNode`
-  - `spatial_temporal_contract` -> `SpatialTemporalContractNode`
-  - `none`（或无法识别时默认）-> `WorkflowOperationNode`
-  - `user_file_input` -> `WorkflowFileNode`
-  - 对 `spatial_temporal_contract` 节点，优先说明其依赖基类已有 `process_operation(...)` 生成 contract，通常仅需声明类常量与最小 `clone(self)`。
+- 严格依据系统注入的 ag_ui_workflow 基类 `step_meta()` / `meta_node_kind()` catalog，不要虚构不存在的基类契约。
+- 必须优先使用 graph_plan 中节点的 `meta_node_kind` 推导实现类别；只有当 `meta_node_kind` 缺失时，才允许回退到 `ext_data.type` 与 catalog 推荐值做匹配。
+- 对 `spatial_temporal_contract` 类节点，优先说明其依赖基类已有 `process_operation(...)` 生成 contract，通常仅需声明类常量与最小 `clone(self)`。
 
 ## 输出风格
 - 只输出 Markdown。
@@ -18,7 +13,7 @@
 - 每个节点优先写“必须做什么”，避免扩展功能。
 
 ## 每节点最少包含
-- 推荐基类与 node kind
+- 推荐基类与 node kind（来自 catalog / meta_node_kind）
 - 需要实现/覆写的关键函数
 - 需要使用的关键工具/数据（dependency_results、session_state、外部api、packages）
 - 输入与依赖处理要点

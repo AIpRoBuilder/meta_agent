@@ -10,6 +10,10 @@ from meta_agent.auditor.data import RuleViolation
 from meta_agent.auditor.base_auditor import BaseAuditor
 from meta_agent.architect.graph import Graph, NodeMeta
 from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
+from meta_agent.tools.workflow_node_reference import (
+    resolve_workflow_node_reference,
+    workflow_meta_node_kind_name_set,
+)
 
 
 class NodeAuditor(BaseAuditor):
@@ -272,10 +276,11 @@ class NodeAuditor(BaseAuditor):
             )
 
     def _is_workflow_step_node_subclass(self, cls: ast.ClassDef) -> bool:
+        workflow_meta_node_kinds = workflow_meta_node_kind_name_set()
         for base in cls.bases:
-            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
+            if isinstance(base, ast.Name) and base.id in workflow_meta_node_kinds:
                 return True
-            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
+            if isinstance(base, ast.Attribute) and base.attr in workflow_meta_node_kinds:
                 return True
         return False
 
@@ -511,14 +516,7 @@ class NodeAuditor(BaseAuditor):
         violations: List[RuleViolation],
         node_meta: Optional[NodeMeta] = None,
     ) -> None:
-        """Enforce required workflow base class based on ``node_meta.ext_data.type``.
-
-        Rules:
-        - ext_data.type == "user_input" => class must subclass WorkflowStepNode
-        - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
-        - ext_data.type == "spatial_temporal_contract" => class must subclass SpatialTemporalContractNode
-        - ext_data.type == "none" => class must subclass WorkflowOperationNode
-        """
+        """Enforce the required workflow base class from canonical node metadata."""
         if node_meta is None:
             return
         if not self._is_registered_class(cls):
@@ -531,27 +529,7 @@ class NodeAuditor(BaseAuditor):
         elif isinstance(ext_data, str):
             ext_type = ext_data.strip().lower()
 
-        if ext_type == "user_input":
-            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowStepNode"}):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_user_input_requires_step_node",
-                        detail="When ext_data.type is 'user_input', the node class must subclass WorkflowStepNode.",
-                        lineno=cls.lineno,
-                    )
-                )
-        elif ext_type == "user_file_input":
-            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowFileNode"}):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_user_file_input_requires_file_node",
-                        detail="When ext_data.type is 'user_file_input', the node class must subclass WorkflowFileNode.",
-                        lineno=cls.lineno,
-                    )
-                )
-        elif ext_type == "image":
+        if ext_type == "image":
             violations.append(
                 RuleViolation(
                     class_name=cls.name,
@@ -560,39 +538,29 @@ class NodeAuditor(BaseAuditor):
                     lineno=cls.lineno,
                 )
             )
-        elif ext_type == "skill":
-            if not self._is_workflow_skill_node_subclass(cls):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_skill_requires_skill_node",
-                        detail="When ext_data.type is 'skill', the node class must subclass WorkflowSkillNode.",
-                        lineno=cls.lineno,
-                    )
-                )
-        elif ext_type == "spatial_temporal_contract":
-            if not self._is_spatial_temporal_contract_node_subclass(cls):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_spatial_temporal_contract_requires_spatial_temporal_contract_node",
-                        detail=(
-                            "When ext_data.type is 'spatial_temporal_contract', "
-                            "the node class must subclass SpatialTemporalContractNode."
-                        ),
-                        lineno=cls.lineno,
-                    )
-                )
-        elif ext_type == "none":
-            if not self._is_direct_or_attr_base_subclass(cls, {"WorkflowOperationNode"}):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_none_requires_operation_node",
-                        detail="When ext_data.type is 'none', the node class must subclass WorkflowOperationNode.",
-                        lineno=cls.lineno,
-                    )
-                )
+            return
+
+        expected_reference = resolve_workflow_node_reference(
+            meta_node_kind=getattr(node_meta, "meta_node_kind", "") or None,
+            ext_data=ext_data,
+        )
+        expected_base = expected_reference.meta_node_kind
+        if self._is_direct_or_attr_base_subclass(cls, {expected_base}):
+            return
+
+        detail = (
+            f"Node metadata resolves to meta_node_kind '{expected_base}', so the node class must subclass {expected_base}."
+        )
+        if ext_type:
+            detail += f" Current ext_data.type is '{ext_type}'."
+        violations.append(
+            RuleViolation(
+                class_name=cls.name,
+                rule="meta_node_kind_requires_matching_base_class",
+                detail=detail,
+                lineno=cls.lineno,
+            )
+        )
 
     def _check_dataclass_is_gparam(
         self,

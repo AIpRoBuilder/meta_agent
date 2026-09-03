@@ -10,64 +10,14 @@ from meta_agent._paths import bootstrap_package_root
 ROOT_DIR = bootstrap_package_root(__file__)
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS
-from meta_agent.context_builder.context import Context, GraphContextBuilder
+from meta_agent.context_builder.context import GraphContextBuilder
 from meta_agent.architect.graph import Graph, NodeMeta
 from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
-
-
-def grep_ext_data(node_spec: Mapping) -> Any:
-    """
-    Extract and return ext_data from node specification.
-    
-    Args:
-        node_spec: A mapping containing node metadata including optional ext_data
-        
-    Returns:
-        Any: The ext_data value if present, otherwise empty string
-    """
-    if not isinstance(node_spec, Mapping):
-        return ""
-    return node_spec.get("ext_data", "")
-
-
-def is_none_ext_data(ext_data: Any) -> bool:
-    """Return True when ext_data indicates no external input/source is needed."""
-    if isinstance(ext_data, Mapping):
-        ext_type = str(ext_data.get("type", "")).strip().lower()
-        return ext_type == "none"
-    if isinstance(ext_data, str):
-        return ext_data.strip().lower() == "none"
-    return False
-
-def is_file_ext_data(ext_data: Any) -> bool:
-    """Return True when ext_data indicates generic file upload input is needed."""
-    if isinstance(ext_data, Mapping):
-        ext_type = str(ext_data.get("type", "")).strip().lower()
-        return ext_type == "user_file_input"
-    if isinstance(ext_data, str):
-        return ext_data.strip().lower() == "user_file_input"
-    return False
-
-
-def is_skill_ext_data(ext_data: Any) -> bool:
-    """Return True when ext_data indicates a WorkflowSkillNode driven by skill.md."""
-    if isinstance(ext_data, Mapping):
-        ext_type = str(ext_data.get("type", "")).strip().lower()
-        skill_name = str(ext_data.get("skill_name", "")).strip()
-        return ext_type == "skill" or bool(skill_name)
-    if isinstance(ext_data, str):
-        return ext_data.strip().lower() == "skill"
-    return False
-
-
-def is_spatial_temporal_contract_ext_data(ext_data: Any) -> bool:
-    """Return True when ext_data indicates a SpatialTemporalContractNode."""
-    if isinstance(ext_data, Mapping):
-        ext_type = str(ext_data.get("type", "")).strip().lower()
-        return ext_type == "spatial_temporal_contract"
-    if isinstance(ext_data, str):
-        return ext_data.strip().lower() == "spatial_temporal_contract"
-    return False
+from meta_agent.tools.workflow_node_reference import (
+    render_workflow_node_reference,
+    render_workflow_step_meta_catalog,
+    resolve_workflow_node_reference,
+)
 
 
 def _build_dependency_derived_context(node_dir: Path, dependency_names: list[str]) -> str:
@@ -208,23 +158,22 @@ def _parse_markdown_sections(markdown_text: str) -> dict[str, str]:
 @dataclass
 class PromptNodeFileCoderBase(Coder):
     prompt_path: str = "worker/prompts/pydaograph_node_prompt.md"
-    reference_excerpt_path: str = "library/workflow_nodes_reference_excerpts.md"
     root_dir_path: str = ""
     context_text: str = ""
     ancestor_session_state_context_text: str = ""
-    reference_excerpt_text: str = ""
 
     def __post_init__(self) -> None:
         prompt_file = ROOT_DIR / self.prompt_path
         if not prompt_file.exists():
             raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
-        reference_file = ROOT_DIR / self.reference_excerpt_path
-        if not reference_file.exists():
-            raise FileNotFoundError(f"Reference excerpt file not found: {reference_file}")
-
-        self.system_prompt = prompt_file.read_text(encoding="utf-8")
-        self.reference_excerpt_text = reference_file.read_text(encoding="utf-8")
+        workflow_step_meta_catalog_text = render_workflow_step_meta_catalog()
+        self.system_prompt = (
+            f"{prompt_file.read_text(encoding='utf-8')}\n\n"
+            "## ag_ui_workflow Base Step Metas (Authoritative)\n"
+            "Use the injected ag_ui_workflow base-node step_meta()/meta_node_kind() catalog below as the only source of truth for node contracts.\n\n"
+            f"{workflow_step_meta_catalog_text}\n"
+        )
         super().__post_init__()
 
     @staticmethod
@@ -288,9 +237,12 @@ class PromptNodeFileCoderBase(Coder):
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
-        node_base_class: str,
         node_contract_text: str,
     ) -> str:
+        selected_reference = resolve_workflow_node_reference(
+            meta_node_kind=node_meta.meta_node_kind or None,
+            ext_data=node_meta.ext_data,
+        )
         depends_text = self._format_depends(node_meta.depends)
         ext_data_text = self._format_ext_data(node_meta.ext_data)
         inputs_format_text = self._format_inputs_format(node_meta.inputs_format)
@@ -321,13 +273,16 @@ class PromptNodeFileCoderBase(Coder):
             f"Node name: {node_name}\n"
             f"Type: {node_meta.type}\n"
             f"Description: {node_meta.desc}\n"
+            f"meta_node_kind: {selected_reference.meta_node_kind}\n"
             f"Depends on: {depends_text}\n"
             f"External data: {ext_data_text}\n"
             f"User inputs format: {inputs_format_text}\n"
-            f"Expected base class: {node_base_class}\n"
+            f"Expected base class: {selected_reference.meta_node_kind}\n"
             f"Target language: {language_clean}\n\n"
             f"{minimal_policy_text}"
             f"{state_routing_policy_text}"
+            "Selected base-node reference from ag_ui_workflow step_meta() (authoritative):\n"
+            f"{render_workflow_node_reference(selected_reference)}\n\n"
             f"{node_contract_text}"
             "Requirement analysis that this node should satisfy:\n"
             f"{requirement_text}\n\n"
@@ -346,12 +301,6 @@ class PromptNodeFileCoderBase(Coder):
                 f"- This node is ext_data.type='{ext_type}' with explicit inputs_format.\n"
                 f"- inputs_format: {inputs_format_text}\n"
                 f"- In {handler_fn}, parse/validate user_input against this schema and produce structured derived fields using the same keys when reasonable.\n\n"
-            )
-
-        if self.reference_excerpt_text.strip():
-            user_prompt += (
-                "Reference implementation excerpts (aligned with workflow base classes):\n"
-                f"{self.reference_excerpt_text}\n\n"
             )
 
         if node_markdown_reference:
@@ -451,7 +400,6 @@ class PromptNodeFileCoderBase(Coder):
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
-            node_base_class=self.node_base_class,
             node_contract_text=self.get_node_contract_text(),
         )
 
@@ -603,8 +551,6 @@ class PromptNodeFileCoderBase(Coder):
 
 @dataclass
 class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "WorkflowOperationNode"
-
     def get_node_contract_text(self) -> str:
         return (
             "Generate a WorkflowOperationNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
@@ -627,8 +573,6 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
 
 @dataclass
 class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "WorkflowFileNode"
-
     def _build_requirement_prompt(
         self,
         node_name: str,
@@ -638,7 +582,6 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
-        node_base_class: str,
         node_contract_text: str,
     ) -> str:
         base_prompt = super()._build_requirement_prompt(
@@ -649,7 +592,6 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
-            node_base_class=node_base_class,
             node_contract_text=node_contract_text,
         )
 
@@ -696,8 +638,6 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
 
 @dataclass
 class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "SpatialTemporalContractNode"
-
     def _build_requirement_prompt(
         self,
         node_name: str,
@@ -707,7 +647,6 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
-        node_base_class: str,
         node_contract_text: str,
     ) -> str:
         base_prompt = super()._build_requirement_prompt(
@@ -718,7 +657,6 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
-            node_base_class=node_base_class,
             node_contract_text=node_contract_text,
         )
 
@@ -754,8 +692,6 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
 
 @dataclass
 class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "WorkflowStepNode"
-
     def get_node_contract_text(self) -> str:
         return (
             "Generate a WorkflowStepNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
@@ -778,7 +714,6 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
 
 @dataclass
 class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "WorkflowSkillNode"
     default_skills_dirname: str = "skills"
     skills_root_path: str = ""
 
@@ -812,7 +747,6 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         output_path: str,
         graph_plan_path: str,
         language_clean: str,
-        node_base_class: str,
         node_contract_text: str,
     ) -> str:
         base_prompt = super()._build_requirement_prompt(
@@ -823,7 +757,6 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
             output_path=output_path,
             graph_plan_path=graph_plan_path,
             language_clean=language_clean,
-            node_base_class=node_base_class,
             node_contract_text=node_contract_text,
         )
 

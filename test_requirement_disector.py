@@ -61,6 +61,6 @@ def test_analyze_clears_crontab_when_not_cron(tmp_path):
 def test_requirement_disector_prompt_uses_backend_only_node_design_columns() -> None:
     analyzer = RequirementDisector(client=_FakeClient([]))
 
-    assert "节点ID | 节点类型 | ext_data.type | 作用 | depends" in analyzer.system_prompt
-    assert "SpatialTemporalContractNode" in analyzer.system_prompt
+    assert "节点ID | meta_node_kind | ext_data.type | 作用 | depends" in analyzer.system_prompt
+    assert "ag_ui_workflow Base Step Metas" in analyzer.system_prompt
     assert "show_frontend" not in analyzer.system_prompt

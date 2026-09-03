@@ -18,10 +18,6 @@ from meta_agent.worker.node_writer import (
     WorkflowSkillNodeCoder,
     WorkflowFileNodeCoder,
     WorkflowStepNodeCoder,
-    is_none_ext_data,
-    is_skill_ext_data,
-    is_file_ext_data,
-    is_spatial_temporal_contract_ext_data,
 )
 from meta_agent.demand_analyzer import RequirementDisector
 from meta_agent.logging_utils import configure_runtime_logging, get_logger
@@ -30,6 +26,7 @@ from meta_agent.tools.agent_builder_tools import (
     select_python_command,
 )
 from meta_agent.tools.file_tools import compile_node_file_and_get_step_output_card_schema
+from meta_agent.tools.workflow_node_reference import resolve_workflow_node_reference
 
 
 DEFAULT_MAX_AUDIT_ROUNDS = 7
@@ -264,7 +261,12 @@ class AgentBuilder:
 
     def _make_node_coder(self, node_meta: Any) -> PromptNodeFileCoderBase:
         ext_data = node_meta.ext_data if node_meta and hasattr(node_meta, 'ext_data') else None
-        if is_skill_ext_data(ext_data):
+        meta_node_kind = getattr(node_meta, "meta_node_kind", None) if node_meta is not None else None
+        reference = resolve_workflow_node_reference(
+            meta_node_kind=meta_node_kind,
+            ext_data=ext_data,
+        )
+        if reference.meta_node_kind == "WorkflowSkillNode":
             return WorkflowSkillNodeCoder(
                 api_key=self.api_key,
                 model=self.model,
@@ -273,7 +275,7 @@ class AgentBuilder:
                 skills_root_path=self.skills_root_path,
                 session_marking_prompt=self.session_marking_prompt,
             )
-        if is_spatial_temporal_contract_ext_data(ext_data):
+        if reference.meta_node_kind == "SpatialTemporalContractNode":
             return SpatialTemporalContractNodeCoder(
                 api_key=self.api_key,
                 model=self.model,
@@ -281,7 +283,7 @@ class AgentBuilder:
                 root_dir_path=self.root_dir,
                 session_marking_prompt=self.session_marking_prompt,
             )
-        if is_none_ext_data(ext_data):
+        if reference.meta_node_kind == "WorkflowOperationNode":
             return WorkflowOperationNodeCoder(
                 api_key=self.api_key,
                 model=self.model,
@@ -289,7 +291,7 @@ class AgentBuilder:
                 root_dir_path=self.root_dir,
                 session_marking_prompt=self.session_marking_prompt,
             )
-        if is_file_ext_data(ext_data):
+        if reference.meta_node_kind == "WorkflowFileNode":
             return WorkflowFileNodeCoder(
                 api_key=self.api_key,
                 model=self.model,

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Iterable, Mapping, MutableMapping, Set, Tuple
 
 from meta_agent.tools.file_tools import collect_session_state_keys_from_node_file
+from meta_agent.tools.workflow_node_reference import canonical_meta_node_kind
 
 
 @dataclass
@@ -15,6 +16,7 @@ class NodeMeta:
     name: str
     type: str
     desc: str
+    meta_node_kind: str = ""
     ext_data: Optional[Dict[str, Any] | str] = None
     inputs_format: Dict[str, str] = field(default_factory=dict)
     enable: bool = True
@@ -33,12 +35,18 @@ class NodeMeta:
                     inputs_format[field_name] = field_type
 
         depends = node.get('depends', [])
+        ext_data = node.get('ext_data')
+        meta_node_kind = canonical_meta_node_kind(
+            meta_node_kind=str(node.get('meta_node_kind') or node.get('metaNodeKind') or '').strip() or None,
+            ext_data=ext_data,
+        )
 
         return cls(
             name=str(node.get('name', '')),
             type=str(node.get('type', '')),
             desc=str(node.get('desc', '')),
-            ext_data=node.get('ext_data'),
+            meta_node_kind=meta_node_kind,
+            ext_data=ext_data,
             inputs_format=inputs_format,
             enable=bool(node.get('enable', True)),
             depends=list(depends) if isinstance(depends, list) else [],

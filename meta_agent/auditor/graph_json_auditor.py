@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Set
 from meta_agent.architect.graph import Graph
 from meta_agent.auditor.base_json_auditor import BaseJsonAuditor
 from meta_agent.auditor.data import JsonRuleViolation
+from meta_agent.tools.workflow_node_reference import (
+	canonical_meta_node_kind,
+	workflow_meta_node_kind_name_set,
+)
 
 
 class GraphJsonAuditor(BaseJsonAuditor):
@@ -20,6 +24,9 @@ class GraphJsonAuditor(BaseJsonAuditor):
 		if isinstance(ext_data, str):
 			return ext_data.strip().lower()
 		return ""
+
+	def _extract_meta_node_kind(self, node: Dict[str, Any]) -> str:
+		return str(node.get("meta_node_kind") or node.get("metaNodeKind") or "").strip()
 
 	def _collect_transitive_dependencies(
 		self,
@@ -79,6 +86,7 @@ class GraphJsonAuditor(BaseJsonAuditor):
 
 			name = str(node.get("name", "")).strip()
 			node_type = str(node.get("type", "")).strip()
+			meta_node_kind = self._extract_meta_node_kind(node)
 
 			if name != node_type:
 				violations.append(
@@ -101,6 +109,32 @@ class GraphJsonAuditor(BaseJsonAuditor):
 				)
 
 			ext_type = self._extract_ext_type(node)
+			if meta_node_kind and meta_node_kind not in workflow_meta_node_kind_name_set():
+				violations.append(
+					JsonRuleViolation(
+						parts_name="graph",
+						rule="meta_node_kind_invalid",
+						detail=(
+							f"Node '{name or '<empty>'}' has unsupported meta_node_kind '{meta_node_kind}'."
+						),
+						lineno=index,
+					)
+				)
+
+			if ext_type in {"user_input", "user_file_input", "skill", "spatial_temporal_contract"}:
+				expected_meta_node_kind = canonical_meta_node_kind(ext_data=node.get("ext_data"))
+				if meta_node_kind and meta_node_kind != expected_meta_node_kind:
+					violations.append(
+						JsonRuleViolation(
+							parts_name="graph",
+							rule="meta_node_kind_ext_data_mismatch",
+							detail=(
+								f"Node '{name or '<empty>'}' has meta_node_kind '{meta_node_kind}' but ext_data.type '{ext_type}' requires '{expected_meta_node_kind}'."
+							),
+							lineno=index,
+						)
+					)
+
 			if ext_type == "image":
 				violations.append(
 					JsonRuleViolation(

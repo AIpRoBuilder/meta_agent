@@ -5,6 +5,7 @@ from pathlib import Path
 from croniter import croniter
 
 from meta_agent._paths import bootstrap_package_root
+from meta_agent.tools.workflow_node_reference import render_workflow_step_meta_catalog
 
 
 ROOT_DIR = bootstrap_package_root(__file__)
@@ -46,7 +47,12 @@ class RequirementDisector(Coder):
 		if not prompt_file.exists():
 			raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
-		self.system_prompt = prompt_file.read_text(encoding="utf-8")
+		self.system_prompt = (
+			f"{prompt_file.read_text(encoding='utf-8')}\n\n"
+			"## ag_ui_workflow Base Step Metas (Authoritative)\n"
+			"节点设计时必须使用下面注入的 ag_ui_workflow 基类 step_meta()/meta_node_kind() 结果作为唯一权威来源。\n\n"
+			f"{render_workflow_step_meta_catalog()}\n"
+		)
 		super().__post_init__()
 
 	def _classify_cron_task(

@@ -4,17 +4,13 @@ This directory stores reusable prompt/reference assets shared by code generators
 
 ## Files
 
-- `workflow_nodes_reference_excerpts.md`
-  - Workflow node base-class reference excerpt used to ground node generation.
-  - Default consumer: `meta_agent/worker/node_writer.py` (`PromptNodeFileCoder.__post_init__` and prompt assembly in `write_node_from_requirement`).
+- Workflow node base-class metadata is now injected directly from `ag_ui_workflow` base classes at runtime.
+- Default consumers: `meta_agent/architect/graph_planner.py`, `meta_agent/architect/node_planner.py`, `meta_agent/demand_analyzer/requirement_disector.py`, and `meta_agent/worker/node_writer.py` through `meta_agent.tools.workflow_node_reference`.
 
 ## Why this exists
 
-- Keeps large reference content out of prompt instruction files.
-- Makes shared assets easier to maintain and version.
-- Reduces duplication across writer prompts.
+- Keeps shared prompt/reference assets that are still repository-local and not derived from installed runtime packages.
 
 ## Update guidance
 
-- If you update either reference asset, keep the consumer code paths in sync.
-- Prefer editing assets here instead of re-embedding large blocks into prompt files.
+- If a prompt needs workflow base-node contract details, prefer updating `meta_agent.tools.workflow_node_reference` so all planners/writers/auditors keep using the same injected ag_ui_workflow metadata.

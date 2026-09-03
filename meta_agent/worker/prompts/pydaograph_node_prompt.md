@@ -10,41 +10,22 @@ Core objective:
 
 Guidelines:
 - Write code with the simplest possible approach that satisfies requirements.
-- Choose base class from node metadata ext_data:
-    - If `ext_data.type == "skill"` (or `ext_data.skill_name` is provided), generate a Python class that inherits from `WorkflowSkillNode`.
-    - If `ext_data.type == "spatial_temporal_contract"`, generate a Python class that inherits from `SpatialTemporalContractNode`.
-    - If `ext_data.type == "none"`, generate a Python class that inherits from `WorkflowOperationNode`.
-    - If `ext_data.type == "user_file_input"`, generate a Python class that inherits from `WorkflowFileNode`.
-    - Otherwise, generate a Python class that inherits from `WorkflowStepNode`.
-- Base class definitions:
-    - `WorkflowStepNode`: Interactive workflow step that collects and validates explicit user input, then returns structured `StepRunOutput` via `process_input(...)`.
-    - `WorkflowOperationNode`: Non-interactive workflow step for deterministic/derived computation from dependencies and session state, returning `StepRunOutput` via `process_operation(...)`.
-    - `WorkflowSkillNode`: Skill-library step backed by `skill.md`. Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc, exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`, and may accept direct user input. Implement `process_operation(user_input, dependency_results, session_state)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
-    - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via the base `build_step_output(saved_files)` unless a specialized override is explicitly required.
-    - `SpatialTemporalContractNode`: Non-interactive contract-generation step. The base class already implements `run(...)` and `process_operation(dependency_results, session_state)` to resolve a description from `session_state['spatialTemporalContractDescription']` or upstream outputs, call the configured model, normalize contract JSON, and return `StepRunOutput`. Generated subclasses normally only define class constants plus a trivial `clone(self) -> self`.
-
-Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
-
-- Prefer `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `SpatialTemporalContractNode` for steps that turn upstream descriptions into spatial-temporal contract JSON, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
-- Import `register_class` from `pydaograph`, workflow node base class(es) from `ag_ui_workflow.nodes`, and `StepRunOutput` from `ag_ui_workflow.workflow_types`.
+- Choose the subclass base from node metadata `meta_node_kind` first. Only if `meta_node_kind` is absent may you fall back to `ext_data.type` using the injected ag_ui_workflow `step_meta()` catalog.
+- Treat the injected ag_ui_workflow base-node catalog and the selected base-node reference block from `node_writer` as the only source of truth for:
+    - which base class to import
+    - whether the node is interactive
+    - which processing hook to implement or inherit
+    - whether `inputs_format` is allowed
+- Import `register_class` from `pydaograph`, only the selected workflow base class from `ag_ui_workflow.nodes`, and `StepRunOutput` from `ag_ui_workflow.workflow_types`.
 - Decorate each step class with `@register_class`.
 - Define class constants:
     - `STEP_ID` (machine-readable id)
     - `TITLE` (human-readable step title)
     - `PROMPT` (input prompt for user)
     - `DEPENDENCIES` (list of upstream step ids)
-- Implement node logic method by base class:
-    - `WorkflowStepNode`: implement `process_input(self, user_input, dependency_results, session_state) -> StepRunOutput`.
-    - `WorkflowOperationNode`: implement `process_operation(self, dependency_results, session_state) -> StepRunOutput`.
-    - `WorkflowSkillNode`: set `SKILL_DIR` (absolute path to skill directory) and `SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md')` as class constants. Implement `process_operation(self, user_input, dependency_results, session_state) -> StepRunOutput`.
-        - The base class __init__ reads `skill.md` and populates `self.skill_description`, `self.skill_using`, `self.skill_examples`.
-        - In `process_operation`, invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
-        - Use `user_input` when the step collects input; tolerate empty input when the skill can run from dependencies alone.
-        - Return `StepRunOutput(card=..., derived=...)` with results from the skill invocation.
-    - `SpatialTemporalContractNode`: define `STEP_ID`, `TITLE`, `PROMPT`, and `DEPENDENCIES`, and implement only `clone(self)` returning `self` unless custom contract-generation behavior is explicitly required.
-        - Do **not** override `run` or `process_operation` by default; the base class already resolves description text, invokes the model, and returns `StepRunOutput`.
-        - Ensure upstream dependencies or `session_state` provide `spatialTemporalContractDescription` or equivalent descriptive text.
-        - The inherited `derived` payload includes keys such as `spatialTemporalContract`, `spatialTemporalContractJson`, `objectCount`, `relationCount`, `model`, `rawResponse`, and optional `usage`.
+- Implement only the processing hook allowed by the selected base-node contract from the injected catalog.
+- If the selected base node is skill-backed, set `SKILL_DIR` and `SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md')`, then invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
+- If the selected base node is the spatial-temporal contract variant, normally define only class constants plus `clone(self) -> self`, and keep the inherited runtime/model invocation flow unless the requirement explicitly asks for customization.
 - Use `dependency_results[<step_id>].derived[...]` to read prerequisite outputs.
 - Extract upstream variables only from dependency nodes listed in `DEPENDENCIES`.
 - When dependency context is provided (for example, GraphContextBuilder context), treat it as authoritative for upstream `STEP_ID` and `derived` keys.
@@ -62,7 +43,7 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
 
 Minimality checklist (must follow):
 - Keep imports minimal; only import symbols actually used.
-- Keep one processing method for the selected base class (`process_input` / `process_operation`) when that base requires a custom processing method; for `SpatialTemporalContractNode`, rely on the inherited base processing by default.
+- Keep one processing method for the selected base class (`process_input` / `process_operation`) when that base requires a custom processing method; for the spatial-temporal contract base node, rely on the inherited base processing by default.
 - Do not add helper methods unless they remove duplicated logic used at least twice.
 - Do not include mocked/sample/simulated runtime data in business logic.
 - Add detailed debug logging that writes to a local file path so execution can be inspected after runs.
@@ -81,7 +62,7 @@ from typing import Any
 
 from pydaograph import register_class, CStatus
 
-from ag_ui_workflow.nodes import SpatialTemporalContractNode, WorkflowFileNode, WorkflowOperationNode, WorkflowStepNode
+from ag_ui_workflow.nodes import WorkflowOperationNode, WorkflowStepNode
 from ag_ui_workflow.workflow_types import StepRunOutput
 
 
@@ -208,4 +189,4 @@ class SavingsPlanNode(WorkflowOperationNode):
         return StepRunOutput(card=card, derived=derived)
 ```
 
-When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `spatial_temporal_contract -> SpatialTemporalContractNode`, `none -> WorkflowOperationNode`, `user_file_input -> WorkflowFileNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` when the selected base class requires custom processing (skill nodes provide `process_operation`; spatial-temporal contract nodes usually only define constants plus `clone`).
+When asked to create new nodes, follow this shape: choose the subclass base from `meta_node_kind`, import only that base class from `ag_ui_workflow.nodes`, define declarative class constants, and add a runnable processing method only when the selected base-node contract requires one.

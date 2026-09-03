@@ -197,6 +197,33 @@ def test_agent_builder_make_node_coder_routes_spatial_temporal_contract(monkeypa
     )
 
 
+def test_agent_builder_make_node_coder_routes_operation_from_meta_node_kind(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_builder_module, "RequirementDisector", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "GraphPlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "NodePlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "PromptMainFileCoder", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "WorkflowOperationNodeCoder", _FakeComponent)
+
+    builder = AgentBuilder(
+        api_key="key",
+        model="model",
+        provider="provider",
+        root_dir=str(tmp_path),
+    )
+
+    coder = builder._make_node_coder(
+        NodeMeta(
+            name="FetchRemoteData",
+            type="",
+            desc="Fetch from remote url",
+            meta_node_kind="WorkflowOperationNode",
+            ext_data={"type": "url", "desc": "remote api"},
+        )
+    )
+
+    assert coder.kwargs["root_dir_path"] == str(tmp_path)
+
+
 def test_node_planner_system_prompt_includes_session_marking_prompt():
     planner = NodePlanner(
         client=_FakeClient(),

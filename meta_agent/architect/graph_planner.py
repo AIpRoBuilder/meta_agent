@@ -4,6 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from meta_agent._paths import bootstrap_package_root
+from meta_agent.tools.workflow_node_reference import (
+	canonical_meta_node_kind,
+	render_workflow_step_meta_catalog,
+	resolve_workflow_node_reference,
+	workflow_node_references,
+)
 
 
 ROOT_DIR = bootstrap_package_root(__file__)
@@ -35,7 +41,6 @@ class GraphPlanner(Coder):
 	"""
 
 	prompt_path: str = "architect/prompts/graph_planner_prompt.md"
-	workflow_nodes_reference_path: str = "library/workflow_nodes_reference_excerpts.md"
 	default_skills_dirname: str = "skills"
 	skills_root_path: str = ""
 	NONE_EXT_DESC: str = "no need for ext data"
@@ -46,20 +51,14 @@ class GraphPlanner(Coder):
 		if not prompt_file.exists():
 			raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
-		nodes_reference_file = ROOT_DIR / self.workflow_nodes_reference_path
-		if not nodes_reference_file.exists():
-			raise FileNotFoundError(
-				f"Workflow nodes reference file not found: {nodes_reference_file}"
-			)
-
 		base_prompt = prompt_file.read_text(encoding="utf-8")
-		nodes_reference = nodes_reference_file.read_text(encoding="utf-8")
+		workflow_step_meta_catalog_text = render_workflow_step_meta_catalog()
 		self.system_prompt = (
 			f"{base_prompt}\n\n"
-			"## Workflow Node Reference (Authoritative)\n"
+			"## ag_ui_workflow Base Step Metas (Authoritative)\n"
 			"When selecting workflow node structure, node kind and required capabilities,\n"
-			"strictly follow the following node types/functions reference.\n\n"
-			f"{nodes_reference}\n"
+			"strictly follow the injected ag_ui_workflow base-node step_meta()/meta_node_kind() catalog below.\n\n"
+			f"{workflow_step_meta_catalog_text}\n"
 		)
 		super().__post_init__()
 
@@ -201,6 +200,40 @@ class GraphPlanner(Coder):
 			)
 		return "".join(skill_lines)
 
+	def _graph_plan_contract_prompt(self) -> str:
+		operation_reference = resolve_workflow_node_reference(ext_data={"type": "none"})
+		lines = [
+			"Graph-plan schema requirements:\n",
+			"- Top-level JSON shape must be {'nodes': [...]} and the response must contain JSON only.\n",
+			"- Every node must include: name, type, desc, meta_node_kind, ext_data, enable.\n",
+			"- type must be identical to name.\n",
+			"- meta_node_kind must exactly match one value returned by the injected ag_ui_workflow base-node meta_node_kind() catalog.\n",
+			"- Use meta_node_kind as the authoritative base-node selection for downstream subclass generation and auditing.\n",
+			"- ext_data must be a JSON object with keys: type, desc, plus skill_name when the selected base node is a skill node.\n",
+			"- Use node-level loop to represent repeated execution; default loop=1.\n",
+			"- Include inputs_format only when the selected base node's step_meta contract supports explicit input fields.\n",
+			"- Do not invent node categories outside the injected ag_ui_workflow base-node catalog.\n",
+		]
+		for reference in workflow_node_references():
+			if reference.meta_node_kind == operation_reference.meta_node_kind:
+				lines.append(
+					f"- When meta_node_kind='{reference.meta_node_kind}', ext_data.type may be 'none' or a domain source such as 'url', 'file', or 'db'; if it is 'none', ext_data.desc must be '{self.NONE_EXT_DESC}'.\n"
+				)
+				continue
+			line = (
+				f"- When meta_node_kind='{reference.meta_node_kind}', ext_data.type must be '{reference.recommended_ext_data_type}'."
+			)
+			if reference.recommended_ext_data_type == "skill":
+				line += " ext_data.skill_name must be an exact available skill directory name."
+			lines.append(f"{line}\n")
+		lines.extend(
+			[
+				"- Example inputs_format shape: {'email_address':'string','password':'number'}.\n",
+				"- Example iterative node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','meta_node_kind':'WorkflowStepNode','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}.\n",
+			]
+		)
+		return "".join(lines)
+
 	def _normalize_ext_data_in_file(self, graph_json_path: Path) -> None:
 		# Normalize ext_data shape and enforce type=none description rules.
 
@@ -219,6 +252,7 @@ class GraphPlanner(Coder):
 
 			node.pop("show_frontend", None)
 			node.pop("services", None)
+			legacy_meta_node_kind = node.pop("metaNodeKind", None)
 
 			loop_value = node.get("loop", 1)
 			try:
@@ -227,20 +261,43 @@ class GraphPlanner(Coder):
 				loop_int = 1
 			node["loop"] = max(1, loop_int)
 
+			meta_node_kind = str(
+				node.get("meta_node_kind") or legacy_meta_node_kind or ""
+			).strip() or None
+			reference = resolve_workflow_node_reference(
+				meta_node_kind=meta_node_kind,
+				ext_data=node.get("ext_data"),
+			)
+			node["meta_node_kind"] = reference.meta_node_kind
+
 			ext_data = node.get("ext_data")
 			if not isinstance(ext_data, dict):
-				node["ext_data"] = {"type": "none", "desc": self.NONE_EXT_DESC}
-				node.pop("inputs_format", None)
-				continue
+				default_ext_type = (
+					reference.recommended_ext_data_type
+					if reference.meta_node_kind != "WorkflowOperationNode"
+					else "none"
+				)
+				ext_data = {"type": default_ext_type, "desc": ""}
+				if default_ext_type == "none":
+					ext_data["desc"] = self.NONE_EXT_DESC
+				if default_ext_type == "skill":
+					ext_data["skill_name"] = ""
+				node["ext_data"] = ext_data
 
 			ext_type = str(ext_data.get("type", "")).strip().lower()
-			if not ext_type:
+			if reference.meta_node_kind != "WorkflowOperationNode":
+				ext_type = reference.recommended_ext_data_type
+			elif not ext_type:
 				ext_type = "none"
 			ext_data["type"] = ext_type
+			node["meta_node_kind"] = canonical_meta_node_kind(
+				meta_node_kind=node.get("meta_node_kind"),
+				ext_data=ext_data,
+			)
 
 			# ---- skill node normalisation ----
 			skill_name = str(ext_data.get("skill_name", "")).strip()
-			if ext_type == "skill" or skill_name:
+			if node["meta_node_kind"] == "WorkflowSkillNode" or ext_type == "skill" or skill_name:
 				ext_data["type"] = "skill"
 				resolved_skill = self._resolve_skill_name(node, available_skills)
 				ext_data["skill_name"] = resolved_skill
@@ -262,9 +319,10 @@ class GraphPlanner(Coder):
 					node["inputs_format"] = normalized_inputs_format
 				else:
 					node.pop("inputs_format", None)
+				node["meta_node_kind"] = "WorkflowSkillNode"
 				continue
 
-			if ext_type == "user_input":
+			if node["meta_node_kind"] == "WorkflowStepNode":
 				raw_inputs_format = node.get("inputs_format", {})
 				normalized_inputs_format: dict[str, str] = {}
 				if isinstance(raw_inputs_format, dict):
@@ -286,7 +344,9 @@ class GraphPlanner(Coder):
 				desc = str(ext_data.get("desc", "")).strip()
 				ext_data["desc"] = desc
 			ext_data.pop("service_name", None)
-			if "skill_name" in ext_data and ext_data["skill_name"] is None:
+			if node["meta_node_kind"] != "WorkflowSkillNode":
+				ext_data.pop("skill_name", None)
+			elif "skill_name" in ext_data and ext_data["skill_name"] is None:
 				ext_data["skill_name"] = ""
 
 		graph_json_path.write_text(
@@ -420,30 +480,7 @@ class GraphPlanner(Coder):
 
 		user_prompt = (
 			"Generate graph_plan.json from the requirement text below.\n"
-			"Node-type/function selection rules:\n"
-			"- Use WorkflowStepNode-compatible semantics for nodes with ext_data.type='user_input'\n"
-			"- Use WorkflowOperationNode-compatible semantics for pure compute/process nodes with ext_data.type='none'\n"
-			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
-			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'\n"
-			"- Use SpatialTemporalContractNode-compatible semantics for nodes that generate a spatial-temporal contract JSON from dependency/session descriptions with ext_data.type='spatial_temporal_contract'\n"
-			"- Do not invent node categories outside Step/Operation/File/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
-			"Schema requirements for each node:\n"
-			"- Required fields: name, type, desc, enable, depends, ext_data\n"
-			"- For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
-			"- Do not include inputs_format for nodes other than user_input and skill\n"
-			"- Use node-level loop to represent repeated execution; default loop=1\n"
-			"- If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2)\n"
-			"- ext_data must be a JSON object with keys: type, desc (and skill_name when type='skill')\n"
-			"- Mark text input nodes with ext_data.type = 'user_input'\n"
-			"- Mark generic file-upload nodes that require user files with ext_data.type = 'user_file_input'\n"
-			"- Mark skill-library wrapper nodes with ext_data.type = 'skill'\n"
-			"- Mark contract-generation nodes with ext_data.type = 'spatial_temporal_contract'\n"
-			"- Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode\n"
-			"- If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name\n"
-			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}\n"
-			"- For nodes without external dependency, include ext_data as {'type':'none','desc':'no need for ext data'}\n"
-			"- If ext_data.type is 'none', desc must be exactly 'no need for ext data'\n"
-			"- Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}\n"
+			f"{self._graph_plan_contract_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON.\n\n"
 			"Requirement text:\n"
@@ -483,28 +520,8 @@ class GraphPlanner(Coder):
 
 		user_prompt = (
 			"Update the existing graph plan JSON using the amendment provided.\n"
-			"Node-type/function selection rules:\n"
-			"- Use WorkflowStepNode-compatible semantics for nodes with ext_data.type='user_input'\n"
-			"- Use WorkflowOperationNode-compatible semantics for pure compute/process nodes with ext_data.type='none'\n"
-			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
-			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'.\n"
-			"- Use SpatialTemporalContractNode-compatible semantics for nodes that generate a spatial-temporal contract JSON from dependency/session descriptions with ext_data.type='spatial_temporal_contract'.\n"
-			"- Do not invent node categories outside Step/Operation/File/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
-			"Preserve the graph schema (top-level nodes list with name, type, desc, depends, ext_data).\n"
-			"For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
-			"Do not include inputs_format for nodes other than user_input and skill.\n"
-			"Use node-level loop to represent repeated execution; default loop=1.\n"
-			"If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2).\n"
-			"Every node must include ext_data as a JSON object with keys: type, desc (plus skill_name when type='skill').\n"
-			"Mark text input nodes with ext_data.type='user_input'.\n"
-			"Mark generic file-upload nodes that require user files with ext_data.type='user_file_input'.\n"
-			"Mark skill-library wrapper nodes with ext_data.type='skill'.\n"
-			"Mark contract-generation nodes with ext_data.type='spatial_temporal_contract'.\n"
-			"If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name.\n"
-			"Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode.\n"
-			"If ext_data.type is 'none', desc must be exactly 'no need for ext data'.\n"
-			"Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}.\n"
-			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}.\n"
+			"Preserve the graph schema while applying the amendment.\n"
+			f"{self._graph_plan_contract_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON without code fences or commentary.\n\n"
 			"Existing graph plan:\n"

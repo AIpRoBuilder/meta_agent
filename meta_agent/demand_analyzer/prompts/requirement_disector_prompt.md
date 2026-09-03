@@ -19,14 +19,10 @@
        1) 最小产品流程（3-6步）
        2) 最小交互流程（主路径 + 1条异常）
        3) 节点设计（最小可行）
-    - 节点设计必须遵循工作流节点参考中的能力边界，仅可使用以下节点语义：
-       - WorkflowStepNode（nodeKind=input）：需要文本类用户输入，通常对应 ext_data.type="user_input"。
-       - WorkflowOperationNode（nodeKind=operation）：纯处理/计算节点，不直接向用户索取输入，通常对应 ext_data.type="none"。
-       - WorkflowFileNode（nodeKind=file）：通用文件上传/存储节点，对应 ext_data.type="user_file_input"。
-       - WorkflowSkillNode（nodeKind=skill）：技能封装类节点，对应 ext_data.type="skill"，用于调用预置 skill 能力并输出结构化结果。
-       - SpatialTemporalContractNode（nodeKind=spatial_temporal_contract）：将上游描述或 session_state 中的文本上下文整理为时空关系 contract JSON，对应 ext_data.type="spatial_temporal_contract"。
-       - 不得虚构上述实现基类之外的节点能力模型。
-   - 节点设计输出格式固定为表格，字段为【节点ID | 节点类型 | ext_data.type | 作用 | depends】。
+    - 节点设计必须遵循系统注入的 ag_ui_workflow 基类 `step_meta()` / `meta_node_kind()` catalog，不得虚构 catalog 之外的节点能力模型。
+    - 每个节点必须显式给出 `meta_node_kind`，值必须直接使用 catalog 中某个基类 `meta_node_kind()` 的返回值。
+    - 对于 catalog 中 `nodeKind=input/file/skill/spatial_temporal_contract` 的节点，`ext_data.type` 必须使用该 catalog 推荐值；对于 `nodeKind=operation` 的节点，`ext_data.type` 可为 `none` 或领域外部源类型（如 `url`、`file`、`db`）。
+   - 节点设计输出格式固定为表格，字段为【节点ID | meta_node_kind | ext_data.type | 作用 | depends】。
     - 仅输出最少必要节点；避免冗余节点与重复说明。
 
 ## 书写规则

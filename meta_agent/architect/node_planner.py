@@ -5,6 +5,11 @@ from typing import Any, Optional
 from pydaograph import CStatus, GElement, GPipeline
 
 from meta_agent._paths import bootstrap_package_root
+from meta_agent.tools.workflow_node_reference import (
+	render_workflow_step_meta_catalog,
+	resolve_workflow_node_reference,
+	workflow_node_references,
+)
 
 
 ROOT_DIR = bootstrap_package_root(__file__)
@@ -41,8 +46,8 @@ class _NodePlanElement(GElement):
 			"Generate a VERY SHORT markdown note for this SINGLE node only.\n"
 			"Goal: briefly describe what this node will achieve and list the core functions to implement.\n"
 			"Do NOT provide detailed implementation steps, dependency handling details, output contract details, or TODO lists.\n"
-			"Input sources to use: requirement analysis + node desc + ext_data-derived node type.\n"
-			"If ext_data.type='user_input' and inputs_format is provided, only mention the required validation/parsing at a high level.\n"
+			"Input sources to use: requirement analysis + node desc + graph meta_node_kind/ext_data.\n"
+			"If the selected base-node contract allows inputs_format and inputs_format is provided, only mention the required validation/parsing at a high level.\n"
 			"Node type must align with workflow reference contracts.\n"
 			"Keep output concise and practical (MVP-first, no extra features).\n\n"
 			"Mandatory output sections:\n"
@@ -82,7 +87,7 @@ class NodePlanner:
 	The brief is derived from:
 	- requirement analysis markdown
 	- node desc/dependency/ext_data from graph_plan.json
-	- workflow node reference excerpts
+	- ag_ui_workflow base-node step_meta metadata
 
 	Output format is markdown (.md) that lists suggested tools/functions per node.
 
@@ -91,7 +96,6 @@ class NodePlanner:
 	"""
 
 	prompt_path: str = "architect/prompts/node_planner_prompt.md"
-	workflow_nodes_reference_path: str = "library/workflow_nodes_reference_excerpts.md"
 	default_skills_dirname: str = "skills"
 	skills_root_path: str = ""
 	# Coder configuration fields (forwarded to Coder instances)
@@ -109,20 +113,13 @@ class NodePlanner:
 		if not prompt_file.exists():
 			raise FileNotFoundError(f"Prompt file not found: {prompt_file}")
 
-		nodes_reference_file = ROOT_DIR / self.workflow_nodes_reference_path
-		if not nodes_reference_file.exists():
-			raise FileNotFoundError(
-				f"Workflow nodes reference file not found: {nodes_reference_file}"
-			)
-
 		base_prompt = prompt_file.read_text(encoding="utf-8")
-		nodes_reference = nodes_reference_file.read_text(encoding="utf-8")
 		self.system_prompt = (
 			f"{base_prompt}\n\n"
-			"## Workflow Node Reference (Authoritative)\n"
-			"When recommending tools/functions and implementation contracts,\n"
-			"strictly follow the following workflow node reference.\n\n"
-			f"{nodes_reference}\n"
+			"## ag_ui_workflow Base Step Metas (Authoritative)\n"
+			"Use the following base-node `step_meta()` catalog as the source of truth for `meta_node_kind`,\n"
+			"node capability boundaries, and default ext_data pairings.\n\n"
+			f"{render_workflow_step_meta_catalog()}\n"
 		)
 		self.system_prompt = append_instruction_block(
 			self.system_prompt,
@@ -237,14 +234,12 @@ class NodePlanner:
 		return descriptions
 
 	def _node_type_choice_lines(self) -> list[str]:
-		return [
-			"- selectable node types:",
-			"  - user_input -> WorkflowStepNode: use when this step directly accepts structured or text user input.",
-			"  - user_file_input -> WorkflowFileNode: use when this step collects uploaded files from the user.",
-			"  - skill -> WorkflowSkillNode: use when this step wraps a pre-built skill directory.",
-			"  - spatial_temporal_contract -> SpatialTemporalContractNode: use when this step turns dependency/session descriptions into a spatial-temporal contract JSON.",
-			"  - none -> WorkflowOperationNode: use for pure compute or dependency-driven processing without direct user input.",
-		]
+		lines = ["- selectable node types:"]
+		for reference in workflow_node_references():
+			lines.append(
+				f"  - {reference.recommended_ext_data_type} -> {reference.meta_node_kind}: {reference.summary}"
+			)
+		return lines
 
 	def _skill_choice_lines(self) -> list[str]:
 		available_skills = self._list_available_skills()
@@ -260,74 +255,38 @@ class NodePlanner:
 			lines.append(f"  - {skill_name}: {description}")
 		return lines
 
-	def _normalize_ext_type(self, ext_data: Any) -> str:
+	def _derive_node_profile(self, node: dict[str, Any]) -> dict[str, Any]:
+		ext_data = node.get("ext_data", {}) if isinstance(node, dict) else {}
+		reference = resolve_workflow_node_reference(
+			meta_node_kind=node.get("meta_node_kind") or node.get("metaNodeKind") if isinstance(node, dict) else None,
+			ext_data=ext_data,
+		)
+		ext_type = reference.recommended_ext_data_type
 		if isinstance(ext_data, dict):
-			return str(ext_data.get("type", "none")).strip().lower() or "none"
-		if isinstance(ext_data, str):
-			return ext_data.strip().lower() or "none"
-		return "none"
-
-	def _derive_node_profile(self, ext_data: Any) -> dict[str, Any]:
-		ext_type = self._normalize_ext_type(ext_data)
+			ext_type = str(ext_data.get("type", "")).strip().lower() or ext_type
+		elif isinstance(ext_data, str):
+			ext_type = ext_data.strip().lower() or ext_type
 		skill_name = ""
 		if isinstance(ext_data, dict):
 			skill_name = str(ext_data.get("skill_name", "")).strip()
 
-		if ext_type == "spatial_temporal_contract":
-			return {
-				"extType": ext_type,
-				"nodeKind": "spatial_temporal_contract",
-				"baseClass": "SpatialTemporalContractNode",
-				"primaryFunctions": ["clone"],
-				"note": (
-					"Concrete spatial-temporal contract node: define class constants and a trivial clone method, "
-					"then inherit the base process_operation(...) logic that resolves a description from "
-					"session_state/dependencies and generates spatialTemporalContract JSON."
-				),
-			}
-
-		if ext_type == "skill" or skill_name:
-			return {
-				"extType": ext_type,
-				"nodeKind": "skill",
-				"baseClass": "WorkflowSkillNode",
-				"primaryFunctions": ["process_operation"],
-				"skillName": skill_name,
-				"note": (
-					f"Skill node wrapping skill '{skill_name}': "
-					"set SKILL_DIR / SKILL_MD_PATH class attributes pointing to the skill directory, "
-					"then implement process_operation(user_input, dependency_results, session_state) to invoke the skill logic using "
-					"self.skill_description, self.skill_using, self.skill_examples from the parsed skill.md."
-				)
-				if skill_name
-				else (
-					"Skill node: set SKILL_DIR / SKILL_MD_PATH and implement process_operation(user_input, dependency_results, session_state)."
-				),
-			}
-
-		if ext_type == "user_file_input":
-			return {
-				"extType": ext_type,
-				"nodeKind": "file",
-				"baseClass": "WorkflowFileNode",
-				"primaryFunctions": ["build_step_output(optional)", "save_files_remote(optional)"],
-				"note": "File-upload node: persists uploaded files and can optionally customize StepRunOutput via build_step_output.",
-			}
-		if ext_type == "user_input":
-			return {
-				"extType": ext_type,
-				"nodeKind": "input",
-				"baseClass": "WorkflowStepNode",
-				"primaryFunctions": ["process_input"],
-				"note": "Text-input step node: validates user input against inputs_format (if present) and computes output.",
-			}
+		note = reference.summary
+		if reference.meta_node_kind == "WorkflowSkillNode" and skill_name:
+			note = (
+				f"Skill node wrapping skill '{skill_name}': set SKILL_DIR / SKILL_MD_PATH and implement process_operation around the parsed skill.md guidance."
+			)
+		elif reference.meta_node_kind == "SpatialTemporalContractNode":
+			note = (
+				"Concrete spatial-temporal contract node: define class constants and a trivial clone method, then inherit the base process_operation(...) logic."
+			)
 
 		return {
 			"extType": ext_type,
-			"nodeKind": "operation",
-			"baseClass": "WorkflowOperationNode",
-			"primaryFunctions": ["process_operation"],
-			"note": "Compute/process node: dependency-driven without direct user input.",
+			"metaNodeKind": reference.meta_node_kind,
+			"nodeKind": reference.node_kind,
+			"baseClass": reference.meta_node_kind,
+			"primaryFunctions": list(reference.planner_hooks),
+			"note": note,
 		}
 
 	def _build_nodes_context(self, graph_plan: dict[str, Any]) -> str:
@@ -349,7 +308,7 @@ class NodePlanner:
 			inputs_format = node.get("inputs_format", {})
 			if not isinstance(inputs_format, dict):
 				inputs_format = {}
-			profile = self._derive_node_profile(ext_data)
+			profile = self._derive_node_profile(node)
 
 			ext_desc = ""
 			skill_name_val = ""
@@ -361,10 +320,11 @@ class NodePlanner:
 				f"### Node {idx}: {name}",
 				f"- desc: {desc}",
 				f"- depends: {', '.join(depends) if depends else 'none'}",
+				f"- meta_node_kind: {profile['metaNodeKind']}",
 				f"- ext_data.type: {profile['extType']}",
 				f"- ext_data.desc: {ext_desc or 'n/a'}",
 			]
-			if profile["extType"] == "user_input":
+			if profile["metaNodeKind"] in {"WorkflowStepNode", "WorkflowSkillNode"}:
 				node_lines.append(
 					f"- inputs_format: {json.dumps(inputs_format, ensure_ascii=False) if inputs_format else 'n/a'}"
 				)
@@ -399,7 +359,7 @@ class NodePlanner:
 		inputs_format = node.get("inputs_format", {})
 		if not isinstance(inputs_format, dict):
 			inputs_format = {}
-		profile = self._derive_node_profile(ext_data)
+		profile = self._derive_node_profile(node)
 
 		ext_desc = ""
 		skill_name_val = ""
@@ -411,10 +371,11 @@ class NodePlanner:
 			f"### Node {index}: {name}",
 			f"- desc: {desc}",
 			f"- depends: {', '.join(depends) if depends else 'none'}",
+			f"- meta_node_kind: {profile['metaNodeKind']}",
 			f"- ext_data.type: {profile['extType']}",
 			f"- ext_data.desc: {ext_desc or 'n/a'}",
 		]
-		if profile["extType"] == "user_input":
+		if profile["metaNodeKind"] in {"WorkflowStepNode", "WorkflowSkillNode"}:
 			ctx_lines.append(
 				f"- inputs_format: {json.dumps(inputs_format, ensure_ascii=False) if inputs_format else 'n/a'}"
 			)
@@ -553,11 +514,11 @@ class NodePlanner:
 			"Return exactly one valid JSON object for the node. No markdown fences, no commentary.\n"
 			"Preserve the node name unless the amendment explicitly requires a rename.\n"
 			"Node schema requirements:\n"
-			"- Required fields: name, type, desc, enable, depends, ext_data\n"
+			"- Required fields: name, type, desc, meta_node_kind, enable, depends, ext_data\n"
 			"- ext_data must be a JSON object with keys: type, desc, and skill_name when type='skill'\n"
-			"- Allowed node type choices are listed in the node context below\n"
-			"- Include inputs_format only when ext_data.type is 'user_input' or 'skill'\n"
-			"- Do not include inputs_format for other node types\n"
+			"- Allowed meta_node_kind choices are listed in the node context below\n"
+			"- Include inputs_format only when the selected meta_node_kind allows it\n"
+			"- Do not include inputs_format for other meta_node_kind values\n"
 			"- For skill nodes, ext_data.skill_name must match one listed available skill exactly\n\n"
 			"=== Requirement Analysis ===\n"
 			f"{requirement_text}\n\n"
