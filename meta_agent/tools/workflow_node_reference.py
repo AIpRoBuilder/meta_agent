@@ -11,7 +11,7 @@ from typing import Any, Mapping
 class WorkflowNodeReference:
 	base_class: type
 	meta_node_kind: str
-	node_kind: str
+	capability_category: str
 	input_required: bool
 	recommended_ext_data_type: str
 	planner_hooks: tuple[str, ...]
@@ -27,6 +27,35 @@ _WORKFLOW_NODE_CLASS_NAMES = (
 	"WorkflowSkillNode",
 	"SpatialTemporalContractNode",
 )
+
+
+_META_NODE_KIND_TRAITS: dict[str, dict[str, Any]] = {
+	"WorkflowStepNode": {
+		"capability_category": "input",
+		"recommended_ext_data_type": "user_input",
+		"supports_inputs_format": True,
+	},
+	"WorkflowOperationNode": {
+		"capability_category": "operation",
+		"recommended_ext_data_type": "none",
+		"supports_inputs_format": False,
+	},
+	"WorkflowFileNode": {
+		"capability_category": "file",
+		"recommended_ext_data_type": "user_file_input",
+		"supports_inputs_format": False,
+	},
+	"WorkflowSkillNode": {
+		"capability_category": "skill",
+		"recommended_ext_data_type": "skill",
+		"supports_inputs_format": True,
+	},
+	"SpatialTemporalContractNode": {
+		"capability_category": "spatial_temporal_contract",
+		"recommended_ext_data_type": "spatial_temporal_contract",
+		"supports_inputs_format": False,
+	},
+}
 
 
 @lru_cache(maxsize=1)
@@ -53,38 +82,49 @@ def _base_node_classes() -> tuple[type, ...]:
 	return tuple(result)
 
 
-def _recommended_ext_data_type(step_meta: Mapping[str, Any]) -> str:
-	node_kind = str(step_meta.get("nodeKind", "")).strip().lower()
-	if node_kind == "input":
-		return "user_input"
-	if node_kind == "file":
-		return "user_file_input"
-	if node_kind == "skill":
-		return "skill"
-	if node_kind == "spatial_temporal_contract":
-		return "spatial_temporal_contract"
-	return "none"
+def _step_meta_node_kind(base_class: type, step_meta: Mapping[str, Any]) -> str:
+	meta_node_kind = str(step_meta.get("metaNodeKind", "")).strip()
+	if meta_node_kind:
+		return meta_node_kind
+	return str(base_class.meta_node_kind()).strip()
 
 
-def _supports_inputs_format(step_meta: Mapping[str, Any]) -> bool:
-	node_kind = str(step_meta.get("nodeKind", "")).strip().lower()
-	return node_kind in {"input", "skill"}
+def _traits_for_meta_node_kind(meta_node_kind: str) -> dict[str, Any]:
+	return _META_NODE_KIND_TRAITS.get(
+		meta_node_kind,
+		{
+			"capability_category": "operation",
+			"recommended_ext_data_type": "none",
+			"supports_inputs_format": False,
+		},
+	)
 
 
-def _planner_hooks(base_class: type, step_meta: Mapping[str, Any]) -> tuple[str, ...]:
+def _recommended_ext_data_type(meta_node_kind: str) -> str:
+	return str(_traits_for_meta_node_kind(meta_node_kind)["recommended_ext_data_type"])
+
+
+def _supports_inputs_format(meta_node_kind: str) -> bool:
+	return bool(_traits_for_meta_node_kind(meta_node_kind)["supports_inputs_format"])
+
+
+def _planner_hooks(base_class: type, meta_node_kind: str) -> tuple[str, ...]:
 	available_methods = {
 		name
 		for name, value in inspect.getmembers(base_class, predicate=callable)
 		if not name.startswith("__")
 	}
-	node_kind = str(step_meta.get("nodeKind", "")).strip().lower()
-	if node_kind == "input" and "process_input" in available_methods:
+	if meta_node_kind == "WorkflowStepNode" and "process_input" in available_methods:
 		return ("process_input",)
-	if node_kind in {"operation", "skill", "spatial_temporal_contract"} and "process_operation" in available_methods:
-		if node_kind == "spatial_temporal_contract" and "clone" in available_methods:
+	if meta_node_kind == "SpatialTemporalContractNode":
+		if "clone" in available_methods:
 			return ("clone",)
+		if "process_operation" in available_methods:
+			return ("process_operation",)
+		return tuple()
+	if meta_node_kind in {"WorkflowOperationNode", "WorkflowSkillNode"} and "process_operation" in available_methods:
 		return ("process_operation",)
-	if node_kind == "file":
+	if meta_node_kind == "WorkflowFileNode":
 		if "save_files_remote" in available_methods:
 			return ("save_files_remote",)
 		if "build_step_output" in available_methods:
@@ -112,17 +152,19 @@ def workflow_node_references() -> tuple[WorkflowNodeReference, ...]:
 	references: list[WorkflowNodeReference] = []
 	for base_class in _base_node_classes():
 		step_meta = dict(base_class.step_meta())
+		meta_node_kind = _step_meta_node_kind(base_class, step_meta)
+		traits = _traits_for_meta_node_kind(meta_node_kind)
 		references.append(
 			WorkflowNodeReference(
 				base_class=base_class,
-				meta_node_kind=str(base_class.meta_node_kind()),
-				node_kind=str(step_meta.get("nodeKind", "")).strip(),
+				meta_node_kind=meta_node_kind,
+				capability_category=str(traits["capability_category"]),
 				input_required=bool(step_meta.get("inputRequired", False)),
-				recommended_ext_data_type=_recommended_ext_data_type(step_meta),
-				planner_hooks=_planner_hooks(base_class, step_meta),
+				recommended_ext_data_type=_recommended_ext_data_type(meta_node_kind),
+				planner_hooks=_planner_hooks(base_class, meta_node_kind),
 				summary=_summary_from_step_meta(step_meta),
 				step_meta=step_meta,
-				supports_inputs_format=_supports_inputs_format(step_meta),
+				supports_inputs_format=_supports_inputs_format(meta_node_kind),
 			)
 		)
 	return tuple(references)
@@ -183,7 +225,7 @@ def render_workflow_step_meta_catalog() -> str:
 		step_meta = reference.step_meta
 		parts = [
 			f"### {reference.meta_node_kind}",
-			f"- nodeKind: {reference.node_kind}",
+			f"- capability category: {reference.capability_category}",
 			f"- recommended ext_data.type: {reference.recommended_ext_data_type}",
 			f"- inputRequired: {str(reference.input_required).lower()}",
 		]
@@ -193,7 +235,6 @@ def render_workflow_step_meta_catalog() -> str:
 			[
 				"- step_meta reference:",
 				f"  - metaNodeKind: {step_meta.get('metaNodeKind', reference.meta_node_kind)}",
-				f"  - nodeKind: {step_meta.get('nodeKind', reference.node_kind)}",
 				f"  - structure: {str(step_meta.get('structure', '')).strip() or 'n/a'}",
 				f"  - function: {str(step_meta.get('function', '')).strip() or 'n/a'}",
 				f"  - implementationGuide: {str(step_meta.get('implementationGuide', '')).strip() or 'n/a'}",
@@ -208,7 +249,7 @@ def render_workflow_node_reference(reference: WorkflowNodeReference) -> str:
 	return "\n".join(
 		[
 			f"### {reference.meta_node_kind}",
-			f"- nodeKind: {reference.node_kind}",
+			f"- capability category: {reference.capability_category}",
 			f"- recommended ext_data.type: {reference.recommended_ext_data_type}",
 			f"- inputRequired: {str(reference.input_required).lower()}",
 			f"- supports inputs_format: {str(reference.supports_inputs_format).lower()}",

@@ -17,11 +17,11 @@
   - meta_node_kind: 字符串，必须等于所选 ag_ui_workflow 基类 `meta_node_kind()` 返回值。
   - desc: 字符串，对应节点的功能描述（中文）。
   - ext_data: 必填，JSON 对象，格式为 {"type": "...", "desc": "..."}。
-    - 当所选 `meta_node_kind` 的 catalog 条目对应 `nodeKind=input` 时，type 必须为 "user_input"。
-    - 当所选 `meta_node_kind` 的 catalog 条目对应 `nodeKind=file` 时，type 必须为 "user_file_input"。
-    - 当所选 `meta_node_kind` 的 catalog 条目对应 `nodeKind=skill` 时，type 必须为 "skill"，并填写 skill_name（值为默认技能目录中的子目录名）。
-    - 当所选 `meta_node_kind` 的 catalog 条目对应 `nodeKind=spatial_temporal_contract` 时，type 必须为 "spatial_temporal_contract"。
-    - 当所选 `meta_node_kind` 的 catalog 条目对应 `nodeKind=operation` 时，type 可为 "none" 或领域外部源类型，如 "url"、"file"、"db"。
+    - 当 `meta_node_kind="WorkflowStepNode"` 时，type 必须为 "user_input"。
+    - 当 `meta_node_kind="WorkflowFileNode"` 时，type 必须为 "user_file_input"。
+    - 当 `meta_node_kind="WorkflowSkillNode"` 时，type 必须为 "skill"，并填写 skill_name（值为默认技能目录中的子目录名）。
+    - 当 `meta_node_kind="SpatialTemporalContractNode"` 时，type 必须为 "spatial_temporal_contract"。
+    - 当 `meta_node_kind="WorkflowOperationNode"` 时，type 可为 "none" 或领域外部源类型，如 "url"、"file"、"db"。
     - 若 type 为 "none"，desc 必须为 "no need for ext data"。
     - 示例：{"type":"user_input","desc":"user input income"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"skill","skill_name":"baidu_search","desc":"search baidu for query results"}、{"type":"spatial_temporal_contract","desc":"generate spatial-temporal contract JSON from upstream description"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。

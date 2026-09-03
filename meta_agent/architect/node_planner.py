@@ -283,7 +283,7 @@ class NodePlanner:
 		return {
 			"extType": ext_type,
 			"metaNodeKind": reference.meta_node_kind,
-			"nodeKind": reference.node_kind,
+			"capabilityCategory": reference.capability_category,
 			"baseClass": reference.meta_node_kind,
 			"primaryFunctions": list(reference.planner_hooks),
 			"note": note,
@@ -332,7 +332,7 @@ class NodePlanner:
 				node_lines.append(f"- ext_data.skill_name: {skill_name_val}")
 			node_lines.extend(
 				[
-					f"- derived node kind: {profile['nodeKind']}",
+					f"- capability category: {profile['capabilityCategory']}",
 					f"- recommended base class: {profile['baseClass']}",
 					f"- primary functions: {', '.join(profile['primaryFunctions'])}",
 					f"- note: {profile['note']}",
@@ -383,14 +383,14 @@ class NodePlanner:
 			ctx_lines.append(f"- ext_data.skill_name: {skill_name_val}")
 		ctx_lines.extend(
 			[
-				f"- derived node kind: {profile['nodeKind']}",
+				f"- capability category: {profile['capabilityCategory']}",
 				f"- recommended base class: {profile['baseClass']}",
 				f"- primary functions: {', '.join(profile['primaryFunctions'])}",
 				f"- note: {profile['note']}",
 			]
 		)
 		ctx_lines.extend(self._node_type_choice_lines())
-		if profile["nodeKind"] == "skill":
+		if profile["metaNodeKind"] == "WorkflowSkillNode":
 			ctx_lines.extend(self._skill_choice_lines())
 		return "\n".join(ctx_lines)
 

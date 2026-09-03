@@ -13,7 +13,7 @@
 - 每个节点优先写“必须做什么”，避免扩展功能。
 
 ## 每节点最少包含
-- 推荐基类与 node kind（来自 catalog / meta_node_kind）
+- 推荐基类与 capability category（来自 catalog / meta_node_kind）
 - 需要实现/覆写的关键函数
 - 需要使用的关键工具/数据（dependency_results、session_state、外部api、packages）
 - 输入与依赖处理要点
