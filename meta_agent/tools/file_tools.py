@@ -328,25 +328,28 @@ _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
 	"WorkflowOperationNode": ("process_operation",),
 	"WorkflowServiceNode": ("use_service",),
 	"WorkflowSkillNode": ("process_operation",),
+	"SpatialTemporalContractNode": ("process_operation",),
 }
 
 
 def _get_workflow_base_class_objects() -> dict[str, type]:
 	"""Return a mapping of base class name -> class, imported lazily to avoid circular imports."""
-	from ag_ui_workflow.nodes import (  # noqa: PLC0415
-		WorkflowFileNode,
-		WorkflowOperationNode,
-		WorkflowStepNode,
-		WorkflowServiceNode,
-		WorkflowSkillNode,
+	from ag_ui_workflow import nodes as workflow_nodes  # noqa: PLC0415
+
+	class_names = (
+		"WorkflowStepNode",
+		"WorkflowFileNode",
+		"WorkflowOperationNode",
+		"WorkflowServiceNode",
+		"WorkflowSkillNode",
+		"SpatialTemporalContractNode",
 	)
-	return {
-		"WorkflowStepNode": WorkflowStepNode,
-		"WorkflowFileNode": WorkflowFileNode,
-		"WorkflowOperationNode": WorkflowOperationNode,
-		"WorkflowServiceNode": WorkflowServiceNode,
-		"WorkflowSkillNode": WorkflowSkillNode,
-	}
+	result: dict[str, type] = {}
+	for class_name in class_names:
+		base_cls = getattr(workflow_nodes, class_name, None)
+		if isinstance(base_cls, type):
+			result[class_name] = base_cls
+	return result
 
 
 def _base_name(base: ast.expr) -> str | None:
@@ -546,6 +549,23 @@ def _extract_step_output_card_from_method(method: ast.FunctionDef | ast.AsyncFun
 	return None
 
 
+def _extract_step_output_card_from_runtime_method(method_obj: Any) -> dict[str, Any] | None:
+	try:
+		source = textwrap.dedent(inspect.getsource(method_obj))
+	except Exception:
+		return None
+
+	try:
+		tree = ast.parse(source)
+	except Exception:
+		return None
+
+	for node in tree.body:
+		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+			return _extract_step_output_card_from_method(node)
+	return None
+
+
 def compile_node_file_and_get_step_output_card_schema(node_file_path: str) -> dict[str, Any] | None:
 	"""Parse a node file and return the first StepRunOutput card schema preview.
 
@@ -577,17 +597,27 @@ def compile_node_file_and_get_step_output_card_schema(node_file_path: str) -> di
 
 		for method_name in method_candidates:
 			method = _find_method(node, method_name)
-			if method is None:
-				continue
-			card_schema = _extract_step_output_card_from_method(method)
-			if card_schema is None:
-				continue
+			if method is not None:
+				card_schema = _extract_step_output_card_from_method(method)
+				if card_schema is None:
+					continue
+				return {
+					"step_id": _extract_class_string_constant(node, "STEP_ID") or node.name,
+					"title": _extract_class_string_constant(node, "TITLE") or node.name,
+					"card": card_schema,
+				}
 
-			return {
-				"step_id": _extract_class_string_constant(node, "STEP_ID") or node.name,
-				"title": _extract_class_string_constant(node, "TITLE") or node.name,
-				"card": card_schema,
-			}
+			for workflow_base in workflow_bases:
+				if workflow_base != "SpatialTemporalContractNode":
+					continue
+				fallback_card = _get_workflow_base_method_card_fallbacks().get(workflow_base, {}).get(method_name)
+				if fallback_card is None:
+					continue
+				return {
+					"step_id": _extract_class_string_constant(node, "STEP_ID") or node.name,
+					"title": _extract_class_string_constant(node, "TITLE") or node.name,
+					"card": fallback_card,
+				}
 
 	return None
 
@@ -669,7 +699,28 @@ def _load_workflow_base_method_derived_fallbacks() -> dict[str, dict[str, set[st
 	return fallbacks
 
 
+def _load_workflow_base_method_card_fallbacks() -> dict[str, dict[str, dict[str, Any] | None]]:
+	fallbacks: dict[str, dict[str, dict[str, Any] | None]] = {}
+	_WORKFLOW_BASE_CLASS_OBJECTS = _get_workflow_base_class_objects()
+	for base_name, method_names in _WORKFLOW_BASE_CLASS_TO_METHODS.items():
+		base_cls = _WORKFLOW_BASE_CLASS_OBJECTS.get(base_name)
+		if base_cls is None:
+			continue
+
+		base_method_cards: dict[str, dict[str, Any] | None] = {}
+		for method_name in method_names:
+			method_obj = getattr(base_cls, method_name, None)
+			if method_obj is None:
+				continue
+			base_method_cards[method_name] = _extract_step_output_card_from_runtime_method(method_obj)
+
+		fallbacks[base_name] = base_method_cards
+
+	return fallbacks
+
+
 _WORKFLOW_BASE_METHOD_DERIVED_FALLBACKS: dict[str, dict[str, set[str]]] | None = None
+_WORKFLOW_BASE_METHOD_CARD_FALLBACKS: dict[str, dict[str, dict[str, Any] | None]] | None = None
 
 
 def _get_workflow_base_method_derived_fallbacks() -> dict[str, dict[str, set[str]]]:
@@ -679,11 +730,18 @@ def _get_workflow_base_method_derived_fallbacks() -> dict[str, dict[str, set[str
 	return _WORKFLOW_BASE_METHOD_DERIVED_FALLBACKS
 
 
+def _get_workflow_base_method_card_fallbacks() -> dict[str, dict[str, dict[str, Any] | None]]:
+	global _WORKFLOW_BASE_METHOD_CARD_FALLBACKS
+	if _WORKFLOW_BASE_METHOD_CARD_FALLBACKS is None:
+		_WORKFLOW_BASE_METHOD_CARD_FALLBACKS = _load_workflow_base_method_card_fallbacks()
+	return _WORKFLOW_BASE_METHOD_CARD_FALLBACKS
+
+
 def compile_node_file_and_get_derived_keys(node_file_path: str) -> list[str]:
 	"""Parse a node file and return all derived-dict keys from workflow node classes.
 
 	The parser inspects subclasses of WorkflowStepNode, WorkflowFileNode,
-	WorkflowOperationNode, WorkflowServiceNode, and WorkflowSkillNode using Python AST,
+	WorkflowOperationNode, WorkflowServiceNode, WorkflowSkillNode, and SpatialTemporalContractNode using Python AST,
 	then extracts string keys from local ``derived`` dict literals (and equivalent
 	``StepRunOutput(..., derived=...)`` literals) inside relevant methods.
 	"""

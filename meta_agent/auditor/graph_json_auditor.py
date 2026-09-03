@@ -108,7 +108,7 @@ class GraphJsonAuditor(BaseJsonAuditor):
 						rule="image_ext_type_unsupported",
 						detail=(
 							f"Node '{name or '<empty>'}' uses deprecated ext_data.type='image'. "
-							"Use supported node kinds such as user_file_input, user_input, service, skill, or none."
+							"Use supported node kinds such as user_file_input, user_input, service, skill, spatial_temporal_contract, or none."
 						),
 						lineno=index,
 					)

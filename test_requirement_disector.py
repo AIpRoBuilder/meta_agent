@@ -62,4 +62,5 @@ def test_requirement_disector_prompt_uses_backend_only_node_design_columns() -> 
     analyzer = RequirementDisector(client=_FakeClient([]))
 
     assert "节点ID | 节点类型 | ext_data.type | 作用 | depends" in analyzer.system_prompt
+    assert "SpatialTemporalContractNode" in analyzer.system_prompt
     assert "show_frontend" not in analyzer.system_prompt

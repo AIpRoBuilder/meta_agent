@@ -10,7 +10,8 @@
   - WorkflowFileNode（nodeKind=file）：通用文件上传/存储节点，对应 ext_data.type="user_file_input"。
   - WorkflowServiceNode（nodeKind=service）：服务启动/探测类节点，对应 ext_data.type="service"，且应填写 ext_data.service_name（服务目录名）。
   - WorkflowSkillNode（nodeKind=skill）：技能封装类节点，对应 ext_data.type="skill"，且应填写 ext_data.skill_name（技能目录名）。
-  - 不得虚构上述五类实现基类之外的节点能力模型。
+  - SpatialTemporalContractNode（nodeKind=spatial_temporal_contract）：将上游输出或 session_state 中的描述整理为时空关系 contract JSON，对应 ext_data.type="spatial_temporal_contract"。
+  - 不得虚构上述六类实现基类之外的节点能力模型。
 - 顶层结构必须是：
   {
     "nodes": [ ... ]
@@ -24,10 +25,11 @@
     - 若节点是通用文件上传/存储，type 使用 "user_file_input"。
     - 若节点是服务启动/探测节点，type 使用 "service"，并填写 service_name（值为默认服务目录中的子目录名）。
     - 若节点是技能封装节点，type 使用 "skill"，并填写 skill_name（值为默认技能目录中的子目录名）。
-    - 映射关系："user_input" -> WorkflowStepNode；"user_file_input" -> WorkflowFileNode；"service" -> WorkflowServiceNode；"skill" -> WorkflowSkillNode。
+    - 若节点要基于上游描述生成时空 contract JSON，type 使用 "spatial_temporal_contract"。
+    - 映射关系："user_input" -> WorkflowStepNode；"user_file_input" -> WorkflowFileNode；"service" -> WorkflowServiceNode；"skill" -> WorkflowSkillNode；"spatial_temporal_contract" -> SpatialTemporalContractNode。
     - 其他示例 type："url"、"file"、"db"、"none"。
     - 若 type 为 "none"，desc 必须为 "no need for ext data"。
-    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"skill","skill_name":"baidu_search","desc":"search baidu for query results"}、{"type":"url","desc":"image generator api"}。
+    - 示例：{"type":"user_input","desc":"user input income"}、{"type":"user_file_input","desc":"upload files for storage and downstream processing"}、{"type":"service","service_name":"media_crawler","desc":"bootstrap and verify media crawler service"}、{"type":"skill","skill_name":"baidu_search","desc":"search baidu for query results"}、{"type":"spatial_temporal_contract","desc":"generate spatial-temporal contract JSON from upstream description"}、{"type":"url","desc":"image generator api"}。
   - enable: 布尔值。
   - loop: 整数，默认 1；若未提及循环可省略。
     - 若某节点需要执行多次以更新节点状态，必须显式设置 loop > 1。
@@ -89,5 +91,6 @@
 - 依赖关系根据流程/交互顺序判断；不确定时保持独立并省略 depends。
 - 节点 name/type 一律使用英文，且二者保持相同；禁止使用 MyNode、NewNode、Node1、N1、A 这类无语义占位名。
 - 即使信息不完整，也要基于节点功能写出语义化名称（如 UserInputCollection、ContentSearchExecution、FinalSummaryOutput）。
+- 当需求明确要求产出场景/关系/对象的时空 contract JSON 时，优先规划为 ext_data.type="spatial_temporal_contract"，而不是降级为普通 WorkflowOperationNode。
 - 若有可并行的模块，避免互相依赖。
 - 对任意服务节点的下游节点（包含传递依赖），必须补充 services 字段声明该节点使用了哪些服务及用途。

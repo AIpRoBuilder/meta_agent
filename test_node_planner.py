@@ -49,8 +49,30 @@ def test_node_context_lists_selectable_types_and_skill_descriptions(tmp_path) ->
 	assert "- selectable node types:" in context
 	assert "user_input -> WorkflowStepNode" in context
 	assert "skill -> WorkflowSkillNode" in context
+	assert "spatial_temporal_contract -> SpatialTemporalContractNode" in context
 	assert "- available skills:" in context
 	assert "baidu_search:" in context
+
+
+def test_node_context_recommends_spatial_temporal_contract_node(tmp_path) -> None:
+	planner = NodePlanner(client=_FakeClient([]), skills_root_path=str(tmp_path / "skills"))
+
+	context = planner._node_context(
+		{
+			"name": "BuildContract",
+			"desc": "generate a spatial-temporal contract from upstream scene text",
+			"depends": ["DescribeScene"],
+			"ext_data": {
+				"type": "spatial_temporal_contract",
+				"desc": "build contract json from upstream description",
+			},
+		},
+		1,
+	)
+
+	assert "recommended base class: SpatialTemporalContractNode" in context
+	assert "derived node kind: spatial_temporal_contract" in context
+	assert "primary functions: clone" in context
 
 
 def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp_path) -> None:

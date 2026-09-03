@@ -169,6 +169,36 @@ def test_agent_builder_make_node_coder_passes_session_marking_prompt(monkeypatch
     )
 
 
+def test_agent_builder_make_node_coder_routes_spatial_temporal_contract(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_builder_module, "RequirementDisector", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "GraphPlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "NodePlanner", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "PromptMainFileCoder", _FakeComponent)
+    monkeypatch.setattr(agent_builder_module, "SpatialTemporalContractNodeCoder", _FakeComponent)
+
+    builder = AgentBuilder(
+        api_key="key",
+        model="model",
+        provider="provider",
+        root_dir=str(tmp_path),
+        session_marking_prompt="Keep request_marker in contract generation.",
+    )
+
+    coder = builder._make_node_coder(
+        NodeMeta(
+            name="BuildContract",
+            type="",
+            desc="Generate spatial-temporal contract",
+            ext_data={"type": "spatial_temporal_contract", "desc": "build contract json"},
+        )
+    )
+
+    assert coder.kwargs["root_dir_path"] == str(tmp_path)
+    assert coder.kwargs["session_marking_prompt"] == compose_session_marking_prompt(
+        "Keep request_marker in contract generation."
+    )
+
+
 def test_node_planner_system_prompt_includes_session_marking_prompt():
     planner = NodePlanner(
         client=_FakeClient(),

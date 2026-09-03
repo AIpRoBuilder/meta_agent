@@ -274,9 +274,9 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_step_node_subclass(self, cls: ast.ClassDef) -> bool:
         for base in cls.bases:
-            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
                 return True
-            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode"}:
+            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
                 return True
         return False
 
@@ -314,6 +314,9 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_service_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"WorkflowServiceNode"})
+
+    def _is_spatial_temporal_contract_node_subclass(self, cls: ast.ClassDef) -> bool:
+        return self._is_direct_or_attr_base_subclass(cls, {"SpatialTemporalContractNode"})
 
     def _get_method(self, cls: ast.ClassDef, name: str) -> ast.FunctionDef | None:
         for node in cls.body:
@@ -518,6 +521,7 @@ class NodeAuditor(BaseAuditor):
         - ext_data.type == "user_input" => class must subclass WorkflowStepNode
         - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
         - ext_data.type == "service" or ext_data.service_name exists => class must subclass WorkflowServiceNode
+        - ext_data.type == "spatial_temporal_contract" => class must subclass SpatialTemporalContractNode
         - ext_data.type == "none" => class must subclass WorkflowOperationNode
         """
         if node_meta is None:
@@ -580,6 +584,19 @@ class NodeAuditor(BaseAuditor):
                         class_name=cls.name,
                         rule="ext_data_skill_requires_skill_node",
                         detail="When ext_data.type is 'skill', the node class must subclass WorkflowSkillNode.",
+                        lineno=cls.lineno,
+                    )
+                )
+        elif ext_type == "spatial_temporal_contract":
+            if not self._is_spatial_temporal_contract_node_subclass(cls):
+                violations.append(
+                    RuleViolation(
+                        class_name=cls.name,
+                        rule="ext_data_spatial_temporal_contract_requires_spatial_temporal_contract_node",
+                        detail=(
+                            "When ext_data.type is 'spatial_temporal_contract', "
+                            "the node class must subclass SpatialTemporalContractNode."
+                        ),
                         lineno=cls.lineno,
                     )
                 )

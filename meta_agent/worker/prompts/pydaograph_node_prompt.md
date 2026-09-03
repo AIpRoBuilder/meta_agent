@@ -13,6 +13,7 @@ Guidelines:
 - Choose base class from node metadata ext_data:
     - If `ext_data.type == "service"` (or `ext_data.service_name` is provided), generate a Python class that inherits from `WorkflowServiceNode`.
     - If `ext_data.type == "skill"` (or `ext_data.skill_name` is provided), generate a Python class that inherits from `WorkflowSkillNode`.
+    - If `ext_data.type == "spatial_temporal_contract"`, generate a Python class that inherits from `SpatialTemporalContractNode`.
     - If `ext_data.type == "none"`, generate a Python class that inherits from `WorkflowOperationNode`.
     - If `ext_data.type == "user_file_input"`, generate a Python class that inherits from `WorkflowFileNode`.
     - Otherwise, generate a Python class that inherits from `WorkflowStepNode`.
@@ -22,10 +23,11 @@ Guidelines:
     - `WorkflowServiceNode`: Non-interactive service lifecycle step that executes two phases in order: `install_environment(...)` (Phase 1 — install packages/deps from service.md `## 1. Installation`), `start_service(...)` (Phase 2 — launch background process from `## 2. Start Service`, return PID and mark `workflow_service_registry` as running). The base class orchestrates install + start automatically; do **not** override `process_operation`.
     - `WorkflowSkillNode`: Skill-library step backed by `skill.md`. Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc, exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`, and may accept direct user input. Implement `process_operation(user_input, dependency_results, session_state)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
     - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via the base `build_step_output(saved_files)` unless a specialized override is explicitly required.
+    - `SpatialTemporalContractNode`: Non-interactive contract-generation step. The base class already implements `run(...)`, `use_service(...)`, and `process_operation(dependency_results, session_state)` to resolve a description from `session_state['spatialTemporalContractDescription']` or upstream outputs, call the configured model, normalize contract JSON, and return `StepRunOutput`. Generated subclasses normally only define class constants plus a trivial `clone(self) -> self`.
 
 Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
 
-- Prefer `WorkflowServiceNode` for service startup/bootstrap flows driven by service run guides, `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
+- Prefer `WorkflowServiceNode` for service startup/bootstrap flows driven by service run guides, `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `SpatialTemporalContractNode` for steps that turn upstream descriptions into spatial-temporal contract JSON, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
 - Import `register_class` from `pydaograph`, workflow node base class(es) from `ag_ui_workflow.nodes`, and `StepRunOutput` from `ag_ui_workflow.workflow_types`.
 - For `WorkflowServiceNode`, always import `workflow_service_registry` from `ag_ui_workflow.services`.
 - For `WorkflowStepNode` / `WorkflowOperationNode`, import `workflow_service_registry` only when node logic needs direct service registry access beyond `self.use_service(session_state)`.
@@ -51,6 +53,10 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
         - In `process_operation`, invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
         - Use `user_input` when the step collects input; tolerate empty input when the skill can run from dependencies alone.
         - Return `StepRunOutput(card=..., derived=...)` with results from the skill invocation.
+    - `SpatialTemporalContractNode`: define `STEP_ID`, `TITLE`, `PROMPT`, `DEPENDENCIES`, and `SERVICES`, and implement only `clone(self)` returning `self` unless custom contract-generation behavior is explicitly required.
+        - Do **not** override `run`, `use_service`, or `process_operation` by default; the base class already resolves description text, invokes the model, and returns `StepRunOutput`.
+        - Ensure upstream dependencies or `session_state` provide `spatialTemporalContractDescription` or equivalent descriptive text.
+        - The inherited `derived` payload includes keys such as `spatialTemporalContract`, `spatialTemporalContractJson`, `objectCount`, `relationCount`, `model`, `rawResponse`, and optional `usage`.
 - Use `dependency_results[<step_id>].derived[...]` to read prerequisite outputs.
 - Extract upstream variables only from dependency nodes listed in `DEPENDENCIES`.
 - When dependency context is provided (for example, GraphContextBuilder context), treat it as authoritative for upstream `STEP_ID` and `derived` keys.
@@ -68,7 +74,7 @@ Reference implementation excerpts are maintained in `meta_agent/library/workflow
 
 Minimality checklist (must follow):
 - Keep imports minimal; only import symbols actually used.
-- Keep one processing method for the selected base class (`process_input` / `process_operation`).
+- Keep one processing method for the selected base class (`process_input` / `process_operation`) when that base requires a custom processing method; for `SpatialTemporalContractNode`, rely on the inherited base processing by default.
 - Do not add helper methods unless they remove duplicated logic used at least twice.
 - Do not include mocked/sample/simulated runtime data in business logic.
 - Add detailed debug logging that writes to a local file path so execution can be inspected after runs.
@@ -89,7 +95,7 @@ from typing import Any
 
 from pydaograph import register_class, CStatus
 
-from ag_ui_workflow.nodes import WorkflowFileNode, WorkflowOperationNode, WorkflowServiceNode, WorkflowStepNode
+from ag_ui_workflow.nodes import SpatialTemporalContractNode, WorkflowFileNode, WorkflowOperationNode, WorkflowServiceNode, WorkflowStepNode
 from ag_ui_workflow.services import workflow_service_registry
 from ag_ui_workflow.workflow_types import StepRunOutput
 
@@ -274,4 +280,4 @@ class MediaCrawlerServiceNode(WorkflowServiceNode):
         return proc.pid
 ```
 
-When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `none -> WorkflowOperationNode`, `user_file_input -> WorkflowFileNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` (service nodes implement two phases `install_environment -> bool`, `start_service -> int PID` and mark `workflow_service_registry` running state in `start_service`, without overriding `process_operation`; skill nodes provide `process_operation`).
+When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `spatial_temporal_contract -> SpatialTemporalContractNode`, `none -> WorkflowOperationNode`, `user_file_input -> WorkflowFileNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` when the selected base class requires custom processing (service nodes implement two phases `install_environment -> bool`, `start_service -> int PID` and mark `workflow_service_registry` running state in `start_service`, without overriding `process_operation`; skill nodes provide `process_operation`; spatial-temporal contract nodes usually only define constants plus `clone`).

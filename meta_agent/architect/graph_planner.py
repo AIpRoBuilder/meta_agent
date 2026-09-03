@@ -20,7 +20,7 @@ class GraphPlanner(Coder):
 
 	`ext_data` should be a JSON object for every node with shape:
 	{
-		"type": "user_input" | "user_file_input" | "url" | "file" | "db" | "skill" | "service" | "none" | ...,
+		"type": "user_input" | "user_file_input" | "url" | "file" | "db" | "skill" | "service" | "spatial_temporal_contract" | "none" | ...,
 		"desc": "short description",
 		"service_name": "optional service directory name (required when type=service)",
 		"skill_name": "optional skill directory name (required when type=skill)"
@@ -38,6 +38,7 @@ class GraphPlanner(Coder):
 	Use `{"type": "user_file_input", ...}` for nodes that should be implemented as WorkflowFileNode.
 	Use `{"type": "service", "service_name": "<service>", ...}` for nodes that should be implemented as WorkflowServiceNode.
 	Use `{"type": "skill", "skill_name": "<skill>", ...}` for nodes that should be implemented as WorkflowSkillNode.
+	Use `{"type": "spatial_temporal_contract", ...}` for nodes that should be implemented as SpatialTemporalContractNode.
 	"""
 
 	prompt_path: str = "architect/prompts/graph_planner_prompt.md"
@@ -768,7 +769,8 @@ class GraphPlanner(Coder):
 			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
 			"- Use WorkflowServiceNode-compatible semantics for service bootstrap/startup nodes with ext_data.type='service'\n"
 			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'\n"
-			"- Do not invent node categories outside Step/Operation/File/Service/Skill implementation capabilities defined in the workflow reference\n"
+			"- Use SpatialTemporalContractNode-compatible semantics for nodes that generate a spatial-temporal contract JSON from dependency/session descriptions with ext_data.type='spatial_temporal_contract'\n"
+			"- Do not invent node categories outside Step/Operation/File/Service/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
 			"Schema requirements for each node:\n"
 			"- Required fields: name, type, desc, enable, depends, ext_data\n"
 			"- For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
@@ -784,10 +786,11 @@ class GraphPlanner(Coder):
 			"- Mark generic file-upload nodes that require user files with ext_data.type = 'user_file_input'\n"
 			"- Mark service bootstrap/startup nodes with ext_data.type = 'service'\n"
 			"- Mark skill-library wrapper nodes with ext_data.type = 'skill'\n"
-			"- Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode\n"
+			"- Mark contract-generation nodes with ext_data.type = 'spatial_temporal_contract'\n"
+			"- Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode\n"
 			"- If ext_data.type='service', ext_data.service_name must be set to a valid service directory name\n"
 			"- If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name\n"
-			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}\n"
+			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}\n"
 			"- For nodes without external dependency, include ext_data as {'type':'none','desc':'no need for ext data'}\n"
 			"- If ext_data.type is 'none', desc must be exactly 'no need for ext data'\n"
 			"- Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}\n"
@@ -837,7 +840,8 @@ class GraphPlanner(Coder):
 			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
 			"- Use WorkflowServiceNode-compatible semantics for service bootstrap/startup nodes with ext_data.type='service'.\n"
 			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'.\n"
-			"- Do not invent node categories outside Step/Operation/File/Service/Skill implementation capabilities defined in the workflow reference\n"
+			"- Use SpatialTemporalContractNode-compatible semantics for nodes that generate a spatial-temporal contract JSON from dependency/session descriptions with ext_data.type='spatial_temporal_contract'.\n"
+			"- Do not invent node categories outside Step/Operation/File/Service/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
 			"Preserve the graph schema (top-level nodes list with name, type, desc, depends, ext_data).\n"
 			"For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
 			"Do not include inputs_format for nodes other than user_input and skill.\n"
@@ -852,12 +856,13 @@ class GraphPlanner(Coder):
 			"Mark generic file-upload nodes that require user files with ext_data.type='user_file_input'.\n"
 			"Mark service bootstrap/startup nodes with ext_data.type='service'.\n"
 			"Mark skill-library wrapper nodes with ext_data.type='skill'.\n"
+			"Mark contract-generation nodes with ext_data.type='spatial_temporal_contract'.\n"
 			"If ext_data.type='service', ext_data.service_name must be set to a valid service directory name.\n"
 			"If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name.\n"
-			"Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode.\n"
+			"Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode.\n"
 			"If ext_data.type is 'none', desc must be exactly 'no need for ext data'.\n"
 			"Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}.\n"
-			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'url','desc':'image generator api'}.\n"
+			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}.\n"
 			f"{self._build_service_context_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON without code fences or commentary.\n\n"

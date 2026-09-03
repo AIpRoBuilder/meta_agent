@@ -25,7 +25,8 @@
        - WorkflowFileNode（nodeKind=file）：通用文件上传/存储节点，对应 ext_data.type="user_file_input"。
        - WorkflowServiceNode（nodeKind=service）：服务启动/调用类节点，对应 ext_data.type="service"，用于按服务流程安装环境、启动服务并消费服务结果。
        - WorkflowSkillNode（nodeKind=skill）：技能封装类节点，对应 ext_data.type="skill"，用于调用预置 skill 能力并输出结构化结果。
-       - 不得虚构上述五类实现基类之外的节点能力模型。
+       - SpatialTemporalContractNode（nodeKind=spatial_temporal_contract）：将上游描述或 session_state 中的文本上下文整理为时空关系 contract JSON，对应 ext_data.type="spatial_temporal_contract"。
+       - 不得虚构上述六类实现基类之外的节点能力模型。
    - 节点设计输出格式固定为表格，字段为【节点ID | 节点类型 | ext_data.type | 作用 | depends】。
     - 仅输出最少必要节点；避免冗余节点与重复说明。
 

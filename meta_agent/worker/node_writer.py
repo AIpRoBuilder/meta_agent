@@ -72,6 +72,16 @@ def is_skill_ext_data(ext_data: Any) -> bool:
     return False
 
 
+def is_spatial_temporal_contract_ext_data(ext_data: Any) -> bool:
+    """Return True when ext_data indicates a SpatialTemporalContractNode."""
+    if isinstance(ext_data, Mapping):
+        ext_type = str(ext_data.get("type", "")).strip().lower()
+        return ext_type == "spatial_temporal_contract"
+    if isinstance(ext_data, str):
+        return ext_data.strip().lower() == "spatial_temporal_contract"
+    return False
+
+
 def _build_dependency_derived_context(node_dir: Path, dependency_names: list[str]) -> str:
     if not dependency_names:
         return ""
@@ -714,6 +724,67 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
             "(STEP_ID/TITLE/PROMPT/DEPENDENCIES). "
             "Default to no custom methods; only override save_files_remote(files, session_state) when remote storage behavior is explicitly required (e.g., ext_data.remote_desc).\n"
         )
+
+
+@dataclass
+class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
+    node_base_class: str = "SpatialTemporalContractNode"
+
+    def _build_requirement_prompt(
+        self,
+        node_name: str,
+        node_meta: NodeMeta,
+        requirement_text: str,
+        node_markdown_reference: str,
+        output_path: str,
+        graph_plan_path: str,
+        language_clean: str,
+        node_base_class: str,
+        node_contract_text: str,
+    ) -> str:
+        base_prompt = super()._build_requirement_prompt(
+            node_name=node_name,
+            node_meta=node_meta,
+            requirement_text=requirement_text,
+            node_markdown_reference=node_markdown_reference,
+            output_path=output_path,
+            graph_plan_path=graph_plan_path,
+            language_clean=language_clean,
+            node_base_class=node_base_class,
+            node_contract_text=node_contract_text,
+        )
+
+        return (
+            base_prompt
+            + "\n\nSpatialTemporalContractNode runtime contract (authoritative):\n"
+            + "- Subclass SpatialTemporalContractNode.\n"
+            + "- Define STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
+            + "- Keep implementation minimal: add only clone(self) -> self; rely on the base class for run/process_operation/use_service.\n"
+            + "- Do not implement process_input/process_operation unless the requirement explicitly demands custom contract-generation logic.\n"
+            + "- Ensure the contract description comes from session_state['spatialTemporalContractDescription'] or an upstream dependency output/card.\n"
+            + "- The base class returns StepRunOutput with derived keys such as spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n"
+            + "- This node is non-interactive; do not introduce direct user input handling or inputs_format parsing.\n"
+        )
+
+    def get_node_contract_text(self) -> str:
+        return (
+            "Generate a SpatialTemporalContractNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
+            "Keep implementation minimal: only imports, class constants, and clone(self) returning self.\n"
+            "Do NOT implement process_input, process_operation, run, __init__, or use_service unless the requirement explicitly asks to customize the base contract-generation behavior.\n"
+            "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
+            "This node is non-interactive and should not parse direct user input or define inputs_format.\n"
+            "Ensure upstream dependencies or session_state provide spatialTemporalContractDescription or equivalent descriptive text for the base class to consume.\n"
+            "The inherited base implementation will resolve the description, call the configured model, and return StepRunOutput with derived keys including spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n\n"
+        )
+
+    def get_feedback_contract_text(self) -> str:
+        return (
+            "Preserve the SpatialTemporalContractNode contract "
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SERVICES plus clone returning self). "
+            "Keep run/process_operation/use_service inherited from the base class unless feedback explicitly requires a custom override.\n"
+        )
+
+
 @dataclass
 class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
     node_base_class: str = "WorkflowStepNode"

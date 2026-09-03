@@ -13,6 +13,7 @@ from meta_agent.llm_client.coder import MAX_TOKENS, compose_session_marking_prom
 from meta_agent.worker.main_writer import PromptMainFileCoder
 from meta_agent.worker.node_writer import (
     PromptNodeFileCoderBase,
+    SpatialTemporalContractNodeCoder,
     WorkflowOperationNodeCoder,
     WorkflowServiceNodeCoder,
     WorkflowSkillNodeCoder,
@@ -22,6 +23,7 @@ from meta_agent.worker.node_writer import (
     is_service_ext_data,
     is_skill_ext_data,
     is_file_ext_data,
+    is_spatial_temporal_contract_ext_data,
 )
 from meta_agent.demand_analyzer import RequirementDisector
 from meta_agent.logging_utils import configure_runtime_logging, get_logger
@@ -284,6 +286,14 @@ class AgentBuilder:
                 provider=self.provider,
                 root_dir_path=self.root_dir,
                 skills_root_path=self.skills_root_path,
+                session_marking_prompt=self.session_marking_prompt,
+            )
+        if is_spatial_temporal_contract_ext_data(ext_data):
+            return SpatialTemporalContractNodeCoder(
+                api_key=self.api_key,
+                model=self.model,
+                provider=self.provider,
+                root_dir_path=self.root_dir,
                 session_marking_prompt=self.session_marking_prompt,
             )
         if is_none_ext_data(ext_data):

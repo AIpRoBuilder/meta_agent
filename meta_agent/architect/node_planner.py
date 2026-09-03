@@ -243,6 +243,7 @@ class NodePlanner:
 			"  - user_file_input -> WorkflowFileNode: use when this step collects uploaded files from the user.",
 			"  - service -> WorkflowServiceNode: use when this step boots or verifies an external service.",
 			"  - skill -> WorkflowSkillNode: use when this step wraps a pre-built skill directory.",
+			"  - spatial_temporal_contract -> SpatialTemporalContractNode: use when this step turns dependency/session descriptions into a spatial-temporal contract JSON.",
 			"  - none -> WorkflowOperationNode: use for pure compute or dependency-driven processing without direct user input.",
 		]
 
@@ -274,6 +275,19 @@ class NodePlanner:
 		if isinstance(ext_data, dict):
 			service_name = str(ext_data.get("service_name", "")).strip()
 			skill_name = str(ext_data.get("skill_name", "")).strip()
+
+		if ext_type == "spatial_temporal_contract":
+			return {
+				"extType": ext_type,
+				"nodeKind": "spatial_temporal_contract",
+				"baseClass": "SpatialTemporalContractNode",
+				"primaryFunctions": ["clone"],
+				"note": (
+					"Concrete spatial-temporal contract node: define class constants and a trivial clone method, "
+					"then inherit the base process_operation(...) logic that resolves a description from "
+					"session_state/dependencies and generates spatialTemporalContract JSON."
+				),
+			}
 
 		if ext_type == "skill" or skill_name:
 			return {

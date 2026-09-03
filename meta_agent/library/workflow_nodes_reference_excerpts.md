@@ -1,6 +1,6 @@
 # Workflow Nodes Reference Excerpts (Shortened)
 
-Condensed reference for workflow nodes in `meta_agent/ag_ui_workflow/nodes.py`.
+Condensed reference for workflow nodes in `ag_ui_workflow/nodes/*.py`.
 The code below keeps the same behavior/contracts as the full implementation, while
 replacing repetitive internals with short comments.
 
@@ -292,8 +292,66 @@ class WorkflowSkillNode(GNode):
         raise NotImplementedError
 
 
-Use `WorkflowStepNode` for user-entered text inputs and `WorkflowFileNode` for file uploads.
+class SpatialTemporalContractNode(GNode):
+    INPUT_REQUIRED = False
+    STEP_ID = ""
+    TITLE = "SpatialTemporal Contract"
+    PROMPT = "Generates a spatial-temporal contract from dependency output or session state."
+    DEPENDENCIES: list[str] = []
+    SERVICES: list[dict[str, str]] = []
+    NODE_KIND = "spatial_temporal_contract"
+    OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+    OPENAI_MODEL_ENV = "OPENAI_MODEL"
+    DEFAULT_OPENAI_MODEL = "deepseek-V4"
+    SYSTEM_PROMPT_FILE = "prompts/spatial_temporal_contract_system_prompt.md"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setName(self.STEP_ID)
+        self.setWaitForInput(False)
+
+    def run(self) -> CStatus:
+        # Non-interactive lifecycle:
+        # 1) collect dependency outputs
+        # 2) call self.use_service(session_state)
+        # 3) call built-in process_operation(dependency_results, session_state)
+        # 4) persist output/card/state and trigger callback cleanup
+        ...
+
+    def use_service(self, session_state: dict[str, Any]) -> list[dict[str, Any]]:
+        # Registers this step's metadata and resolves declared SERVICES usage records.
+        ...
+
+    @classmethod
+    def step_meta(cls) -> dict[str, Any]:
+        return {
+            "id": cls.STEP_ID,
+            "title": cls.TITLE,
+            "prompt": cls.PROMPT,
+            "dependencies": list(cls.DEPENDENCIES),
+            "services": list(cls.SERVICES),
+            "inputRequired": cls.INPUT_REQUIRED,
+            "nodeKind": cls.NODE_KIND,
         }
+
+    def process_operation(
+        self,
+        dependency_results: dict[str, StepRunOutput],
+        session_state: dict[str, Any],
+    ) -> StepRunOutput:
+        # Built-in implementation (subclasses usually do not override):
+        # - resolve description from session_state['spatialTemporalContractDescription']
+        #   or upstream outputs/cards/text
+        # - call the configured OpenAI-compatible model with the packaged system prompt
+        # - normalize the returned JSON contract
+        # - return StepRunOutput(card=..., derived={
+        #       spatialTemporalContract, spatialTemporalContractJson,
+        #       objectCount, relationCount, model, rawResponse, usage?
+        #   })
+        ...
+
+
+Use `WorkflowStepNode` for user-entered text inputs, `WorkflowFileNode` for file uploads, and `SpatialTemporalContractNode` for steps that convert upstream descriptions into spatial-temporal contract JSON.
 
 
 ```
@@ -306,7 +364,7 @@ Use `WorkflowStepNode` for user-entered text inputs and `WorkflowFileNode` for f
 
 ## Preserved Semantics
 
-- Same node taxonomy and interfaces: input, operation, service, chat, file, skill.
+- Same node taxonomy and interfaces: input, operation, service, file, skill, spatial_temporal_contract.
 - Same required override points: `process_input`, `process_operation`, and for service nodes the two-phase `install_environment` / `start_service` pair.
 - Same `StepRunOutput` contract and error semantics (`1001` for execution/type failures, `1003` for missing required input).
 - Same runtime persistence behavior into workflow session maps (`step_outputs`, `step_cards`, `step_states`, `pending_inputs`, callbacks).
