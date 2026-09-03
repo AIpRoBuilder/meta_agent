@@ -1,6 +1,5 @@
 import json
 import ast
-import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -47,17 +46,6 @@ def is_file_ext_data(ext_data: Any) -> bool:
         return ext_type == "user_file_input"
     if isinstance(ext_data, str):
         return ext_data.strip().lower() == "user_file_input"
-    return False
-
-
-def is_service_ext_data(ext_data: Any) -> bool:
-    """Return True when ext_data indicates service bootstrap from service.md."""
-    if isinstance(ext_data, Mapping):
-        ext_type = str(ext_data.get("type", "")).strip().lower()
-        service_name = str(ext_data.get("service_name", "")).strip()
-        return ext_type == "service" or bool(service_name)
-    if isinstance(ext_data, str):
-        return ext_data.strip().lower() == "service"
     return False
 
 
@@ -270,21 +258,6 @@ class PromptNodeFileCoderBase(Coder):
         return ", ".join(depends) if depends else "none"
 
     @staticmethod
-    def _format_services(services: list[dict[str, str]] | None) -> str:
-        if not services:
-            return "none"
-        normalized: list[dict[str, str]] = []
-        for item in services:
-            if not isinstance(item, Mapping):
-                continue
-            service_name = str(item.get("service_name", "")).strip()
-            use_desc = str(item.get("use_desc", "")).strip()
-            if not service_name:
-                continue
-            normalized.append({"service_name": service_name, "use_desc": use_desc})
-        return json.dumps(normalized, ensure_ascii=False) if normalized else "none"
-
-    @staticmethod
     def _format_inputs_format(inputs_format: Mapping[str, Any] | None) -> str:
         if not isinstance(inputs_format, Mapping) or not inputs_format:
             return "none"
@@ -320,7 +293,6 @@ class PromptNodeFileCoderBase(Coder):
     ) -> str:
         depends_text = self._format_depends(node_meta.depends)
         ext_data_text = self._format_ext_data(node_meta.ext_data)
-        services_text = self._format_services(node_meta.services)
         inputs_format_text = self._format_inputs_format(node_meta.inputs_format)
 
         minimal_policy_text = (
@@ -352,7 +324,6 @@ class PromptNodeFileCoderBase(Coder):
             f"Depends on: {depends_text}\n"
             f"External data: {ext_data_text}\n"
             f"User inputs format: {inputs_format_text}\n"
-            f"Services usage: {services_text}\n"
             f"Expected base class: {node_base_class}\n"
             f"Target language: {language_clean}\n\n"
             f"{minimal_policy_text}"
@@ -550,6 +521,7 @@ class PromptNodeFileCoderBase(Coder):
         temperature: float = 0.3,
         max_tokens: int = MAX_TOKENS,
     ) -> Path:
+        del requirement_md_path
         language_clean = language.strip().lower() if language else "python"
         target_path = Path(code_path)
         inferred_node_name = current_node_name.strip() if current_node_name else target_path.stem
@@ -635,12 +607,9 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
 
     def get_node_contract_text(self) -> str:
         return (
-            "Generate a WorkflowOperationNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
+            "Generate a WorkflowOperationNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
             "Implement business logic in process_operation(dependency_results, session_state) and return StepRunOutput.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
-            "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
-            "If SERVICES is non-empty, call self.use_service(session_state) in process_operation before service-dependent logic.\n"
-            "If process_operation needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
             "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
@@ -652,8 +621,7 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
     def get_feedback_contract_text(self) -> str:
         return (
             "Preserve the WorkflowOperationNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SERVICES and process_operation returning StepRunOutput). "
-            "If SERVICES is non-empty, keep/restore self.use_service(session_state) before service-dependent logic and import workflow_service_registry only when direct registry access is needed.\n"
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_operation returning StepRunOutput).\n"
         )
 
 
@@ -758,8 +726,8 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
             base_prompt
             + "\n\nSpatialTemporalContractNode runtime contract (authoritative):\n"
             + "- Subclass SpatialTemporalContractNode.\n"
-            + "- Define STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
-            + "- Keep implementation minimal: add only clone(self) -> self; rely on the base class for run/process_operation/use_service.\n"
+            + "- Define STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
+            + "- Keep implementation minimal: add only clone(self) -> self; rely on the base class for run/process_operation.\n"
             + "- Do not implement process_input/process_operation unless the requirement explicitly demands custom contract-generation logic.\n"
             + "- Ensure the contract description comes from session_state['spatialTemporalContractDescription'] or an upstream dependency output/card.\n"
             + "- The base class returns StepRunOutput with derived keys such as spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n"
@@ -768,10 +736,9 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
 
     def get_node_contract_text(self) -> str:
         return (
-            "Generate a SpatialTemporalContractNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
+            "Generate a SpatialTemporalContractNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
             "Keep implementation minimal: only imports, class constants, and clone(self) returning self.\n"
-            "Do NOT implement process_input, process_operation, run, __init__, or use_service unless the requirement explicitly asks to customize the base contract-generation behavior.\n"
-            "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
+            "Do NOT implement process_input, process_operation, run, or __init__ unless the requirement explicitly asks to customize the base contract-generation behavior.\n"
             "This node is non-interactive and should not parse direct user input or define inputs_format.\n"
             "Ensure upstream dependencies or session_state provide spatialTemporalContractDescription or equivalent descriptive text for the base class to consume.\n"
             "The inherited base implementation will resolve the description, call the configured model, and return StepRunOutput with derived keys including spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n\n"
@@ -780,8 +747,8 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
     def get_feedback_contract_text(self) -> str:
         return (
             "Preserve the SpatialTemporalContractNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SERVICES plus clone returning self). "
-            "Keep run/process_operation/use_service inherited from the base class unless feedback explicitly requires a custom override.\n"
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES plus clone returning self). "
+            "Keep run/process_operation inherited from the base class unless feedback explicitly requires a custom override.\n"
         )
 
 
@@ -791,13 +758,10 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
 
     def get_node_contract_text(self) -> str:
         return (
-            "Generate a WorkflowStepNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, and SERVICES.\n"
+            "Generate a WorkflowStepNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
             "Implement business logic in process_input(user_input, dependency_results, session_state) and return StepRunOutput.\n"
             "If node metadata includes inputs_format, parse/validate user_input according to that schema (field names + primitive types).\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
-            "Set class constant SERVICES from node metadata services exactly (service_name/use_desc entries).\n"
-            "If SERVICES is non-empty, call self.use_service(session_state) in process_input before service-dependent logic.\n"
-            "If process_input needs direct service status/record lookup in addition to self.use_service, import workflow_service_registry from ag_ui_workflow.services and use it.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
             "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
             "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
@@ -808,202 +772,7 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
     def get_feedback_contract_text(self) -> str:
         return (
             "Preserve the WorkflowStepNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SERVICES and process_input returning StepRunOutput). "
-            "If SERVICES is non-empty, keep/restore self.use_service(session_state) before service-dependent logic and import workflow_service_registry only when direct registry access is needed.\n"
-        )
-
-
-@dataclass
-class WorkflowServiceNodeCoder(PromptNodeFileCoderBase):
-    node_base_class: str = "WorkflowServiceNode"
-    default_services_dirname: str = "agent_services"
-    services_root_path: str = ""
-
-    def _default_services_root(self) -> Path:
-        return _resolve_named_root(
-            configured_root_path=self.services_root_path,
-            root_dir_path=self.root_dir_path,
-            default_dirname=self.default_services_dirname,
-        )
-
-    def _extract_service_name(self, node_meta: NodeMeta) -> str:
-        ext_data = node_meta.ext_data
-        if isinstance(ext_data, Mapping):
-            return str(ext_data.get("service_name", "")).strip()
-        return ""
-
-    def _current_os_label(self) -> str:
-        system = platform.system().strip().lower()
-        if system == "darwin":
-            return "macOS"
-        if system == "windows":
-            return "Windows"
-        if system == "linux":
-            return "Linux"
-        return platform.system().strip() or "unknown"
-
-    def _list_available_services(self, services_root: Path) -> list[str]:
-        if not services_root.is_dir():
-            return []
-        return sorted(
-            child.name
-            for child in services_root.iterdir()
-            if child.is_dir()
-        )
-
-    def _read_service_markdown(self, services_root: Path, service_name: str) -> str:
-        return _read_named_markdown(services_root, service_name, "service.md")
-
-    def _extract_service_sections(self, service_markdown: str) -> tuple[str, str]:
-        """Return (installation_section, start_service_section) from a parsed service.md.
-
-        Sections are matched by H2 headings that start with '1.' or '2.' respectively.
-        """
-        sections = _parse_markdown_sections(service_markdown)
-        # Match sections by numeric prefix to tolerate slight heading variants.
-        installation = ""
-        start_service = ""
-        for key, value in sections.items():
-            key_stripped = key.strip()
-            if key_stripped.startswith("1. Installation"):
-                installation = value.strip()
-            elif key_stripped.startswith("2. Start Service"):
-                start_service = value.strip()
-        return installation, start_service
-
-    def _build_requirement_prompt(
-        self,
-        node_name: str,
-        node_meta: NodeMeta,
-        requirement_text: str,
-        node_markdown_reference: str,
-        output_path: str,
-        graph_plan_path: str,
-        language_clean: str,
-        node_base_class: str,
-        node_contract_text: str,
-    ) -> str:
-        base_prompt = super()._build_requirement_prompt(
-            node_name=node_name,
-            node_meta=node_meta,
-            requirement_text=requirement_text,
-            node_markdown_reference=node_markdown_reference,
-            output_path=output_path,
-            graph_plan_path=graph_plan_path,
-            language_clean=language_clean,
-            node_base_class=node_base_class,
-            node_contract_text=node_contract_text,
-        )
-
-        services_root = self._default_services_root()
-        available_services = self._list_available_services(services_root)
-        service_name = self._extract_service_name(node_meta)
-        service_doc_text = self._read_service_markdown(services_root, service_name)
-        installation_section, start_section = self._extract_service_sections(service_doc_text)
-        current_os = self._current_os_label()
-
-        service_context_lines = [
-            "",
-            "Service selection context (authoritative):",
-            f"- services_root: {services_root}",
-            f"- available_services: {', '.join(available_services) if available_services else 'none'}",
-            f"- selected_service_name: {service_name or 'none'}",
-            f"- current_operating_system: {current_os}",
-        ]
-
-        if service_doc_text:
-            service_context_lines.extend(
-                [
-                    "",
-                    "Full service run guide (service.md) for reference:",
-                    service_doc_text,
-                ]
-            )
-
-        if installation_section:
-            service_context_lines.extend(
-                [
-                    "",
-                    "service.md ## 1. Installation section (authoritative — implement this in install_environment):",
-                    installation_section,
-                ]
-            )
-
-        if start_section:
-            service_context_lines.extend(
-                [
-                    "",
-                    "service.md ## 2. Start Service section (authoritative — implement this in start_service):",
-                    start_section,
-                ]
-            )
-
-        service_context_lines.extend(
-            [
-                "",
-                "Implementation constraints for this service node:",
-                "- Subclass WorkflowServiceNode.",
-                "- Import workflow_service_registry from ag_ui_workflow.services.",
-                "- Implement install_environment(dependency_results, session_state) -> bool based on the ## 1. Installation section.",
-                "- Implement start_service(dependency_results, session_state) -> int based on the ## 2. Start Service section; return the PID of the launched process (use subprocess.Popen and return proc.pid).",
-                "- In start_service, after successful launch, call workflow_service_registry.update_service_status(..., status='running', is_running=True, pid=proc.pid, installed=True).",
-                "- Do not override process_operation; the base class orchestrates install + start automatically.",
-                "- Use DEFAULT_WORKDIR or session_state.get('serviceWorkdir') as working directory; do not hardcode absolute paths.",
-                "- Command sequence must be compatible with current_operating_system. Prefer the OS-specific variant when service.md lists multiple variants.",
-                "- Keep output JSON-serializable and include useful derived fields for downstream nodes.",
-            ]
-        )
-
-        if not service_doc_text:
-            service_context_lines.extend(
-                [
-                    "",
-                    "No service.md found for selected service_name.",
-                    "- Fall back to minimal safe stub implementations for install/start phases.",
-                    "- install_environment: return True after a no-op check.",
-                    "- start_service: launch a placeholder process and return its pid.",
-                    "- In start_service, mark workflow_service_registry running state after launch.",
-                    "- Do not invent unavailable service details.",
-                ]
-            )
-
-        return base_prompt + "\n" + "\n".join(service_context_lines)
-
-    def get_node_contract_text(self) -> str:
-        return (
-            "Generate a WorkflowServiceNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Import workflow_service_registry from ag_ui_workflow.services.\n"
-            "Implement the two-phase execution pattern by overriding these methods:\n"
-            "\n"
-            "Phase 1 — install_environment(self, dependency_results, session_state) -> bool:\n"
-            "  Implement based on service.md ## 1. Installation section.\n"
-            "  Run install commands (e.g. git clone, uv sync, pip install) using subprocess.run or equivalent.\n"
-            "  Return True if installation succeeded, False otherwise.\n"
-            "  Skip work if it was already done (e.g. check if directory/venv exists before cloning/installing).\n"
-            "\n"
-            "Phase 2 — start_service(self, dependency_results, session_state) -> int:\n"
-            "  Implement based on service.md ## 2. Start Service section.\n"
-            "  Launch the service as a background process using subprocess.Popen.\n"
-            "  Return the integer PID of the launched process (proc.pid); <= 0 signals failure.\n"
-            "  After successful launch, mark service running in workflow_service_registry via update_service_status(...).\n"
-            "  The working directory should be session_state.get('serviceWorkdir') or self.DEFAULT_WORKDIR.\n"
-            "  If a custom default workdir is required, define class constant DEFAULT_WORKDIR in the generated node.\n"
-            "  The generated command must be valid for the current operating system context.\n"
-            "\n"
-            "Do NOT override process_operation — the base class calls install + start automatically.\n"
-            "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
-            "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state when needed.\n"
-            "Extract upstream variables only from nodes listed in DEPENDENCIES and from keys present in those dependencies' derived payloads.\n"
-            "When dependency context is provided, treat it as authoritative for dependency ids and derived keys; do not invent non-existent upstream keys.\n"
-            "This node should not require direct user input.\n\n"
-        )
-
-    def get_feedback_contract_text(self) -> str:
-        return (
-            "Preserve the WorkflowServiceNode two-phase contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and install_environment returning bool, "
-            "start_service returning int PID; start_service must update workflow_service_registry running state).\n"
-            "Do NOT override process_operation.\n"
+            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_input returning StepRunOutput).\n"
         )
 
 

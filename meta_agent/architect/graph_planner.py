@@ -16,39 +16,29 @@ class GraphPlanner(Coder):
 	"""Generate a JSON graph plan from a requirements analysis markdown.
 
 	Nodes in the plan should be objects with keys: `name`, `type`, `desc`,
-	`depends`, `ext_data`, optional `inputs_format`, and optional `services`.
+	`depends`, `ext_data`, and optional `inputs_format`.
 
 	`ext_data` should be a JSON object for every node with shape:
 	{
-		"type": "user_input" | "user_file_input" | "url" | "file" | "db" | "skill" | "service" | "spatial_temporal_contract" | "none" | ...,
+		"type": "user_input" | "user_file_input" | "url" | "file" | "db" | "skill" | "spatial_temporal_contract" | "none" | ...,
 		"desc": "short description",
-		"service_name": "optional service directory name (required when type=service)",
 		"skill_name": "optional skill directory name (required when type=skill)"
 	}
-
-	If a node uses one or more upstream services, it should include:
-	"services": [
-		{"service_name": "...", "use_desc": "..."}
-	]
 
 	Use `{"type": "user_input", ...}` for nodes that require user input.
 	For user_input and skill nodes, include `inputs_format` as an object describing expected
 	user input fields and primitive types, e.g.:
 	{"email_address": "string", "password": "number"}. 
 	Use `{"type": "user_file_input", ...}` for nodes that should be implemented as WorkflowFileNode.
-	Use `{"type": "service", "service_name": "<service>", ...}` for nodes that should be implemented as WorkflowServiceNode.
 	Use `{"type": "skill", "skill_name": "<skill>", ...}` for nodes that should be implemented as WorkflowSkillNode.
 	Use `{"type": "spatial_temporal_contract", ...}` for nodes that should be implemented as SpatialTemporalContractNode.
 	"""
 
 	prompt_path: str = "architect/prompts/graph_planner_prompt.md"
 	workflow_nodes_reference_path: str = "library/workflow_nodes_reference_excerpts.md"
-	default_services_dirname: str = "agent_services"
 	default_skills_dirname: str = "skills"
-	services_root_path: str = ""
 	skills_root_path: str = ""
 	NONE_EXT_DESC: str = "no need for ext data"
-	SERVICE_EXT_DESC: str = "service bootstrap node"
 	SKILL_EXT_DESC: str = "skill node"
 
 	def __post_init__(self) -> None:
@@ -73,153 +63,8 @@ class GraphPlanner(Coder):
 		)
 		super().__post_init__()
 
-	def _default_services_root(self) -> Path:
-		if self.services_root_path:
-			configured = Path(self.services_root_path).expanduser().resolve()
-			if configured.is_dir():
-				return configured
-		root_dir = ROOT_DIR.parent
-		direct = root_dir / self.default_services_dirname
-		if direct.is_dir():
-			return direct
-		parent = root_dir.parent / self.default_services_dirname
-		if parent.is_dir():
-			return parent
-		return direct
-
-	def _list_available_services(self) -> list[str]:
-		services_root = self._default_services_root()
-		if not services_root.is_dir():
-			return []
-		return sorted(child.name for child in services_root.iterdir() if child.is_dir())
-
-	def _read_service_markdown(self, services_root: Path, service_name: str) -> str:
-		if not service_name:
-			return ""
-		service_doc = services_root / service_name / "service.md"
-		if not service_doc.is_file():
-			return ""
-		return service_doc.read_text(encoding="utf-8").strip()
-
-	def _extract_service_description(self, service_markdown: str) -> str:
-		if not service_markdown.strip():
-			return ""
-
-		lines = service_markdown.splitlines()
-		description_lines: list[str] = []
-		collecting = False
-		in_code_block = False
-
-		for raw_line in lines:
-			line = raw_line.strip()
-			if line.startswith("```"):
-				in_code_block = not in_code_block
-				continue
-			if in_code_block:
-				continue
-
-			if line.startswith("#"):
-				heading_text = line.lstrip("#").strip().lower()
-				if heading_text in {"description", "desc", "简介", "说明"}:
-					collecting = True
-					description_lines.clear()
-					continue
-				if collecting:
-					break
-
-			if collecting:
-				if line:
-					description_lines.append(line)
-				continue
-
-		if description_lines:
-			return " ".join(description_lines).strip()
-
-		for raw_line in lines:
-			line = raw_line.strip()
-			if not line or line.startswith("#") or line.startswith("```"):
-				continue
-			return line
-
-		return ""
-
-	def _service_descriptions(self, services_root: Path, available_services: list[str]) -> dict[str, str]:
-		descriptions: dict[str, str] = {}
-		for service_name in available_services:
-			service_markdown = self._read_service_markdown(services_root, service_name)
-			description = self._extract_service_description(service_markdown)
-			if description:
-				descriptions[service_name] = description
-		return descriptions
-
-	def _normalize_service_key(self, value: str) -> str:
-		clean = value.strip().lower()
-		for sep in ("_", "-", " "):
-			clean = clean.replace(sep, "")
-		return clean
-
-	def _resolve_service_name(self, node: dict[str, Any], available_services: list[str]) -> str:
-		if not available_services:
-			return ""
-
-		ext_data = node.get("ext_data", {})
-		service_name = ""
-		if isinstance(ext_data, dict):
-			service_name = str(ext_data.get("service_name", "")).strip()
-
-		by_key = {self._normalize_service_key(name): name for name in available_services}
-
-		if service_name:
-			matched = by_key.get(self._normalize_service_key(service_name))
-			if matched:
-				return matched
-
-		search_texts: list[str] = []
-		for key in ("name", "type", "desc"):
-			val = node.get(key, "")
-			if isinstance(val, str) and val.strip():
-				search_texts.append(val)
-		if isinstance(ext_data, dict):
-			ext_desc = ext_data.get("desc", "")
-			if isinstance(ext_desc, str) and ext_desc.strip():
-				search_texts.append(ext_desc)
-
-		for text in search_texts:
-			norm_text = self._normalize_service_key(text)
-			for key, canonical in by_key.items():
-				if key and key in norm_text:
-					return canonical
-
-		if len(available_services) == 1:
-			return available_services[0]
-
-		return ""
-
-	def _resolve_service_name_value(self, service_name: str, candidate_services: list[str]) -> str:
-		if not candidate_services:
-			return ""
-
-		raw = str(service_name).strip()
-		if not raw:
-			return ""
-
-		by_key = {self._normalize_service_key(name): name for name in candidate_services}
-		matched = by_key.get(self._normalize_service_key(raw))
-		if matched:
-			return matched
-
-		norm_raw = self._normalize_service_key(raw)
-		for key, canonical in by_key.items():
-			if key and key in norm_raw:
-				return canonical
-
-		if len(candidate_services) == 1:
-			return candidate_services[0]
-
-		return ""
-
 	# ------------------------------------------------------------------
-	# Skill helpers (mirrors service helpers)
+	# Skill helpers
 	# ------------------------------------------------------------------
 
 	def _default_skills_root(self) -> Path:
@@ -356,174 +201,6 @@ class GraphPlanner(Coder):
 			)
 		return "".join(skill_lines)
 
-	# ------------------------------------------------------------------
-	def _build_service_context_prompt(self) -> str:
-		services_root = self._default_services_root()
-		available_services = self._list_available_services()
-		service_descriptions = self._service_descriptions(services_root, available_services)
-		services_text = ", ".join(available_services) if available_services else "none"
-		service_lines = [
-			"Service planning context:\n"
-			f"- default_services_root: {services_root}\n"
-			f"- available_services_name: {services_text}\n"
-			"- If choosing WorkflowServiceNode semantics, set ext_data.type='service' and ext_data.service_name to one exact available_services_name entry.\n"
-		]
-		if service_descriptions:
-			service_lines.append("- service_descriptions_from_service_md:\n")
-			for service_name in available_services:
-				description = service_descriptions.get(service_name, "")
-				if not description:
-					continue
-				service_lines.append(f"  - {service_name}: {description}\n")
-			service_lines.append(
-				"- For service-type nodes, choose service_name by matching requirement semantics to service_descriptions_from_service_md, and reflect that purpose in node desc/ext_data.desc.\n"
-			)
-		return "".join(service_lines)
-
-	def _service_bootstrap_desc(self, service_name: str, service_descriptions: dict[str, str]) -> str:
-		description = service_descriptions.get(service_name, "").strip()
-		if not description:
-			return self.SERVICE_EXT_DESC
-		return f"service bootstrap node: {description}"
-
-	def _is_service_node(self, node: dict[str, Any]) -> bool:
-		ext_data = node.get("ext_data", {})
-		if not isinstance(ext_data, dict):
-			return False
-		ext_type = str(ext_data.get("type", "")).strip().lower()
-		service_name = str(ext_data.get("service_name", "")).strip()
-		return ext_type == "service" or bool(service_name)
-
-	def _collect_upstream_service_names(
-		self,
-		node: dict[str, Any],
-		node_by_name: dict[str, dict[str, Any]],
-		available_services: list[str],
-	) -> list[str]:
-		depends = node.get("depends", [])
-		if isinstance(depends, (str, bytes)):
-			depends = [depends]
-		if not isinstance(depends, list):
-			return []
-
-		stack: list[str] = [str(dep).strip() for dep in depends if str(dep).strip()]
-		visited: set[str] = set()
-		service_names: set[str] = set()
-
-		while stack:
-			current = stack.pop()
-			if current in visited:
-				continue
-			visited.add(current)
-
-			upstream = node_by_name.get(current)
-			if not isinstance(upstream, dict):
-				continue
-
-			if self._is_service_node(upstream):
-				resolved = self._resolve_service_name(upstream, available_services)
-				if resolved:
-					service_names.add(resolved)
-				else:
-					ext_data = upstream.get("ext_data", {})
-					if isinstance(ext_data, dict):
-						raw_name = str(ext_data.get("service_name", "")).strip()
-						if raw_name:
-							service_names.add(raw_name)
-
-			upstream_depends = upstream.get("depends", [])
-			if isinstance(upstream_depends, (str, bytes)):
-				upstream_depends = [upstream_depends]
-			if not isinstance(upstream_depends, list):
-				continue
-			for dep in upstream_depends:
-				dep_name = str(dep).strip()
-				if dep_name and dep_name not in visited:
-					stack.append(dep_name)
-
-		return sorted(service_names)
-
-	def _default_service_use_desc(
-		self,
-		node: dict[str, Any],
-		service_name: str,
-	) -> str:
-		node_desc = str(node.get("desc", "")).strip()
-		ext_data = node.get("ext_data", {})
-		ext_desc = ""
-		if isinstance(ext_data, dict):
-			ext_desc = str(ext_data.get("desc", "")).strip()
-
-		target_desc = node_desc or ext_desc
-		if target_desc:
-			return f"use service '{service_name}' to support: {target_desc}"
-		return f"use service '{service_name}' in this node"
-
-	def _normalize_services_field(
-		self,
-		payload: dict[str, Any],
-		available_services: list[str],
-	) -> None:
-		nodes = payload.get("nodes", [])
-		if not isinstance(nodes, list):
-			return
-
-		node_by_name: dict[str, dict[str, Any]] = {}
-		for node in nodes:
-			if not isinstance(node, dict):
-				continue
-			name = str(node.get("name", "")).strip()
-			if name:
-				node_by_name[name] = node
-
-		for node in nodes:
-			if not isinstance(node, dict):
-				continue
-
-			if self._is_service_node(node):
-				node.pop("services", None)
-				continue
-
-			ancestor_service_names = self._collect_upstream_service_names(
-				node,
-				node_by_name,
-				available_services,
-			)
-
-			existing_services = node.get("services")
-			if not isinstance(existing_services, list):
-				node.pop("services", None)
-				continue
-
-			normalized: dict[str, str] = {}
-			for item in existing_services:
-				if not isinstance(item, dict):
-					continue
-				service_name = str(item.get("service_name", "")).strip()
-				use_desc = str(item.get("use_desc", "")).strip()
-				if not service_name:
-					continue
-
-				# services must come from direct/transitive ancestor service nodes
-				if not ancestor_service_names:
-					continue
-				resolved = self._resolve_service_name_value(service_name, ancestor_service_names)
-				if not resolved:
-					continue
-				normalized[resolved] = use_desc
-
-			if not normalized:
-				node.pop("services", None)
-				continue
-
-			node["services"] = [
-				{
-					"service_name": service_name,
-					"use_desc": use_desc or self._default_service_use_desc(node, service_name),
-				}
-				for service_name, use_desc in sorted(normalized.items())
-			]
-
 	def _normalize_ext_data_in_file(self, graph_json_path: Path) -> None:
 		# Normalize ext_data shape and enforce type=none description rules.
 
@@ -531,10 +208,6 @@ class GraphPlanner(Coder):
 		nodes = payload.get("nodes", [])
 		if not isinstance(nodes, list):
 			return
-
-		available_services = self._list_available_services()
-		services_root = self._default_services_root()
-		service_descriptions = self._service_descriptions(services_root, available_services)
 
 		available_skills = self._list_available_skills()
 		skills_root = self._default_skills_root()
@@ -545,6 +218,7 @@ class GraphPlanner(Coder):
 				continue
 
 			node.pop("show_frontend", None)
+			node.pop("services", None)
 
 			loop_value = node.get("loop", 1)
 			try:
@@ -590,20 +264,6 @@ class GraphPlanner(Coder):
 					node.pop("inputs_format", None)
 				continue
 
-			# ---- service node normalisation ----
-			service_name = str(ext_data.get("service_name", "")).strip()
-			if ext_type == "service" or service_name:
-				ext_data["type"] = "service"
-				node.pop("inputs_format", None)
-				resolved_service = self._resolve_service_name(node, available_services)
-				ext_data["service_name"] = resolved_service
-				desc = str(ext_data.get("desc", "")).strip()
-				ext_data["desc"] = desc or self._service_bootstrap_desc(
-					resolved_service,
-					service_descriptions,
-				)
-				continue
-
 			if ext_type == "user_input":
 				raw_inputs_format = node.get("inputs_format", {})
 				normalized_inputs_format: dict[str, str] = {}
@@ -625,12 +285,9 @@ class GraphPlanner(Coder):
 			else:
 				desc = str(ext_data.get("desc", "")).strip()
 				ext_data["desc"] = desc
-			if "service_name" in ext_data and ext_data["service_name"] is None:
-				ext_data["service_name"] = ""
+			ext_data.pop("service_name", None)
 			if "skill_name" in ext_data and ext_data["skill_name"] is None:
 				ext_data["skill_name"] = ""
-
-		self._normalize_services_field(payload, available_services)
 
 		graph_json_path.write_text(
 			json.dumps(payload, ensure_ascii=False, indent=2),
@@ -767,34 +424,26 @@ class GraphPlanner(Coder):
 			"- Use WorkflowStepNode-compatible semantics for nodes with ext_data.type='user_input'\n"
 			"- Use WorkflowOperationNode-compatible semantics for pure compute/process nodes with ext_data.type='none'\n"
 			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
-			"- Use WorkflowServiceNode-compatible semantics for service bootstrap/startup nodes with ext_data.type='service'\n"
 			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'\n"
 			"- Use SpatialTemporalContractNode-compatible semantics for nodes that generate a spatial-temporal contract JSON from dependency/session descriptions with ext_data.type='spatial_temporal_contract'\n"
-			"- Do not invent node categories outside Step/Operation/File/Service/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
+			"- Do not invent node categories outside Step/Operation/File/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
 			"Schema requirements for each node:\n"
 			"- Required fields: name, type, desc, enable, depends, ext_data\n"
 			"- For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}\n"
 			"- Do not include inputs_format for nodes other than user_input and skill\n"
-			"- Only include node.services when a node actually uses one or more upstream services\n"
-			"- Do not include services for nodes that do not use services, even if they are downstream of a service node\n"
-			"- When node.services is present, service_name must be selected from service nodes in that node's direct/transitive ancestors\n"
-			"- service nodes themselves should not include services\n"
 			"- Use node-level loop to represent repeated execution; default loop=1\n"
 			"- If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2)\n"
-			"- ext_data must be a JSON object with keys: type, desc (and service_name when type='service', skill_name when type='skill')\n"
+			"- ext_data must be a JSON object with keys: type, desc (and skill_name when type='skill')\n"
 			"- Mark text input nodes with ext_data.type = 'user_input'\n"
 			"- Mark generic file-upload nodes that require user files with ext_data.type = 'user_file_input'\n"
-			"- Mark service bootstrap/startup nodes with ext_data.type = 'service'\n"
 			"- Mark skill-library wrapper nodes with ext_data.type = 'skill'\n"
 			"- Mark contract-generation nodes with ext_data.type = 'spatial_temporal_contract'\n"
-			"- Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode\n"
-			"- If ext_data.type='service', ext_data.service_name must be set to a valid service directory name\n"
+			"- Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode\n"
 			"- If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name\n"
-			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}\n"
+			"- Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}\n"
 			"- For nodes without external dependency, include ext_data as {'type':'none','desc':'no need for ext data'}\n"
 			"- If ext_data.type is 'none', desc must be exactly 'no need for ext data'\n"
 			"- Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}\n"
-			f"{self._build_service_context_prompt()}"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON.\n\n"
 			"Requirement text:\n"
@@ -838,32 +487,24 @@ class GraphPlanner(Coder):
 			"- Use WorkflowStepNode-compatible semantics for nodes with ext_data.type='user_input'\n"
 			"- Use WorkflowOperationNode-compatible semantics for pure compute/process nodes with ext_data.type='none'\n"
 			"- Use WorkflowFileNode-compatible semantics for generic multi-file upload/storage nodes with ext_data.type='user_file_input'\n"
-			"- Use WorkflowServiceNode-compatible semantics for service bootstrap/startup nodes with ext_data.type='service'.\n"
 			"- Use WorkflowSkillNode-compatible semantics for nodes that wrap a pre-built skill library with ext_data.type='skill'.\n"
 			"- Use SpatialTemporalContractNode-compatible semantics for nodes that generate a spatial-temporal contract JSON from dependency/session descriptions with ext_data.type='spatial_temporal_contract'.\n"
-			"- Do not invent node categories outside Step/Operation/File/Service/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
+			"- Do not invent node categories outside Step/Operation/File/Skill/SpatialTemporalContract implementation capabilities defined in the workflow reference\n"
 			"Preserve the graph schema (top-level nodes list with name, type, desc, depends, ext_data).\n"
 			"For nodes where ext_data.type='user_input' or 'skill', include inputs_format as an object mapping input fields to primitive types (string/number/boolean/object/array), e.g. {'email_address':'string','password':'number'}.\n"
 			"Do not include inputs_format for nodes other than user_input and skill.\n"
-			"Only include node.services when a node actually uses one or more upstream services.\n"
-			"Do not include services for nodes that do not use services, even if they are downstream of a service node.\n"
-			"When node.services is present, service_name must be selected from service nodes in that node's direct/transitive ancestors.\n"
-			"Service nodes themselves should not include services.\n"
 			"Use node-level loop to represent repeated execution; default loop=1.\n"
 			"If a node must execute multiple times to update node state, set loop to an integer > 1 (example: UserInput loop=2).\n"
-			"Every node must include ext_data as a JSON object with keys: type, desc (plus service_name when type='service', skill_name when type='skill').\n"
+			"Every node must include ext_data as a JSON object with keys: type, desc (plus skill_name when type='skill').\n"
 			"Mark text input nodes with ext_data.type='user_input'.\n"
 			"Mark generic file-upload nodes that require user files with ext_data.type='user_file_input'.\n"
-			"Mark service bootstrap/startup nodes with ext_data.type='service'.\n"
 			"Mark skill-library wrapper nodes with ext_data.type='skill'.\n"
 			"Mark contract-generation nodes with ext_data.type='spatial_temporal_contract'.\n"
-			"If ext_data.type='service', ext_data.service_name must be set to a valid service directory name.\n"
 			"If ext_data.type='skill', ext_data.skill_name must be set to a valid skill directory name.\n"
-			"Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, service -> WorkflowServiceNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode.\n"
+			"Workflow mapping: user_input -> WorkflowStepNode, user_file_input -> WorkflowFileNode, skill -> WorkflowSkillNode, spatial_temporal_contract -> SpatialTemporalContractNode.\n"
 			"If ext_data.type is 'none', desc must be exactly 'no need for ext data'.\n"
 			"Example for iterative state update node: {'name':'UserInput','type':'UserInput','desc':'接收用户输入的目标用户画像与教学大纲文本','loop':2,'ext_data':{'type':'user_input','desc':'输入目标用户画像和教学大纲文本'},'inputs_format':{'target_profile':'string','teaching_outline':'string'},'enable':true}.\n"
-			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'service','service_name':'media_crawler','desc':'bootstrap and verify media crawler service'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}.\n"
-			f"{self._build_service_context_prompt()}"
+			"Examples: {'type':'user_input','desc':'user input income'}, {'type':'user_file_input','desc':'upload files for storage and downstream processing'}, {'type':'skill','skill_name':'baidu_search','desc':'search baidu for query results'}, {'type':'spatial_temporal_contract','desc':'generate spatial-temporal contract JSON from upstream description'}, {'type':'url','desc':'image generator api'}.\n"
 			f"{self._build_skill_context_prompt()}"
 			"Return only valid JSON without code fences or commentary.\n\n"
 			"Existing graph plan:\n"

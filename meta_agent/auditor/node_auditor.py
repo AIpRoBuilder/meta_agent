@@ -95,7 +95,6 @@ class NodeAuditor(BaseAuditor):
             self._check_step_node_dependency_results(cls, path, violations)
             self._check_file_node_no_build_step_output(cls, violations)
             self._check_operation_node_dependency_results(cls, path, violations)
-            self._check_service_node_dependency_results(cls, path, violations)
             self._check_skill_node_dependency_results(cls, path, violations)
             self._check_session_state_reads_use_ancestor_keys(
                 cls=cls,
@@ -274,9 +273,9 @@ class NodeAuditor(BaseAuditor):
 
     def _is_workflow_step_node_subclass(self, cls: ast.ClassDef) -> bool:
         for base in cls.bases:
-            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
+            if isinstance(base, ast.Name) and base.id in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
                 return True
-            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowServiceNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
+            if isinstance(base, ast.Attribute) and base.attr in {"WorkflowStepNode", "WorkflowOperationNode", "WorkflowFileNode", "WorkflowSkillNode", "SpatialTemporalContractNode"}:
                 return True
         return False
 
@@ -311,9 +310,6 @@ class NodeAuditor(BaseAuditor):
                     lineno=method.lineno,
                 )
             )
-
-    def _is_workflow_service_node_subclass(self, cls: ast.ClassDef) -> bool:
-        return self._is_direct_or_attr_base_subclass(cls, {"WorkflowServiceNode"})
 
     def _is_spatial_temporal_contract_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"SpatialTemporalContractNode"})
@@ -520,7 +516,7 @@ class NodeAuditor(BaseAuditor):
         Rules:
         - ext_data.type == "user_input" => class must subclass WorkflowStepNode
         - ext_data.type == "user_file_input" => class must subclass WorkflowFileNode
-        - ext_data.type == "service" or ext_data.service_name exists => class must subclass WorkflowServiceNode
+        - service-related ext_data metadata is unsupported
         - ext_data.type == "spatial_temporal_contract" => class must subclass SpatialTemporalContractNode
         - ext_data.type == "none" => class must subclass WorkflowOperationNode
         """
@@ -531,10 +527,10 @@ class NodeAuditor(BaseAuditor):
 
         ext_type = ""
         ext_data = node_meta.ext_data
-        service_name = ""
+        service_name_present = False
         if isinstance(ext_data, Mapping):
             ext_type = str(ext_data.get("type", "")).strip().lower()
-            service_name = str(ext_data.get("service_name", "")).strip()
+            service_name_present = "service_name" in ext_data
         elif isinstance(ext_data, str):
             ext_type = ext_data.strip().lower()
 
@@ -567,16 +563,15 @@ class NodeAuditor(BaseAuditor):
                     lineno=cls.lineno,
                 )
             )
-        elif ext_type == "service" or service_name:
-            if not self._is_workflow_service_node_subclass(cls):
-                violations.append(
-                    RuleViolation(
-                        class_name=cls.name,
-                        rule="ext_data_service_requires_service_node",
-                        detail="When ext_data.type is 'service' or service_name is provided, the node class must subclass WorkflowServiceNode.",
-                        lineno=cls.lineno,
-                    )
+        elif ext_type == "service" or service_name_present:
+            violations.append(
+                RuleViolation(
+                    class_name=cls.name,
+                    rule="ext_data_service_unsupported",
+                    detail="Service-related node metadata is no longer supported in meta_agent.",
+                    lineno=cls.lineno,
                 )
+            )
         elif ext_type == "skill":
             if not self._is_workflow_skill_node_subclass(cls):
                 violations.append(
@@ -786,29 +781,6 @@ class NodeAuditor(BaseAuditor):
             method=method,
             violations=violations,
             method_name="process_operation",
-        )
-
-    def _check_service_node_dependency_results(
-        self,
-        cls: ast.ClassDef,
-        node_file_path: Path,
-        violations: List[RuleViolation],
-    ) -> None:
-        if not self._is_registered_class(cls):
-            return
-        if not self._is_workflow_service_node_subclass(cls):
-            return
-
-        method = self._get_method(cls, "use_service")
-        if method is None:
-            return
-
-        self._check_dependency_results_usage(
-            cls=cls,
-            node_file_path=node_file_path,
-            method=method,
-            violations=violations,
-            method_name="use_service",
         )
 
     def _check_skill_node_dependency_results(

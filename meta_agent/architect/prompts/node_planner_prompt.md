@@ -6,7 +6,6 @@
 - 严格依据工作流节点参考中的能力边界，不要虚构不存在的基类契约。
 - 必须从节点 `ext_data.type` 推导节点类别：
   - `user_input` -> `WorkflowStepNode`
-  - `service` -> `WorkflowServiceNode`
   - `skill` -> `WorkflowSkillNode`
   - `spatial_temporal_contract` -> `SpatialTemporalContractNode`
   - `none`（或无法识别时默认）-> `WorkflowOperationNode`

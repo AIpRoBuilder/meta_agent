@@ -19,7 +19,6 @@ class NodeMeta:
     inputs_format: Dict[str, str] = field(default_factory=dict)
     enable: bool = True
     depends: List[str] = field(default_factory=list)
-    services: List[Dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, node: Mapping[str, Any]) -> "NodeMeta":
@@ -34,7 +33,6 @@ class NodeMeta:
                     inputs_format[field_name] = field_type
 
         depends = node.get('depends', [])
-        services = node.get('services', [])
 
         return cls(
             name=str(node.get('name', '')),
@@ -44,7 +42,6 @@ class NodeMeta:
             inputs_format=inputs_format,
             enable=bool(node.get('enable', True)),
             depends=list(depends) if isinstance(depends, list) else [],
-            services=list(services) if isinstance(services, list) else [],
         )
     
     def to_dict(self) -> Dict[str, Any]:

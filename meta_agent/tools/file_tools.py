@@ -326,7 +326,6 @@ _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
 	"WorkflowStepNode": ("process_input",),
 	"WorkflowFileNode": ("build_step_output",),
 	"WorkflowOperationNode": ("process_operation",),
-	"WorkflowServiceNode": ("use_service",),
 	"WorkflowSkillNode": ("process_operation",),
 	"SpatialTemporalContractNode": ("process_operation",),
 }
@@ -340,7 +339,6 @@ def _get_workflow_base_class_objects() -> dict[str, type]:
 		"WorkflowStepNode",
 		"WorkflowFileNode",
 		"WorkflowOperationNode",
-		"WorkflowServiceNode",
 		"WorkflowSkillNode",
 		"SpatialTemporalContractNode",
 	)
@@ -741,7 +739,7 @@ def compile_node_file_and_get_derived_keys(node_file_path: str) -> list[str]:
 	"""Parse a node file and return all derived-dict keys from workflow node classes.
 
 	The parser inspects subclasses of WorkflowStepNode, WorkflowFileNode,
-	WorkflowOperationNode, WorkflowServiceNode, WorkflowSkillNode, and SpatialTemporalContractNode using Python AST,
+	WorkflowOperationNode, WorkflowSkillNode, and SpatialTemporalContractNode using Python AST,
 	then extracts string keys from local ``derived`` dict literals (and equivalent
 	``StepRunOutput(..., derived=...)`` literals) inside relevant methods.
 	"""

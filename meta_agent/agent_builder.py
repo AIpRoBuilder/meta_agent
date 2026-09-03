@@ -15,12 +15,10 @@ from meta_agent.worker.node_writer import (
     PromptNodeFileCoderBase,
     SpatialTemporalContractNodeCoder,
     WorkflowOperationNodeCoder,
-    WorkflowServiceNodeCoder,
     WorkflowSkillNodeCoder,
     WorkflowFileNodeCoder,
     WorkflowStepNodeCoder,
     is_none_ext_data,
-    is_service_ext_data,
     is_skill_ext_data,
     is_file_ext_data,
     is_spatial_temporal_contract_ext_data,
@@ -135,7 +133,6 @@ class AgentBuilder:
         provider: str = "deepseek",
         root_dir: str = "./example",
         frontend_style_prompt: Optional[str] = None,
-        services_root_path: Optional[str] = None,
         skills_root_path: Optional[str] = None,
         log_level: str | int | None = None,
         log_filename: str = "meta_agent_debug.log",
@@ -147,7 +144,6 @@ class AgentBuilder:
         self.provider = provider
         self.root_dir = root_dir
         self.frontend_style_prompt = frontend_style_prompt.strip() if frontend_style_prompt else None
-        self.services_root_path = services_root_path.strip() if isinstance(services_root_path, str) else ""
         self.skills_root_path = skills_root_path.strip() if isinstance(skills_root_path, str) else ""
         self.max_audit_rounds = self._validate_max_audit_rounds(max_audit_rounds)
         self.session_marking_prompt = compose_session_marking_prompt(session_marking_prompt)
@@ -163,11 +159,10 @@ class AgentBuilder:
         self._logger = get_logger(__name__)
         self._logger.info(f"Runtime log file: {self.runtime_log_path}")
         self._logger.debug(
-            "Initialized AgentBuilder with model=%s provider=%s root_dir=%s services_root_path=%s skills_root_path=%s max_audit_rounds=%s",
+            "Initialized AgentBuilder with model=%s provider=%s root_dir=%s skills_root_path=%s max_audit_rounds=%s",
             self.model,
             self.provider,
             Path(self.root_dir).expanduser().resolve(),
-            self.services_root_path,
             self.skills_root_path,
             self.max_audit_rounds,
         )
@@ -227,7 +222,6 @@ class AgentBuilder:
             api_key=self.api_key,
             model=self.model,
             provider=self.provider,
-            services_root_path=self.services_root_path,
             skills_root_path=self.skills_root_path,
             session_marking_prompt=self.session_marking_prompt,
         )
@@ -253,6 +247,15 @@ class AgentBuilder:
     def _node_ui_removed_error() -> RuntimeError:
         return RuntimeError("Node UI planning has been removed from meta_agent.")
 
+    @staticmethod
+    def _has_legacy_service_metadata(ext_data: Any) -> bool:
+        if isinstance(ext_data, Mapping):
+            ext_type = str(ext_data.get("type", "")).strip().lower()
+            return ext_type == "service" or "service_name" in ext_data
+        if isinstance(ext_data, str):
+            return ext_data.strip().lower() == "service"
+        return False
+
     def reset_llm_config(
         self,
         api_key: Optional[str] = None,
@@ -270,15 +273,8 @@ class AgentBuilder:
 
     def _make_node_coder(self, node_meta: Any) -> PromptNodeFileCoderBase:
         ext_data = node_meta.ext_data if node_meta and hasattr(node_meta, 'ext_data') else None
-        if is_service_ext_data(ext_data):
-            return WorkflowServiceNodeCoder(
-                api_key=self.api_key,
-                model=self.model,
-                provider=self.provider,
-                root_dir_path=self.root_dir,
-                services_root_path=self.services_root_path,
-                session_marking_prompt=self.session_marking_prompt,
-            )
+        if self._has_legacy_service_metadata(ext_data):
+            raise ValueError("Service-related node metadata is no longer supported in meta_agent.")
         if is_skill_ext_data(ext_data):
             return WorkflowSkillNodeCoder(
                 api_key=self.api_key,
@@ -319,12 +315,6 @@ class AgentBuilder:
             root_dir_path=self.root_dir,
             session_marking_prompt=self.session_marking_prompt,
         )
-
-    def _set_services_root_path(self, services_root: Optional[str]) -> None:
-        if services_root is None:
-            return
-        self.services_root_path = str(services_root).strip()
-        self.planner.services_root_path = self.services_root_path
 
     def _resolve_root_path(self, path_value: str | Path) -> Path:
         resolved_path = Path(path_value).expanduser()
@@ -594,9 +584,7 @@ class AgentBuilder:
         requirement_md_path: Optional[str] = None,
         graph_plan_filename: str = "workflow.json",
         temperature: float = 0.35,
-        services_root: Optional[str] = None,
     ) -> str:
-        self._set_services_root_path(services_root)
         if requirement_md_path:
             self.requirement_md_path = requirement_md_path
         if not self.requirement_md_path:
@@ -629,9 +617,7 @@ class AgentBuilder:
         amendment: str,
         graph_plan_path: Optional[str] = None,
         temperature: float = 0.35,
-        services_root: Optional[str] = None,
     ) -> str:
-        self._set_services_root_path(services_root)
         if graph_plan_path:
             self.graph_plan_path = graph_plan_path
         if not self.graph_plan_path:
@@ -668,7 +654,6 @@ class AgentBuilder:
         user_prompt: str,
         workflow_json_path: Optional[str] = None,
         temperature: float = 0.35,
-        services_root: Optional[str] = None,
     ) -> str:
         """Amend workflow.json based on a natural-language user prompt.
 
@@ -696,7 +681,6 @@ class AgentBuilder:
             amendment=user_prompt,
             graph_plan_path=selected_workflow_path,
             temperature=temperature,
-            services_root=services_root,
         )
 
     def generate_nodes(
@@ -705,7 +689,6 @@ class AgentBuilder:
         requirement_md_path: Optional[str] = None,
         language: str = "python",
         temperature: float = 0.35,
-        services_root: Optional[str] = None,
     ) -> List[str]:
         """Generate code for every node in the planned graph.
 
@@ -716,7 +699,6 @@ class AgentBuilder:
 
         Returns a list of all generated file paths as before.
         """
-        self._set_services_root_path(services_root)
         if requirement_md_path:
             self.requirement_md_path = requirement_md_path
         if not self.requirement_md_path:

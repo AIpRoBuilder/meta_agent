@@ -241,7 +241,6 @@ class NodePlanner:
 			"- selectable node types:",
 			"  - user_input -> WorkflowStepNode: use when this step directly accepts structured or text user input.",
 			"  - user_file_input -> WorkflowFileNode: use when this step collects uploaded files from the user.",
-			"  - service -> WorkflowServiceNode: use when this step boots or verifies an external service.",
 			"  - skill -> WorkflowSkillNode: use when this step wraps a pre-built skill directory.",
 			"  - spatial_temporal_contract -> SpatialTemporalContractNode: use when this step turns dependency/session descriptions into a spatial-temporal contract JSON.",
 			"  - none -> WorkflowOperationNode: use for pure compute or dependency-driven processing without direct user input.",
@@ -270,10 +269,8 @@ class NodePlanner:
 
 	def _derive_node_profile(self, ext_data: Any) -> dict[str, Any]:
 		ext_type = self._normalize_ext_type(ext_data)
-		service_name = ""
 		skill_name = ""
 		if isinstance(ext_data, dict):
-			service_name = str(ext_data.get("service_name", "")).strip()
 			skill_name = str(ext_data.get("skill_name", "")).strip()
 
 		if ext_type == "spatial_temporal_contract":
@@ -306,15 +303,6 @@ class NodePlanner:
 				else (
 					"Skill node: set SKILL_DIR / SKILL_MD_PATH and implement process_operation(user_input, dependency_results, session_state)."
 				),
-			}
-
-		if ext_type == "service" or service_name:
-			return {
-				"extType": ext_type,
-				"nodeKind": "service",
-				"baseClass": "WorkflowServiceNode",
-				"primaryFunctions": ["build_instance_spec"],
-				"note": "Service bootstrap node: prepares service run/probe spec for sandbox or local execution.",
 			}
 
 		if ext_type == "user_file_input":
@@ -364,11 +352,9 @@ class NodePlanner:
 			profile = self._derive_node_profile(ext_data)
 
 			ext_desc = ""
-			service_name_val = ""
 			skill_name_val = ""
 			if isinstance(ext_data, dict):
 				ext_desc = str(ext_data.get("desc", "")).strip()
-				service_name_val = str(ext_data.get("service_name", "")).strip()
 				skill_name_val = str(ext_data.get("skill_name", "")).strip()
 
 			node_lines = [
@@ -382,8 +368,6 @@ class NodePlanner:
 				node_lines.append(
 					f"- inputs_format: {json.dumps(inputs_format, ensure_ascii=False) if inputs_format else 'n/a'}"
 				)
-			if service_name_val:
-				node_lines.append(f"- ext_data.service_name: {service_name_val}")
 			if skill_name_val:
 				node_lines.append(f"- ext_data.skill_name: {skill_name_val}")
 			node_lines.extend(
@@ -411,9 +395,6 @@ class NodePlanner:
 		depends = node.get("depends", [])
 		if not isinstance(depends, list):
 			depends = []
-		services = node.get("services", [])
-		if not isinstance(services, list):
-			services = []
 		ext_data = node.get("ext_data", {})
 		inputs_format = node.get("inputs_format", {})
 		if not isinstance(inputs_format, dict):
@@ -421,11 +402,9 @@ class NodePlanner:
 		profile = self._derive_node_profile(ext_data)
 
 		ext_desc = ""
-		service_name_val = ""
 		skill_name_val = ""
 		if isinstance(ext_data, dict):
 			ext_desc = str(ext_data.get("desc", "")).strip()
-			service_name_val = str(ext_data.get("service_name", "")).strip()
 			skill_name_val = str(ext_data.get("skill_name", "")).strip()
 
 		ctx_lines = [
@@ -439,14 +418,8 @@ class NodePlanner:
 			ctx_lines.append(
 				f"- inputs_format: {json.dumps(inputs_format, ensure_ascii=False) if inputs_format else 'n/a'}"
 			)
-		if service_name_val:
-			ctx_lines.append(f"- ext_data.service_name: {service_name_val}")
 		if skill_name_val:
 			ctx_lines.append(f"- ext_data.skill_name: {skill_name_val}")
-		if services:
-			ctx_lines.append(f"- services: {json.dumps(services, ensure_ascii=False)}")
-		else:
-			ctx_lines.append("- services: none")
 		ctx_lines.extend(
 			[
 				f"- derived node kind: {profile['nodeKind']}",
@@ -581,11 +554,10 @@ class NodePlanner:
 			"Preserve the node name unless the amendment explicitly requires a rename.\n"
 			"Node schema requirements:\n"
 			"- Required fields: name, type, desc, enable, depends, ext_data\n"
-			"- ext_data must be a JSON object with keys: type, desc, and skill_name when type='skill', service_name when type='service'\n"
+			"- ext_data must be a JSON object with keys: type, desc, and skill_name when type='skill'\n"
 			"- Allowed node type choices are listed in the node context below\n"
 			"- Include inputs_format only when ext_data.type is 'user_input' or 'skill'\n"
 			"- Do not include inputs_format for other node types\n"
-			"- Only include services when the node actually uses upstream services\n"
 			"- For skill nodes, ext_data.skill_name must match one listed available skill exactly\n\n"
 			"=== Requirement Analysis ===\n"
 			f"{requirement_text}\n\n"

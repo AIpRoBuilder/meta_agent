@@ -6,12 +6,11 @@ Core objective:
 - Generate the smallest runnable node implementation that fully satisfies the requirement analysis.
 - Prefer direct, readable code over abstraction.
 - Avoid over-engineering: no extra classes, no architecture layers, no speculative extensibility.
-- Do not mock data or simulate node execution/processes; implement real runnable logic that uses actual inputs/dependencies/services.
+- Do not mock data or simulate node execution/processes; implement real runnable logic that uses actual inputs/dependencies.
 
 Guidelines:
 - Write code with the simplest possible approach that satisfies requirements.
 - Choose base class from node metadata ext_data:
-    - If `ext_data.type == "service"` (or `ext_data.service_name` is provided), generate a Python class that inherits from `WorkflowServiceNode`.
     - If `ext_data.type == "skill"` (or `ext_data.skill_name` is provided), generate a Python class that inherits from `WorkflowSkillNode`.
     - If `ext_data.type == "spatial_temporal_contract"`, generate a Python class that inherits from `SpatialTemporalContractNode`.
     - If `ext_data.type == "none"`, generate a Python class that inherits from `WorkflowOperationNode`.
@@ -20,41 +19,30 @@ Guidelines:
 - Base class definitions:
     - `WorkflowStepNode`: Interactive workflow step that collects and validates explicit user input, then returns structured `StepRunOutput` via `process_input(...)`.
     - `WorkflowOperationNode`: Non-interactive workflow step for deterministic/derived computation from dependencies and session state, returning `StepRunOutput` via `process_operation(...)`.
-    - `WorkflowServiceNode`: Non-interactive service lifecycle step that executes two phases in order: `install_environment(...)` (Phase 1 — install packages/deps from service.md `## 1. Installation`), `start_service(...)` (Phase 2 — launch background process from `## 2. Start Service`, return PID and mark `workflow_service_registry` as running). The base class orchestrates install + start automatically; do **not** override `process_operation`.
     - `WorkflowSkillNode`: Skill-library step backed by `skill.md`. Set `SKILL_DIR` and `SKILL_MD_PATH`; the base class parses the skill doc, exposes `self.skill_description`, `self.skill_using`, `self.skill_examples`, and may accept direct user input. Implement `process_operation(user_input, dependency_results, session_state)` to invoke the skill according to the `## Using` section of `skill.md` and return `StepRunOutput`.
     - `WorkflowFileNode`: Multi-file upload/storage workflow step that receives coded-byte uploads, persists files (local by default, optionally remote), and exposes saved file locations to downstream nodes via the base `build_step_output(saved_files)` unless a specialized override is explicitly required.
-    - `SpatialTemporalContractNode`: Non-interactive contract-generation step. The base class already implements `run(...)`, `use_service(...)`, and `process_operation(dependency_results, session_state)` to resolve a description from `session_state['spatialTemporalContractDescription']` or upstream outputs, call the configured model, normalize contract JSON, and return `StepRunOutput`. Generated subclasses normally only define class constants plus a trivial `clone(self) -> self`.
+    - `SpatialTemporalContractNode`: Non-interactive contract-generation step. The base class already implements `run(...)` and `process_operation(dependency_results, session_state)` to resolve a description from `session_state['spatialTemporalContractDescription']` or upstream outputs, call the configured model, normalize contract JSON, and return `StepRunOutput`. Generated subclasses normally only define class constants plus a trivial `clone(self) -> self`.
 
 Reference implementation excerpts are maintained in `meta_agent/library/workflow_nodes_reference_excerpts.md` and injected by `node_writer` at runtime.
 
-- Prefer `WorkflowServiceNode` for service startup/bootstrap flows driven by service run guides, `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `SpatialTemporalContractNode` for steps that turn upstream descriptions into spatial-temporal contract JSON, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
+- Prefer `WorkflowSkillNode` for skill-library wrappers driven by `skill.md`, `SpatialTemporalContractNode` for steps that turn upstream descriptions into spatial-temporal contract JSON, `WorkflowOperationNode` for deterministic/derived computation that requires no direct user input, `WorkflowFileNode` for generic multi-file upload/storage, and `WorkflowStepNode` when the node must collect/validate user-entered input with custom business logic.
 - Import `register_class` from `pydaograph`, workflow node base class(es) from `ag_ui_workflow.nodes`, and `StepRunOutput` from `ag_ui_workflow.workflow_types`.
-- For `WorkflowServiceNode`, always import `workflow_service_registry` from `ag_ui_workflow.services`.
-- For `WorkflowStepNode` / `WorkflowOperationNode`, import `workflow_service_registry` only when node logic needs direct service registry access beyond `self.use_service(session_state)`.
 - Decorate each step class with `@register_class`.
 - Define class constants:
     - `STEP_ID` (machine-readable id)
     - `TITLE` (human-readable step title)
     - `PROMPT` (input prompt for user)
     - `DEPENDENCIES` (list of upstream step ids)
-    - `SERVICES` (list copied from node metadata services, each item with `service_name` and optional `use_desc`)
 - Implement node logic method by base class:
     - `WorkflowStepNode`: implement `process_input(self, user_input, dependency_results, session_state) -> StepRunOutput`.
-        - If `SERVICES` is non-empty, call `self.use_service(session_state)` before service-dependent logic.
-        - If direct service status/record lookup is required, import/use `workflow_service_registry`.
     - `WorkflowOperationNode`: implement `process_operation(self, dependency_results, session_state) -> StepRunOutput`.
-        - If `SERVICES` is non-empty, call `self.use_service(session_state)` before service-dependent logic.
-        - If direct service status/record lookup is required, import/use `workflow_service_registry`.
-    - `WorkflowServiceNode`: implement two phase methods (do **not** override `process_operation`):
-        - `install_environment(self, dependency_results, session_state) -> bool`: Phase 1 based on service.md `## 1. Installation`. Run install commands (e.g. `git clone`, `uv sync`, `pip install`) via `subprocess.run`. Return `True` on success, `False` on failure. Skip if already installed (idempotent check).
-        - `start_service(self, dependency_results, session_state) -> int`: Phase 2 based on service.md `## 2. Start Service`. Launch the service as a background process using `subprocess.Popen`. Return the integer PID (`proc.pid`); `<= 0` signals failure. Use `session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR` as working directory. The generated command must be valid for the current OS. After successful launch, call `workflow_service_registry.update_service_status(..., status="running", is_running=True, pid=proc.pid, installed=True)`.
     - `WorkflowSkillNode`: set `SKILL_DIR` (absolute path to skill directory) and `SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md')` as class constants. Implement `process_operation(self, user_input, dependency_results, session_state) -> StepRunOutput`.
         - The base class __init__ reads `skill.md` and populates `self.skill_description`, `self.skill_using`, `self.skill_examples`.
         - In `process_operation`, invoke the skill exactly as described in `self.skill_using` / `skill.md ## Using`.
         - Use `user_input` when the step collects input; tolerate empty input when the skill can run from dependencies alone.
         - Return `StepRunOutput(card=..., derived=...)` with results from the skill invocation.
-    - `SpatialTemporalContractNode`: define `STEP_ID`, `TITLE`, `PROMPT`, `DEPENDENCIES`, and `SERVICES`, and implement only `clone(self)` returning `self` unless custom contract-generation behavior is explicitly required.
-        - Do **not** override `run`, `use_service`, or `process_operation` by default; the base class already resolves description text, invokes the model, and returns `StepRunOutput`.
+    - `SpatialTemporalContractNode`: define `STEP_ID`, `TITLE`, `PROMPT`, and `DEPENDENCIES`, and implement only `clone(self)` returning `self` unless custom contract-generation behavior is explicitly required.
+        - Do **not** override `run` or `process_operation` by default; the base class already resolves description text, invokes the model, and returns `StepRunOutput`.
         - Ensure upstream dependencies or `session_state` provide `spatialTemporalContractDescription` or equivalent descriptive text.
         - The inherited `derived` payload includes keys such as `spatialTemporalContract`, `spatialTemporalContractJson`, `objectCount`, `relationCount`, `model`, `rawResponse`, and optional `usage`.
 - Use `dependency_results[<step_id>].derived[...]` to read prerequisite outputs.
@@ -89,14 +77,11 @@ Example:
 ```python
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
 from typing import Any
 
 from pydaograph import register_class, CStatus
 
-from ag_ui_workflow.nodes import SpatialTemporalContractNode, WorkflowFileNode, WorkflowOperationNode, WorkflowServiceNode, WorkflowStepNode
-from ag_ui_workflow.services import workflow_service_registry
+from ag_ui_workflow.nodes import SpatialTemporalContractNode, WorkflowFileNode, WorkflowOperationNode, WorkflowStepNode
 from ag_ui_workflow.workflow_types import StepRunOutput
 
 
@@ -117,7 +102,6 @@ class ExpenseNode(WorkflowStepNode):
     TITLE = "Step 2 · Expense"
     PROMPT = "Enter monthly expense"
     DEPENDENCIES = ["income"]
-    SERVICES = []
 
     def process_input(
         self,
@@ -125,8 +109,6 @@ class ExpenseNode(WorkflowStepNode):
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        if self.SERVICES:
-            self.use_service(session_state)
         expenses = _parse_float(user_input, "Monthly expense")
         income = dependency_results["income"].derived["monthlyIncome"]
         savings = income - expenses
@@ -157,7 +139,6 @@ class BudgetAdvisorNode(WorkflowStepNode):
     TITLE = "Step 2.5 · Budget Advisor"
     PROMPT = "Ask a budgeting question"
     DEPENDENCIES = ["income", "ExpenseNode"]
-    SERVICES = []
 
     def process_input(
         self,
@@ -165,8 +146,6 @@ class BudgetAdvisorNode(WorkflowStepNode):
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        if self.SERVICES:
-            self.use_service(session_state)
         monthly_income = dependency_results["income"].derived.get("monthlyIncome", 0.0)
         monthly_expense = dependency_results["ExpenseNode"].derived.get("monthlyExpense", 0.0)
         monthly_savings = monthly_income - monthly_expense
@@ -199,15 +178,12 @@ class SavingsPlanNode(WorkflowOperationNode):
     TITLE = "Step 3 · Savings Plan"
     PROMPT = ""
     DEPENDENCIES = ["income", "expense"]
-    SERVICES = []
 
     def process_operation(
         self,
         dependency_results: dict[str, StepRunOutput],
         session_state: dict[str, Any],
     ) -> StepRunOutput:
-        if self.SERVICES:
-            self.use_service(session_state)
         monthly_income = dependency_results["income"].derived["monthlyIncome"]
         monthly_expense = dependency_results["expense"].derived["monthlyExpense"]
         monthly_savings = monthly_income - monthly_expense
@@ -230,54 +206,6 @@ class SavingsPlanNode(WorkflowOperationNode):
             "annualSavings": annual_savings,
         }
         return StepRunOutput(card=card, derived=derived)
-
-
-@register_class
-class MediaCrawlerServiceNode(WorkflowServiceNode):
-    STEP_ID = "MediaCrawlerServiceNode"
-    TITLE = "Step 3.5 · Start MediaCrawler Service"
-    PROMPT = ""
-    DEPENDENCIES = ["SavingsPlanNode"]
-    DEFAULT_WORKDIR = str(Path.cwd())
-
-    def install_environment(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> bool:
-        workdir = str(session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR)
-        crawler_dir = Path(workdir) / "MediaCrawler"
-        if not crawler_dir.exists():
-            r = subprocess.run(
-                ["git", "clone", "git@github.com:NanmiCoder/MediaCrawler.git"],
-                cwd=workdir, capture_output=True,
-            )
-            if r.returncode != 0:
-                return False
-        r = subprocess.run(["uv", "sync"], cwd=str(crawler_dir), capture_output=True)
-        return r.returncode == 0
-
-    def start_service(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> int:
-        previous_monthly_savings = dependency_results["SavingsPlanNode"].derived.get("monthlySavings", 0.0)
-        session_state["previousMonthlySavings"] = previous_monthly_savings
-        workdir = str(session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR)
-        crawler_dir = str(Path(workdir) / "MediaCrawler")
-        cmd = session_state.get("instanceCommand") or (
-            "uv run main.py --platform xhs --lt qrcode --type search --keywords 学习 --save_data_option json"
-        )
-        proc = subprocess.Popen(cmd, shell=True, cwd=crawler_dir)
-        workflow_service_registry.update_service_status(
-            self.STEP_ID,
-            status="running",
-            is_running=True,
-            pid=proc.pid,
-            installed=True,
-        )
-        return proc.pid
 ```
 
-When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`service -> WorkflowServiceNode` when `type` is `service` or `service_name` exists, `skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `spatial_temporal_contract -> SpatialTemporalContractNode`, `none -> WorkflowOperationNode`, `user_file_input -> WorkflowFileNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` when the selected base class requires custom processing (service nodes implement two phases `install_environment -> bool`, `start_service -> int PID` and mark `workflow_service_registry` running state in `start_service`, without overriding `process_operation`; skill nodes provide `process_operation`; spatial-temporal contract nodes usually only define constants plus `clone`).
+When asked to create new nodes, follow this shape: conditional workflow subclass by ext_data type (`skill -> WorkflowSkillNode` when `type` is `skill` or `skill_name` exists, `spatial_temporal_contract -> SpatialTemporalContractNode`, `none -> WorkflowOperationNode`, `user_file_input -> WorkflowFileNode`, otherwise `WorkflowStepNode`), declarative class constants, and runnable processing method returning `StepRunOutput` when the selected base class requires custom processing (skill nodes provide `process_operation`; spatial-temporal contract nodes usually only define constants plus `clone`).

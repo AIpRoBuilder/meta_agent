@@ -48,10 +48,34 @@ def test_node_context_lists_selectable_types_and_skill_descriptions(tmp_path) ->
 
 	assert "- selectable node types:" in context
 	assert "user_input -> WorkflowStepNode" in context
+	assert "service ->" not in context
 	assert "skill -> WorkflowSkillNode" in context
 	assert "spatial_temporal_contract -> SpatialTemporalContractNode" in context
 	assert "- available skills:" in context
 	assert "baidu_search:" in context
+
+
+def test_node_context_omits_legacy_service_metadata(tmp_path) -> None:
+	planner = NodePlanner(client=_FakeClient([]), skills_root_path=str(tmp_path / "skills"))
+
+	context = planner._node_context(
+		{
+			"name": "ComputeResult",
+			"desc": "compute the final score",
+			"depends": [],
+			"ext_data": {
+				"type": "none",
+				"desc": "no need for ext data",
+			},
+		},
+		1,
+	)
+
+	assert "derived node kind: operation" in context
+	assert "recommended base class: WorkflowOperationNode" in context
+	assert "primary functions: process_operation" in context
+	assert "service_name" not in context
+	assert "- services:" not in context
 
 
 def test_node_context_recommends_spatial_temporal_contract_node(tmp_path) -> None:

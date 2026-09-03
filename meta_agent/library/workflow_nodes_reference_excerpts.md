@@ -142,7 +142,6 @@ class WorkflowOperationNode(GNode):
     TITLE = ""
     PROMPT = ""
     DEPENDENCIES: list[str] = []
-    SERVICES: list[dict[str, str]] = []
     NODE_KIND = "operation"
 
     def __init__(self) -> None:
@@ -173,7 +172,6 @@ class WorkflowOperationNode(GNode):
             "title": cls.TITLE,
             "prompt": cls.PROMPT,
             "dependencies": list(cls.DEPENDENCIES),
-            "services": list(cls.SERVICES),
             "inputRequired": cls.INPUT_REQUIRED,
             "nodeKind": cls.NODE_KIND,
         }
@@ -184,65 +182,6 @@ class WorkflowOperationNode(GNode):
         session_state: dict[str, Any],
     ) -> StepRunOutput:
         raise NotImplementedError()
-
-
-class WorkflowServiceNode(GNode):
-    INPUT_REQUIRED = False
-    STEP_ID = ""
-    TITLE = ""
-    PROMPT = ""
-    DEPENDENCIES: list[str] = []
-    NODE_KIND = "service"
-    DEFAULT_WORKDIR = str(Path.cwd())
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setName(self.STEP_ID)
-        self.setWaitForInput(False)
-
-    def run(self) -> CStatus:
-        # Same non-interactive lifecycle pattern as WorkflowOperationNode,
-        # but process_operation is implemented by the base class.
-        # The base class orchestrates install_environment(...) and start_service(...),
-        # then registers the service in workflow_service_registry and returns a
-        # StepRunOutput describing running status, pid, and installation state.
-        ...
-
-    def install_environment(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> bool:
-        # Phase 1 – Install / prepare the runtime environment.
-        # Implement based on service.md ## 1. Installation section.
-        # Run install commands (git clone, uv sync, pip install, etc.) via subprocess.run.
-        # Return True if installation succeeded, False otherwise.
-        # Should be idempotent: check whether work is already done before repeating it.
-        raise NotImplementedError
-
-    def start_service(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> int:
-        # Phase 2 – Start the service (runs after install_environment returns True).
-        # Implement based on service.md ## 2. Start Service section.
-        # Launch the service as a background process using subprocess.Popen.
-        # Return the integer PID of the launched process (proc.pid); <= 0 signals failure.
-        # Use session_state.get("serviceWorkdir") or self.DEFAULT_WORKDIR as working directory.
-        # Do not hardcode absolute paths; define DEFAULT_WORKDIR as a class constant if needed.
-        raise NotImplementedError
-
-    def process_operation(
-        self,
-        dependency_results: dict[str, StepRunOutput],
-        session_state: dict[str, Any],
-    ) -> StepRunOutput:
-        # Do not override in generated subclasses.
-        # The base implementation calls install_environment(...) and start_service(...),
-        # validates return types, updates workflow_service_registry, and returns a
-        # StepRunOutput(card={service/status/pid/...}, derived={service_name/...}).
-        ...
 
 
 class WorkflowSkillNode(GNode):
@@ -298,7 +237,6 @@ class SpatialTemporalContractNode(GNode):
     TITLE = "SpatialTemporal Contract"
     PROMPT = "Generates a spatial-temporal contract from dependency output or session state."
     DEPENDENCIES: list[str] = []
-    SERVICES: list[dict[str, str]] = []
     NODE_KIND = "spatial_temporal_contract"
     OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
     OPENAI_MODEL_ENV = "OPENAI_MODEL"
@@ -313,13 +251,8 @@ class SpatialTemporalContractNode(GNode):
     def run(self) -> CStatus:
         # Non-interactive lifecycle:
         # 1) collect dependency outputs
-        # 2) call self.use_service(session_state)
-        # 3) call built-in process_operation(dependency_results, session_state)
-        # 4) persist output/card/state and trigger callback cleanup
-        ...
-
-    def use_service(self, session_state: dict[str, Any]) -> list[dict[str, Any]]:
-        # Registers this step's metadata and resolves declared SERVICES usage records.
+        # 2) call built-in process_operation(dependency_results, session_state)
+        # 3) persist output/card/state and trigger callback cleanup
         ...
 
     @classmethod
@@ -329,7 +262,6 @@ class SpatialTemporalContractNode(GNode):
             "title": cls.TITLE,
             "prompt": cls.PROMPT,
             "dependencies": list(cls.DEPENDENCIES),
-            "services": list(cls.SERVICES),
             "inputRequired": cls.INPUT_REQUIRED,
             "nodeKind": cls.NODE_KIND,
         }
@@ -351,7 +283,7 @@ class SpatialTemporalContractNode(GNode):
         ...
 
 
-Use `WorkflowStepNode` for user-entered text inputs, `WorkflowFileNode` for file uploads, and `SpatialTemporalContractNode` for steps that convert upstream descriptions into spatial-temporal contract JSON.
+Use `WorkflowStepNode` for user-entered text inputs, `WorkflowFileNode` for file uploads, `WorkflowOperationNode` for compute/process flows, and `SpatialTemporalContractNode` for steps that convert upstream descriptions into spatial-temporal contract JSON.
 
 
 ```
@@ -364,7 +296,7 @@ Use `WorkflowStepNode` for user-entered text inputs, `WorkflowFileNode` for file
 
 ## Preserved Semantics
 
-- Same node taxonomy and interfaces: input, operation, service, file, skill, spatial_temporal_contract.
-- Same required override points: `process_input`, `process_operation`, and for service nodes the two-phase `install_environment` / `start_service` pair.
+- Active meta_agent generation taxonomy: input, operation, file, skill, spatial_temporal_contract.
+- Same required override points for generated code: `process_input`, `process_operation`, and `clone` for spatial-temporal-contract subclasses.
 - Same `StepRunOutput` contract and error semantics (`1001` for execution/type failures, `1003` for missing required input).
 - Same runtime persistence behavior into workflow session maps (`step_outputs`, `step_cards`, `step_states`, `pending_inputs`, callbacks).
