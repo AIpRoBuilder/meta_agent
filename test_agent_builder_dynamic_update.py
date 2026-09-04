@@ -109,7 +109,6 @@ def test_update_nodes_plan_preserves_existing_files_and_generates_only_missing(m
     assert set(result["node_plan"]["generated"]) == {"AddedNode", "HiddenNode"}
     assert "node_ui" not in result
     assert set(builder.dynamic_graph_cache["node_plans"]) == {"ExistingNode", "AddedNode", "HiddenNode"}
-    assert builder.dynamic_graph_cache["node_ui"] == {}
 
 
 def test_update_nodes_generates_only_missing_backend_nodes(monkeypatch, tmp_path):
@@ -205,8 +204,6 @@ def test_update_nodes_generates_only_missing_backend_nodes(monkeypatch, tmp_path
     assert json.loads((tmp_path / "workflow.json").read_text(encoding="utf-8"))["nodes"][1]["name"] == "AddedNode"
     assert set(builder.dynamic_graph_cache["backend_nodes"]) == {"ExistingNode", "AddedNode"}
     assert "node_ui" not in result
-    assert builder.dynamic_graph_cache["frontend_nodes"] == {}
-    assert builder.dynamic_graph_cache["frontend_shared"] == {}
 
 
 def test_generate_nodes_writes_backend_files_next_to_graph_plan(monkeypatch, tmp_path):
@@ -412,17 +409,14 @@ def test_rerun_server_validates_artifacts_and_restarts_processes(monkeypatch, tm
     monkeypatch.setattr(agent_builder_module, "select_python_command", lambda: "/usr/bin/python3.10")
 
     old_backend = _RunningProcess(pid=11)
-    old_frontend = _RunningProcess(pid=22)
     builder.backend_server_process = old_backend
-    builder.frontend_server_process = old_frontend
     builder.graph_plan_path = str(graph_path)
     builder.main_output_path = str(main_path)
 
     monkeypatch.setattr(agent_builder_module.subprocess, "Popen", fake_popen)
-    runtime = builder.rerun_server(frontend_port=7777, backend_port=9001)
+    runtime = builder.rerun_server(backend_port=9001)
 
     assert old_backend.terminated is True
-    assert old_frontend.terminated is True
     assert len(spawned) == 1
     assert runtime["backend"]["pid"] == spawned[0].pid
     assert spawned[0].command == ["/usr/bin/python3.10", str(main_path)]

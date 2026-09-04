@@ -34,7 +34,7 @@ Guidelines:
 - If a required upstream key cannot be confirmed from provided dependency context, use safe fallback handling with minimal branching and add one concise TODO only when necessary.
 - Persist mutable cross-step values in `session_state`.
 - Return `StepRunOutput(card=..., derived=...)`.
-- Keep `card` JSON-serializable and practical for frontend rendering.
+- Keep `card` JSON-serializable and practical for downstream consumers.
 - Keep `derived` as structured values for downstream step computation.
 - Do not override `run` unless explicitly required; base class `run` orchestrates flow.
 - If the required behavior cannot be fully implemented from available context, keep valid runnable placeholder logic and add a concise TODO comment for the missing detail.

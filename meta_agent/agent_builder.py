@@ -129,7 +129,6 @@ class AgentBuilder:
         model: str = "deepseek-chat",
         provider: str = "deepseek",
         root_dir: str = "./example",
-        frontend_style_prompt: Optional[str] = None,
         skills_root_path: Optional[str] = None,
         log_level: str | int | None = None,
         log_filename: str = "meta_agent_debug.log",
@@ -140,7 +139,6 @@ class AgentBuilder:
         self.model = model
         self.provider = provider
         self.root_dir = root_dir
-        self.frontend_style_prompt = frontend_style_prompt.strip() if frontend_style_prompt else None
         self.skills_root_path = skills_root_path.strip() if isinstance(skills_root_path, str) else ""
         self.max_audit_rounds = self._validate_max_audit_rounds(max_audit_rounds)
         self.session_marking_prompt = compose_session_marking_prompt(session_marking_prompt)
@@ -182,15 +180,11 @@ class AgentBuilder:
             "graph_nodes": [],
             "graph_plan_path": "",
             "node_plans": {},
-            "node_ui": {},
             "backend_nodes": {},
-            "frontend_nodes": {},
-            "frontend_shared": {},
             "node_input_output_formats": {},
             "server_runtime": {},
         }
         self.backend_server_process: Optional[Any] = None
-        self.frontend_server_process: Optional[Any] = None
 
     @staticmethod
     def _validate_max_audit_rounds(max_audit_rounds: int) -> int:
@@ -235,14 +229,6 @@ class AgentBuilder:
             provider=self.provider,
             session_marking_prompt=self.session_marking_prompt,
         )
-
-    @staticmethod
-    def _frontend_removed_error() -> RuntimeError:
-        return RuntimeError("Frontend generation has been removed from meta_agent.")
-
-    @staticmethod
-    def _node_ui_removed_error() -> RuntimeError:
-        return RuntimeError("Node UI planning has been removed from meta_agent.")
 
     def reset_llm_config(
         self,
@@ -426,43 +412,14 @@ class AgentBuilder:
 
         return [self.node_location_map[name] for name in ordered_names if name in self.node_location_map]
 
-    def _generate_selected_frontend_views(
-        self,
-        node_names: List[str],
-        *,
-        output_base_dir: str = "frontend/src",
-        context_base_dir: Optional[str] = None,
-        temperature: float = 0.3,
-        overwrite_existing: bool = False,
-    ) -> Dict[str, Dict[str, str]]:
-        del node_names, output_base_dir, context_base_dir, temperature, overwrite_existing
-        raise self._frontend_removed_error()
-
-    def _audit_frontend_src(
-        self,
-        *,
-        frontend_path: str,
-        steps_meta: List[Dict[str, Any]],
-        context_base_dir: Optional[str],
-        reference_frontend_src_dir: str,
-        frontend_style_prompt: Optional[str],
-        temperature: float,
-        max_audit_rounds: int,
-    ) -> None:
-        del frontend_path, steps_meta, context_base_dir, reference_frontend_src_dir, frontend_style_prompt, temperature, max_audit_rounds
-        raise self._frontend_removed_error()
-
     def _validate_generated_artifacts(
         self,
         *,
-        frontend_project_dir: str | Path | None = None,
         graph_plan_path: Optional[str] = None,
         node_docs_dirname: str = "node_docs",
-        node_ui_dirname: str = "node_ui",
         backend_language: str = "python",
         main_entrypoint_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        del frontend_project_dir, node_ui_dirname
         planned_graph = self._load_planned_graph(graph_plan_path)
         doc_dir = self._resolve_root_path(getattr(self, "node_docs_dir", node_docs_dirname))
         main_path = Path(main_entrypoint_path or getattr(self, "main_output_path", self._resolve_root_path("main.py"))).expanduser()
@@ -724,26 +681,14 @@ class AgentBuilder:
         self.node_doc_paths = [str(path) for path in node_doc_paths]
         return self.node_doc_paths
 
-    def generate_node_html(
-        self,
-        requirement_md_path: str,
-        graph_plan_path: str,
-        output_dirname: str = "node_ui",
-        temperature: float = 0.3,
-    ) -> List[str]:
-        del requirement_md_path, graph_plan_path, output_dirname, temperature
-        raise self._node_ui_removed_error()
-
     def update_nodes_plan(
         self,
         graph_plan_path: Optional[str] = None,
         requirement_md_path: Optional[str] = None,
         node_docs_dirname: str = "node_docs",
-        node_ui_dirname: str = "node_ui",
         temperature: float = 0.2,
         max_tokens: int = MAX_TOKENS,
     ) -> Dict[str, Any]:
-        del node_ui_dirname
         requirement_text = self._read_requirement_text(requirement_md_path)
         planned_graph = self._load_planned_graph(graph_plan_path)
         node_names = planned_graph.get_topological_sorted_nodes()
@@ -785,7 +730,6 @@ class AgentBuilder:
         self.dynamic_graph_cache["graph_nodes"] = node_names
         self.dynamic_graph_cache["graph_plan_path"] = str(Path(self.graph_plan_path).expanduser().resolve())
         self.dynamic_graph_cache["node_plans"] = all_plan_map
-        self.dynamic_graph_cache["node_ui"] = {}
 
         return {
             "graph_plan_path": self.dynamic_graph_cache["graph_plan_path"],
@@ -801,7 +745,6 @@ class AgentBuilder:
         graph_plan_path: Optional[str] = None,
         requirement_md_path: Optional[str] = None,
         node_docs_dirname: str = "node_docs",
-        node_ui_dirname: str = "node_ui",
         language: str = "python",
         temperature: float = 0.3,
     ) -> Dict[str, Any]:
@@ -809,7 +752,6 @@ class AgentBuilder:
             graph_plan_path=graph_plan_path,
             requirement_md_path=requirement_md_path,
             node_docs_dirname=node_docs_dirname,
-            node_ui_dirname=node_ui_dirname,
             temperature=temperature,
         )
         planned_graph = self._load_planned_graph()
@@ -922,14 +864,10 @@ class AgentBuilder:
         self,
         graph_plan_path: Optional[str] = None,
         requirement_md_path: Optional[str] = None,
-        frontend_output_dir: str = "frontend",
         node_docs_dirname: str = "node_docs",
-        node_ui_dirname: str = "node_ui",
         language: str = "python",
         temperature: float = 0.3,
-        frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
-        max_frontend_audit_rounds: Optional[int] = None,
         backend_port: int = 8000,
         main_output_filename: str = "main.py",
     ) -> Dict[str, Any]:
@@ -937,7 +875,6 @@ class AgentBuilder:
             graph_plan_path=graph_plan_path,
             requirement_md_path=requirement_md_path,
             node_docs_dirname=node_docs_dirname,
-            node_ui_dirname=node_ui_dirname,
             language=language,
             temperature=temperature,
         )
@@ -952,9 +889,6 @@ class AgentBuilder:
             fastapi_port=backend_port,
         )
 
-        self.dynamic_graph_cache["frontend_nodes"] = {}
-        self.dynamic_graph_cache["frontend_shared"] = {}
-
         return {
             "node_plan": backend_result["node_plan"],
             "backend_nodes": backend_result["backend_nodes"],
@@ -965,14 +899,10 @@ class AgentBuilder:
     def rerun_server(
         self,
         graph_plan_path: Optional[str] = None,
-        frontend_project_dir: Optional[str] = None,
         node_docs_dirname: str = "node_docs",
-        node_ui_dirname: str = "node_ui",
         backend_language: str = "python",
         main_entrypoint_path: Optional[str] = None,
         backend_port: int = 8000,
-        frontend_host: str = "127.0.0.1",
-        frontend_port: int = 8080,
     ) -> Dict[str, Any]:
         if graph_plan_path:
             self.graph_plan_path = graph_plan_path
@@ -982,7 +912,6 @@ class AgentBuilder:
         artifact_state = self._validate_generated_artifacts(
             graph_plan_path=self.graph_plan_path,
             node_docs_dirname=node_docs_dirname,
-            node_ui_dirname=node_ui_dirname,
             backend_language=backend_language,
             main_entrypoint_path=main_entrypoint_path,
         )
@@ -990,8 +919,6 @@ class AgentBuilder:
         main_path = Path(artifact_state["main_entrypoint"]).expanduser().resolve()
 
         self._stop_managed_server_process(self.backend_server_process)
-        self._stop_managed_server_process(self.frontend_server_process)
-        self.frontend_server_process = None
 
         python_cmd = select_python_command()
         backend_command = [python_cmd, str(main_path)]
@@ -1012,21 +939,6 @@ class AgentBuilder:
         }
         self.dynamic_graph_cache["server_runtime"] = server_runtime
         return server_runtime
-
-    def amend_node_ui(
-        self,
-        node_name: str,
-        amendment: str,
-        existing_html_path: Optional[str] = None,
-        requirement_md_path: Optional[str] = None,
-        graph_plan_path: Optional[str] = None,
-        output_path: Optional[str] = None,
-        temperature: float = 0.2,
-        max_tokens: int = MAX_TOKENS,
-        overwrite: bool = True,
-    ) -> str:
-        del node_name, amendment, existing_html_path, requirement_md_path, graph_plan_path, output_path, temperature, max_tokens, overwrite
-        raise self._node_ui_removed_error()
 
     def amend_node_markdown(
         self,
@@ -1087,118 +999,91 @@ class AgentBuilder:
         return final_path
 
     def _build_steps_meta(self, include_hidden_nodes: bool = False) -> List[Dict[str, Any]]:
-        del include_hidden_nodes
-        raise self._frontend_removed_error()
+        planned_graph = self._load_planned_graph()
+        steps_meta: List[Dict[str, Any]] = []
 
-    @classmethod
-    def _resolve_frontend_violation_target(cls, frontend_src_dir: str | Path, violation: Any) -> Optional[Path]:
-        del cls, frontend_src_dir, violation
-        raise RuntimeError("Frontend auditing has been removed from meta_agent.")
+        for node_name in planned_graph.get_topological_sorted_nodes():
+            node_meta = planned_graph.get_node_meta(node_name)
+            if node_meta is None:
+                continue
+            if not include_hidden_nodes and not bool(getattr(node_meta, "enable", True)):
+                continue
 
-    def generate_frontend(
-        self,
-        output_filename: str = "frontend",
-        frontend_mode: str = "vue_src",
-        temperature: float = 0.3,
-        frontend_style_prompt: Optional[str] = None,
-        context_base_dir: Optional[str] = None,
-        max_audit_rounds: Optional[int] = None,
-        backend_port: int = 8000,
-    ) -> str:
-        del output_filename, frontend_mode, temperature, frontend_style_prompt, context_base_dir, max_audit_rounds, backend_port
-        raise self._frontend_removed_error()
+            reference = resolve_workflow_node_reference(
+                meta_node_kind=getattr(node_meta, "meta_node_kind", None),
+                ext_data=getattr(node_meta, "ext_data", None),
+            )
+            prompt = str(getattr(node_meta, "desc", "") or "").strip() or reference.summary
+            ext_data = getattr(node_meta, "ext_data", None)
 
-    def _prepare_frontend_project_and_main_entrypoint(
+            steps_meta.append(
+                {
+                    "id": node_name,
+                    "title": node_name,
+                    "prompt": prompt,
+                    "dependencies": list(getattr(node_meta, "depends", []) or []),
+                    "inputRequired": bool(reference.input_required),
+                    "nodeKind": str(reference.capability_category or "operation"),
+                    "extData": ext_data if isinstance(ext_data, Mapping) else (ext_data or {}),
+                    "metaNodeKind": str(reference.meta_node_kind or ""),
+                    "enabled": bool(getattr(node_meta, "enable", True)),
+                }
+            )
+
+        return steps_meta
+
+    def _write_main_entrypoint(
         self,
         *,
-        frontend_project_dir: str | Path | None = None,
-        backend_port: int = 8000,
-        ensure_frontend_project: bool = False,
-        write_proxy_config: bool = False,
         graph_plan_path: Optional[str] = None,
         output_filename: str = "main.py",
         fastapi_host: str = "0.0.0.0",
         temperature: float = 0.0,
         fastapi_port: int = 8000,
-        generate_main_entrypoint: bool = False,
-    ) -> tuple[str | None, str | None]:
-        resolved_frontend_dir: Path | None = None
-        if frontend_project_dir is not None:
-            resolved_frontend_dir = Path(frontend_project_dir).expanduser()
-            if not resolved_frontend_dir.is_absolute():
-                resolved_frontend_dir = Path(self.root_dir).expanduser() / resolved_frontend_dir
-            resolved_frontend_dir = resolved_frontend_dir.resolve()
+    ) -> str:
+        selected_graph_plan_path = graph_plan_path or self.graph_plan_path
+        if not selected_graph_plan_path:
+            raise ValueError("graph_plan_path is not set. Call plan_graph(...) first or pass graph_plan_path.")
 
-        if ensure_frontend_project:
-            raise self._frontend_removed_error()
-
-        if write_proxy_config:
-            raise self._frontend_removed_error()
-
-        generated_main_output_path: str | None = None
-        if generate_main_entrypoint:
-            self.main_output_path = os.path.join(self.root_dir, output_filename)
-            self._logger.info("Generating main entrypoint -> %s", self.main_output_path)
-            self.main_writer.write_main_entrypoint(
-                project_root_path=self.root_dir,
-                graph_plan_json_path=graph_plan_path or "",
-                output_path=self.main_output_path,
-                requirement_analysis_result=self.requirement_analysis_result,
-                fastapi_host=fastapi_host,
-                fastapi_port=fastapi_port,
-                temperature=temperature,
-            )
-
-            max_audit_rounds = self._resolve_max_audit_rounds()
-            for audit_round in range(1, max_audit_rounds + 1):
-                ok, violations = self.main_entry_auditor.audit_main_entrypoint_file(
-                    str(self.main_output_path),
-                    str(self.root_dir),
-                )
-                if ok:
-                    self._logger.info("Main entrypoint audit passed.")
-                    break
-                amendment = "\n".join(
-                    [f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations]
-                )
-                if audit_round >= max_audit_rounds:
-                    raise RuntimeError(
-                        "main entrypoint audit did not pass after "
-                        f"{max_audit_rounds} attempt(s). Last feedback:\n{amendment}"
-                    )
-                self._logger.warning(amendment)
-                self._logger.warning("Main entrypoint audit failed. Applying amendment...")
-                self.main_writer.amend_code_with_feedback(
-                    self.main_output_path,
-                    amendment,
-                    language="python",
-                    temperature=0.2,
-                )
-
-            generated_main_output_path = self.main_output_path
-
-        return (
-            str(resolved_frontend_dir) if resolved_frontend_dir is not None else None,
-            generated_main_output_path,
+        self.main_output_path = os.path.join(self.root_dir, output_filename)
+        self._logger.info("Generating main entrypoint -> %s", self.main_output_path)
+        self.main_writer.write_main_entrypoint(
+            project_root_path=self.root_dir,
+            graph_plan_json_path=selected_graph_plan_path,
+            output_path=self.main_output_path,
+            requirement_analysis_result=self.requirement_analysis_result,
+            fastapi_host=fastapi_host,
+            fastapi_port=fastapi_port,
+            temperature=temperature,
         )
 
-    def _ensure_vue_frontend_project(self, frontend_project_dir: str, backend_port: int = 8000) -> str:
-        del frontend_project_dir, backend_port
-        raise self._frontend_removed_error()
+        max_audit_rounds = self._resolve_max_audit_rounds()
+        for audit_round in range(1, max_audit_rounds + 1):
+            ok, violations = self.main_entry_auditor.audit_main_entrypoint_file(
+                str(self.main_output_path),
+                str(self.root_dir),
+            )
+            if ok:
+                self._logger.info("Main entrypoint audit passed.")
+                break
+            amendment = "\n".join(
+                [f"Line {v.lineno}: {v.rule} - {v.detail}" for v in violations]
+            )
+            if audit_round >= max_audit_rounds:
+                raise RuntimeError(
+                    "main entrypoint audit did not pass after "
+                    f"{max_audit_rounds} attempt(s). Last feedback:\n{amendment}"
+                )
+            self._logger.warning(amendment)
+            self._logger.warning("Main entrypoint audit failed. Applying amendment...")
+            self.main_writer.amend_code_with_feedback(
+                self.main_output_path,
+                amendment,
+                language="python",
+                temperature=0.2,
+            )
 
-    def _write_vue_proxy_config(self, frontend_dir: Path, backend_port: int = 8000) -> None:
-        del frontend_dir, backend_port
-        raise self._frontend_removed_error()
-
-    def generate_frontend_views(
-        self,
-        graph_plan_path: Optional[str] = None,
-        output_base_dir: str = "frontend/src",
-        context_base_dir: Optional[str] = None,
-        temperature: float = 0.3,
-    ) -> Dict[str, Dict[str, str]]:
-        del graph_plan_path, output_base_dir, context_base_dir, temperature
-        raise self._frontend_removed_error()
+        return self.main_output_path
 
     def generate_main_entrypoint(
         self,
@@ -1208,16 +1093,13 @@ class AgentBuilder:
         temperature: float = 0.0,
         fastapi_port: int = 8000,
     ) -> str:
-        _, generated_main_output_path = self._prepare_frontend_project_and_main_entrypoint(
+        generated_main_output_path = self._write_main_entrypoint(
             graph_plan_path=graph_plan_path,
             output_filename=output_filename,
             fastapi_host=fastapi_host,
             temperature=temperature,
             fastapi_port=fastapi_port,
-            generate_main_entrypoint=True,
         )
-        if generated_main_output_path is None:
-            raise RuntimeError("main entrypoint generation did not return an output path.")
         self.main_output_path = generated_main_output_path
         return self.main_output_path
 
@@ -1365,9 +1247,6 @@ class AgentBuilder:
         requirement_file: Optional[str] = None,
         test_after_generation: bool = True,
         generate_node_docs: bool = True,
-        generate_node_html: bool = True,
-        frontend_mode: str = "vue_src",
-        frontend_style_prompt: Optional[str] = None,
         context_base_dir: Optional[str] = None,
         backend_port: int = 8000,
     ) -> None:
@@ -1378,12 +1257,10 @@ class AgentBuilder:
             requirement_file: Path to an existing requirement file (takes precedence).
             test_after_generation: Whether to test generated main.py after generation.
             generate_node_docs: Whether to generate per-node markdown planning docs.
-            generate_node_html: Reserved for backward compatibility; ignored.
-            frontend_mode: Reserved for backward compatibility; ignored.
-            frontend_style_prompt: Reserved for backward compatibility; ignored.
             context_base_dir: Optional base directory for syncing workflow.json.
             backend_port: Backend API port used by the generated FastAPI app.
         """
+        del context_base_dir
         total_steps = 4
         if generate_node_docs:
             total_steps += 1
@@ -1416,6 +1293,7 @@ class AgentBuilder:
             self.graph_plan_path,
             output_filename="main.py",
             temperature=0.0,
+            fastapi_port=backend_port,
         )
         self._advance_progress("main.py generated and audited")
 
