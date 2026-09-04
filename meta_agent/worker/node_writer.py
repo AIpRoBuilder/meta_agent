@@ -14,6 +14,7 @@ from meta_agent.context_builder.context import GraphContextBuilder
 from meta_agent.architect.graph import Graph, NodeMeta
 from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
 from meta_agent.tools.workflow_node_reference import (
+    render_subclass_guidance_method_signatures,
     render_workflow_method_signatures,
     render_workflow_node_reference,
     render_workflow_step_meta_catalog,
@@ -164,6 +165,14 @@ def _reference_method_signature_text(reference, method_names: tuple[str, ...]) -
 def _reference_primary_method_signature(reference, method_names: tuple[str, ...], fallback: str) -> str:
     signatures = render_workflow_method_signatures(reference.base_class, method_names)
     return signatures[0] if signatures else fallback
+
+
+def _reference_guidance_method_signature_text(reference) -> str:
+    signatures = render_subclass_guidance_method_signatures(
+        reference.base_class,
+        reference.subclass_implementation_methods,
+    )
+    return ", ".join(signatures) if signatures else "none"
     
 
 @dataclass
@@ -689,15 +698,26 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
         reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
         step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
         subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
+        guidance_hook_text = _reference_guidance_method_signature_text(reference)
+
+        if guidance_hook_text == "none":
+            guidance_rule = (
+                f"- The base SpatialTemporalContractNode does not consume subclass PROMPT during model generation; if this node's desc/ext_data.desc/PROMPT carries business guidance, preserve the inherited generation flow and prefer the smallest prompt/guidance helper reachable from {subclass_hook_text} when one exists.\n"
+            )
+        else:
+            guidance_rule = (
+                f"- The base SpatialTemporalContractNode does not consume subclass PROMPT during model generation; if this node's desc/ext_data.desc/PROMPT carries business guidance, inject it through the smallest parsed prompt/guidance helper reachable from {subclass_hook_text}: {guidance_hook_text}. Preserve the inherited generation flow.\n"
+            )
 
         return (
             base_prompt
             + "\n\nSpatialTemporalContractNode runtime contract (authoritative):\n"
             + "- Subclass SpatialTemporalContractNode.\n"
             + "- Define STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            + f"- Keep implementation minimal: add only clone(self) -> self; rely on the base class for run and inherited StepRunOutput contract {step_output_text}.\n"
-            + f"- Do not replace {step_output_text} unless the requirement explicitly demands custom contract-generation logic.\n"
-            + f"- If custom contract-generation behavior is required, prefer overriding {subclass_hook_text}, which upstream marks as the subclass-customization hook.\n"
+            + f"- Keep implementation minimal: preserve the inherited run/process_operation flow and StepRunOutput contract {step_output_text}, always add clone(self) -> self, and add only the smallest guidance override needed for this node.\n"
+            + guidance_rule
+            + f"- Reserve overriding {subclass_hook_text} for cases that truly need custom model invocation or contract parsing beyond prompt-guidance changes.\n"
+            + f"- Do not replace {step_output_text}, run, or __init__ unless the requirement explicitly demands a different runtime contract.\n"
             + "- Ensure the contract description comes from session_state['spatialTemporalContractDescription'] or an upstream dependency output/card.\n"
             + "- The base class returns StepRunOutput with derived keys such as spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n"
             + "- This node is non-interactive; do not introduce direct user input handling or inputs_format parsing.\n"
@@ -707,11 +727,22 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
         reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
         step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
         subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
+        guidance_hook_text = _reference_guidance_method_signature_text(reference)
+        if guidance_hook_text == "none":
+            guidance_rule = (
+                f"If node-specific contract semantics must influence the generated contract, prefer the smallest prompt/guidance helper reachable from {subclass_hook_text} when one exists, while preserving the inherited run/process_operation flow and JSON parsing path.\n"
+            )
+        else:
+            guidance_rule = (
+                f"If node-specific contract semantics must influence the generated contract, prefer overriding the smallest parsed prompt/guidance helper reachable from {subclass_hook_text}: {guidance_hook_text}, while preserving the inherited run/process_operation flow and JSON parsing path.\n"
+            )
         return (
             "Generate a SpatialTemporalContractNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Keep implementation minimal: only imports, class constants, and clone(self) returning self.\n"
+            "Keep implementation minimal: only imports, class constants, clone(self), and the smallest guidance override needed to make this node's own desc/PROMPT affect contract generation.\n"
+            "The base SpatialTemporalContractNode does not use subclass PROMPT directly during model generation.\n"
+            + guidance_rule
+            + f"Reserve {subclass_hook_text} for cases that truly need custom model invocation instead of prompt-guidance changes.\n"
             f"Do NOT replace inherited runtime methods such as {step_output_text}, run, or __init__ unless the requirement explicitly asks to customize the base contract-generation behavior.\n"
-            f"When customization is required, prefer overriding {subclass_hook_text} instead of replacing {step_output_text}.\n"
             "This node is non-interactive and should not parse direct user input or define inputs_format.\n"
             "Ensure upstream dependencies or session_state provide spatialTemporalContractDescription or equivalent descriptive text for the base class to consume.\n"
             "The inherited base implementation will resolve the description, call the configured model, and return StepRunOutput with derived keys including spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n\n"
@@ -721,10 +752,19 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
         reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
         step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
         subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
+        guidance_hook_text = _reference_guidance_method_signature_text(reference)
+        if guidance_hook_text == "none":
+            guidance_rule = (
+                f"If the node needs its own generation guidance, prefer the smallest prompt/guidance helper reachable from {subclass_hook_text} when one exists."
+            )
+        else:
+            guidance_rule = (
+                f"If the node needs its own generation guidance, prefer the smallest parsed prompt/guidance helper reachable from {subclass_hook_text}: {guidance_hook_text}."
+            )
         return (
             "Preserve the SpatialTemporalContractNode contract "
             "(STEP_ID/TITLE/PROMPT/DEPENDENCIES plus clone returning self). "
-            f"Keep run and {step_output_text} inherited from the base class unless feedback explicitly requires a custom {subclass_hook_text} override.\n"
+            f"Keep the inherited run/{step_output_text} flow. {guidance_rule} Reserve custom {subclass_hook_text} overrides for true model-invocation changes.\n"
         )
 
 

@@ -8,6 +8,7 @@ from meta_agent.architect.graph import NodeMeta
 from meta_agent.architect.node_planner import NodePlanner
 from meta_agent.llm_client.coder import compose_session_marking_prompt
 from meta_agent.tools.workflow_node_reference import (
+    render_subclass_guidance_method_signatures,
     render_workflow_method_signatures,
     resolve_workflow_node_reference,
 )
@@ -274,6 +275,10 @@ def test_node_writer_contract_text_uses_reference_hook_signatures() -> None:
         spatial_reference.base_class,
         spatial_reference.step_output_schema_methods,
     )[0]
+    spatial_guidance_hooks = render_subclass_guidance_method_signatures(
+        spatial_reference.base_class,
+        spatial_reference.subclass_implementation_methods,
+    )
     file_main_utility = render_workflow_method_signatures(
         file_reference.base_class,
         file_reference.main_utility_methods,
@@ -285,6 +290,11 @@ def test_node_writer_contract_text_uses_reference_hook_signatures() -> None:
     spatial_contract_text = SpatialTemporalContractNodeCoder(client=_FakeClient()).get_node_contract_text()
     assert spatial_hook in spatial_contract_text
     assert spatial_step_output in spatial_contract_text
+    assert spatial_guidance_hooks
+    for guidance_hook in spatial_guidance_hooks:
+        assert guidance_hook in spatial_contract_text
+    assert "parsed prompt/guidance helper reachable from" in spatial_contract_text
+    assert "does not use subclass PROMPT directly during model generation" in spatial_contract_text
     file_contract_text = WorkflowFileNodeCoder(client=_FakeClient()).get_node_contract_text()
     assert file_main_utility in file_contract_text
     assert "save_files_remote(files, session_state)" not in file_contract_text

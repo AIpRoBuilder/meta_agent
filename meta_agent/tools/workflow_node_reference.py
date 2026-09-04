@@ -64,6 +64,10 @@ _META_NODE_KIND_TRAITS: dict[str, dict[str, Any]] = {
 }
 
 
+_GUIDANCE_HELPER_NAME_KEYWORDS = ("guidance", "prompt")
+_GUIDANCE_HELPER_CONTEXT_PARAMS = frozenset({"session_state", "request_payload"})
+
+
 @lru_cache(maxsize=1)
 def _workflow_nodes_module() -> Any:
 	try:
@@ -201,10 +205,40 @@ def _format_function_signature_from_ast(function_def: ast.FunctionDef | ast.Asyn
 	return f"{function_def.name}({', '.join(parameter_names)})"
 
 
+def _function_parameter_names_from_ast(
+	function_def: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+	arguments = function_def.args
+	parameter_names: list[str] = []
+
+	positional = [*arguments.posonlyargs, *arguments.args]
+	if positional and positional[0].arg in {"self", "cls"}:
+		positional = positional[1:]
+	parameter_names.extend(argument.arg for argument in positional)
+
+	if arguments.vararg is not None:
+		parameter_names.append(arguments.vararg.arg)
+
+	parameter_names.extend(argument.arg for argument in arguments.kwonlyargs)
+
+	if arguments.kwarg is not None:
+		parameter_names.append(arguments.kwarg.arg)
+
+	return tuple(parameter_names)
+
+
 @lru_cache(maxsize=None)
 def _class_method_signature_map_from_ast(base_class: type) -> dict[str, str]:
 	return {
 		function_def.name: _format_function_signature_from_ast(function_def)
+		for function_def in _class_method_defs_from_ast(base_class)
+	}
+
+
+@lru_cache(maxsize=None)
+def _class_method_parameter_name_map_from_ast(base_class: type) -> dict[str, tuple[str, ...]]:
+	return {
+		function_def.name: _function_parameter_names_from_ast(function_def)
 		for function_def in _class_method_defs_from_ast(base_class)
 	}
 
@@ -236,6 +270,38 @@ def _marked_method_names_from_attr(base_class: type, marker_attr: str) -> tuple[
 				continue
 			result.append(method_name)
 			seen.add(method_name)
+	return tuple(result)
+
+
+def _direct_self_call_method_names_from_ast(
+	function_def: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+	result: list[str] = []
+	seen: set[str] = set()
+
+	class _SelfCallVisitor(ast.NodeVisitor):
+		def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+			if node is function_def:
+				self.generic_visit(node)
+
+		def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+			if node is function_def:
+				self.generic_visit(node)
+
+		def visit_Call(self, node: ast.Call) -> None:
+			func = node.func
+			if (
+				isinstance(func, ast.Attribute)
+				and isinstance(func.value, ast.Name)
+				and func.value.id in {"self", "cls"}
+			):
+				method_name = func.attr.strip()
+				if method_name and method_name not in seen:
+					result.append(method_name)
+					seen.add(method_name)
+			self.generic_visit(node)
+
+	_SelfCallVisitor().visit(function_def)
 	return tuple(result)
 
 
@@ -342,6 +408,93 @@ def _subclass_implementation_methods(base_class: type) -> tuple[str, ...]:
 			"NODE_SUBCLASS_IMPLEMENTATION_SIGNATURE_ATTR",
 			"__ag_ui_node_subclass_implementation_signature__",
 		),
+	)
+
+
+def _guidance_helper_priority(method_name: str) -> tuple[int, int]:
+	name = method_name.lower()
+	if "guidance" in name:
+		return (0, len(name))
+	if "prompt" in name:
+		return (1, len(name))
+	return (2, len(name))
+
+
+@lru_cache(maxsize=None)
+def _subclass_guidance_method_names(
+	base_class: type,
+	subclass_implementation_methods: tuple[str, ...],
+) -> tuple[str, ...]:
+	method_defs = {
+		function_def.name: function_def
+		for function_def in _class_method_defs_from_ast(base_class)
+	}
+	if not method_defs:
+		return ()
+
+	root_methods = tuple(
+		str(method_name).strip()
+		for method_name in subclass_implementation_methods
+		if str(method_name).strip()
+	)
+	if not root_methods:
+		return ()
+
+	parameter_map = _class_method_parameter_name_map_from_ast(base_class)
+	queue = list(root_methods)
+	visited: set[str] = set()
+	candidates: list[str] = []
+	seen_candidates: set[str] = set()
+	discovery_order: dict[str, int] = {}
+
+	while queue:
+		current_name = queue.pop(0)
+		if current_name in visited:
+			continue
+		visited.add(current_name)
+
+		function_def = method_defs.get(current_name)
+		if function_def is None:
+			continue
+
+		for callee_name in _direct_self_call_method_names_from_ast(function_def):
+			if callee_name in method_defs and callee_name not in visited:
+				queue.append(callee_name)
+
+			if callee_name in root_methods or callee_name in seen_candidates:
+				continue
+
+			lower_name = callee_name.lower()
+			if not any(keyword in lower_name for keyword in _GUIDANCE_HELPER_NAME_KEYWORDS):
+				continue
+
+			parameter_names = set(parameter_map.get(callee_name, ()))
+			if not parameter_names.intersection(_GUIDANCE_HELPER_CONTEXT_PARAMS):
+				continue
+
+			discovery_order[callee_name] = len(discovery_order)
+			candidates.append(callee_name)
+			seen_candidates.add(callee_name)
+
+	return tuple(
+		sorted(
+			candidates,
+			key=lambda method_name: (
+				_guidance_helper_priority(method_name),
+				len(parameter_map.get(method_name, ())),
+				discovery_order[method_name],
+			),
+		)
+	)
+
+
+def render_subclass_guidance_method_signatures(
+	base_class: type,
+	subclass_implementation_methods: tuple[str, ...] | list[str],
+) -> tuple[str, ...]:
+	return render_workflow_method_signatures(
+		base_class,
+		_subclass_guidance_method_names(base_class, tuple(subclass_implementation_methods)),
 	)
 
 
@@ -555,6 +708,10 @@ def render_workflow_step_meta_catalog() -> str:
 	sections: list[str] = []
 	for reference in workflow_node_references():
 		step_meta = reference.step_meta
+		guidance_override_signatures = render_subclass_guidance_method_signatures(
+			reference.base_class,
+			reference.subclass_implementation_methods,
+		)
 		parts = [
 			f"### {reference.meta_node_kind}",
 			f"- capability category: {reference.capability_category}",
@@ -564,6 +721,7 @@ def render_workflow_step_meta_catalog() -> str:
 			f"- decorator-marked main utility methods: {', '.join(reference.main_utility_methods) if reference.main_utility_methods else 'none'}",
 			f"- StepRunOutput card/derived contract methods: {', '.join(reference.step_output_schema_methods) if reference.step_output_schema_methods else 'none'}",
 			f"- decorator-marked subclass implementation hooks: {', '.join(reference.subclass_implementation_methods) if reference.subclass_implementation_methods else 'none'}",
+			f"- parsed prompt/guidance helper methods from subclass-hook call path: {', '.join(guidance_override_signatures) if guidance_override_signatures else 'none'}",
 		]
 		parts.extend(
 			[
@@ -580,6 +738,10 @@ def render_workflow_step_meta_catalog() -> str:
 
 def render_workflow_node_reference(reference: WorkflowNodeReference) -> str:
 	step_meta = reference.step_meta
+	guidance_override_signatures = render_subclass_guidance_method_signatures(
+		reference.base_class,
+		reference.subclass_implementation_methods,
+	)
 	return "\n".join(
 		[
 			f"### {reference.meta_node_kind}",
@@ -590,6 +752,7 @@ def render_workflow_node_reference(reference: WorkflowNodeReference) -> str:
 			f"- decorator-marked main utility methods: {', '.join(reference.main_utility_methods) if reference.main_utility_methods else 'none'}",
 			f"- StepRunOutput card/derived contract methods: {', '.join(reference.step_output_schema_methods) if reference.step_output_schema_methods else 'none'}",
 			f"- decorator-marked subclass implementation hooks: {', '.join(reference.subclass_implementation_methods) if reference.subclass_implementation_methods else 'none'}",
+			f"- parsed prompt/guidance helper methods from subclass-hook call path: {', '.join(guidance_override_signatures) if guidance_override_signatures else 'none'}",
 			f"- structure: {str(step_meta.get('structure', '')).strip() or 'n/a'}",
 			f"- function: {str(step_meta.get('function', '')).strip() or 'n/a'}",
 			f"- implementationGuide: {str(step_meta.get('implementationGuide', '')).strip() or 'n/a'}",

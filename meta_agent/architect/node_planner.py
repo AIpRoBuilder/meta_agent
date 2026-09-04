@@ -6,6 +6,7 @@ from pydaograph import CStatus, GElement, GPipeline
 
 from meta_agent._paths import bootstrap_package_root
 from meta_agent.tools.workflow_node_reference import (
+	render_subclass_guidance_method_signatures,
 	render_workflow_method_signatures,
 	render_workflow_step_meta_catalog,
 	resolve_workflow_node_reference,
@@ -293,8 +294,17 @@ class NodePlanner:
 		elif reference.meta_node_kind == "SpatialTemporalContractNode":
 			step_output_hook = step_output_schema_signatures[0] if step_output_schema_signatures else "the inherited StepRunOutput contract method"
 			primary_hook = subclass_implementation_signatures[0] if subclass_implementation_signatures else "the selected base-node subclass hook"
+			guidance_helper_signatures = list(
+				render_subclass_guidance_method_signatures(
+					reference.base_class,
+					reference.subclass_implementation_methods,
+				)
+			)
+			guidance_helper_text = _method_list_text(guidance_helper_signatures)
 			note = (
-				f"Concrete spatial-temporal contract node: define class constants and clone(self), inherit the base {step_output_hook} StepRunOutput contract by default, and only customize {primary_hook} when the default model invocation must change."
+				f"Concrete spatial-temporal contract node: define class constants and clone(self), inherit the base {step_output_hook} StepRunOutput contract, route node-specific desc/PROMPT guidance through the smallest parsed prompt/guidance helper reachable from {primary_hook}: {guidance_helper_text}, and only customize {primary_hook} when the default model invocation must change."
+				if guidance_helper_signatures else
+				f"Concrete spatial-temporal contract node: define class constants and clone(self), inherit the base {step_output_hook} StepRunOutput contract, route node-specific desc/PROMPT guidance through the smallest prompt/guidance helper reachable from {primary_hook} when one exists, and only customize {primary_hook} when the default model invocation must change."
 			)
 
 		return {

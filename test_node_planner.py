@@ -2,6 +2,11 @@ import json
 from types import SimpleNamespace
 
 from meta_agent.architect.node_planner import NodePlanner
+from meta_agent.tools.workflow_node_reference import (
+	render_subclass_guidance_method_signatures,
+	render_workflow_method_signatures,
+	resolve_workflow_node_reference,
+)
 
 
 class _FakeCompletions:
@@ -82,6 +87,15 @@ def test_node_context_omits_legacy_service_metadata(tmp_path) -> None:
 
 def test_node_context_recommends_spatial_temporal_contract_node(tmp_path) -> None:
 	planner = NodePlanner(client=_FakeClient([]), skills_root_path=str(tmp_path / "skills"))
+	spatial_reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
+	spatial_hook = render_workflow_method_signatures(
+		spatial_reference.base_class,
+		spatial_reference.subclass_implementation_methods,
+	)[0]
+	spatial_guidance_hooks = render_subclass_guidance_method_signatures(
+		spatial_reference.base_class,
+		spatial_reference.subclass_implementation_methods,
+	)
 
 	context = planner._node_context(
 		{
@@ -99,7 +113,10 @@ def test_node_context_recommends_spatial_temporal_contract_node(tmp_path) -> Non
 	assert "recommended base class: SpatialTemporalContractNode" in context
 	assert "- meta_node_kind: SpatialTemporalContractNode" in context
 	assert "StepRunOutput schema methods: process_operation(dependency_results, session_state)" in context
-	assert "subclass implementation hooks: _generate_contract(request_payload, session_state)" in context
+	assert f"subclass implementation hooks: {spatial_hook}" in context
+	assert spatial_guidance_hooks
+	for guidance_hook in spatial_guidance_hooks:
+		assert guidance_hook in context
 
 
 def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp_path) -> None:
