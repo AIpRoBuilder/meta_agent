@@ -325,14 +325,6 @@ def check_registered_class_imports(root_path: str, target_file_path: str) -> lis
 
 
 
-_LEGACY_WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
-	"WorkflowStepNode": ("process_input",),
-	"WorkflowFileNode": ("build_step_output",),
-	"WorkflowOperationNode": ("process_operation",),
-	"WorkflowSkillNode": ("process_operation",),
-	"SpatialTemporalContractNode": ("process_operation",),
-}
-
 _WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] | None = None
 
 
@@ -344,8 +336,8 @@ def _load_workflow_base_class_to_methods() -> dict[str, tuple[str, ...]]:
 			if reference.step_output_schema_methods
 		}
 	except Exception:
-		return dict(_LEGACY_WORKFLOW_BASE_CLASS_TO_METHODS)
-	return mapping or dict(_LEGACY_WORKFLOW_BASE_CLASS_TO_METHODS)
+		return dict()
+	return mapping
 
 
 def _get_workflow_base_class_to_methods() -> dict[str, tuple[str, ...]]:
