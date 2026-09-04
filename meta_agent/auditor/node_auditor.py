@@ -13,6 +13,7 @@ from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
 from meta_agent.tools.workflow_node_reference import (
     resolve_workflow_node_reference,
     workflow_meta_node_kind_name_set,
+    workflow_node_references,
 )
 
 
@@ -96,10 +97,8 @@ class NodeAuditor(BaseAuditor):
             self._check_clone(cls, violations)
             self._check_init(cls, violations)
             self._check_step_id_matches_class_name(cls, violations)
-            self._check_step_node_dependency_results(cls, path, violations)
             self._check_file_node_no_build_step_output(cls, violations)
-            self._check_operation_node_dependency_results(cls, path, violations)
-            self._check_skill_node_dependency_results(cls, path, violations)
+            self._check_workflow_step_output_dependency_results(cls, path, violations)
             self._check_session_state_reads_use_ancestor_keys(
                 cls=cls,
                 node_file_path=path,
@@ -318,6 +317,49 @@ class NodeAuditor(BaseAuditor):
 
     def _is_spatial_temporal_contract_node_subclass(self, cls: ast.ClassDef) -> bool:
         return self._is_direct_or_attr_base_subclass(cls, {"SpatialTemporalContractNode"})
+
+    def _workflow_step_output_method_names_for_class(self, cls: ast.ClassDef) -> List[str]:
+        base_names: Set[str] = set()
+        for base in cls.bases:
+            if isinstance(base, ast.Name):
+                base_names.add(base.id)
+            elif isinstance(base, ast.Attribute):
+                base_names.add(base.attr)
+
+        method_names: List[str] = []
+        for reference in workflow_node_references():
+            if reference.meta_node_kind not in base_names:
+                continue
+            for method_name in reference.step_output_schema_methods:
+                if method_name not in method_names:
+                    method_names.append(method_name)
+        return method_names
+
+    def _check_workflow_step_output_dependency_results(
+        self,
+        cls: ast.ClassDef,
+        node_file_path: Path,
+        violations: List[RuleViolation],
+    ) -> None:
+        if not self._is_registered_class(cls):
+            return
+
+        for method_name in self._workflow_step_output_method_names_for_class(cls):
+            method = self._get_method(cls, method_name)
+            if method is None:
+                continue
+
+            parameter_names = {arg.arg for arg in method.args.args}
+            if "dependency_results" not in parameter_names:
+                continue
+
+            self._check_dependency_results_usage(
+                cls=cls,
+                node_file_path=node_file_path,
+                method=method,
+                violations=violations,
+                method_name=method_name,
+            )
 
     def _get_method(self, cls: ast.ClassDef, name: str) -> ast.FunctionDef | None:
         for node in cls.body:

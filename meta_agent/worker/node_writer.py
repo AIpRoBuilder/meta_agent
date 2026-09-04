@@ -14,6 +14,7 @@ from meta_agent.context_builder.context import GraphContextBuilder
 from meta_agent.architect.graph import Graph, NodeMeta
 from meta_agent.tools.file_tools import compile_node_file_and_get_derived_keys
 from meta_agent.tools.workflow_node_reference import (
+    render_workflow_method_signatures,
     render_workflow_node_reference,
     render_workflow_step_meta_catalog,
     resolve_workflow_node_reference,
@@ -153,6 +154,16 @@ def _parse_markdown_sections(markdown_text: str) -> dict[str, str]:
         return {}
 
     return {str(key).strip(): str(value).strip() for key, value in parsed.items()}
+
+
+def _reference_method_signature_text(reference, method_names: tuple[str, ...]) -> str:
+    signatures = render_workflow_method_signatures(reference.base_class, method_names)
+    return ", ".join(signatures) if signatures else "none"
+
+
+def _reference_primary_method_signature(reference, method_names: tuple[str, ...], fallback: str) -> str:
+    signatures = render_workflow_method_signatures(reference.base_class, method_names)
+    return signatures[0] if signatures else fallback
     
 
 @dataclass
@@ -243,6 +254,11 @@ class PromptNodeFileCoderBase(Coder):
             meta_node_kind=node_meta.meta_node_kind or None,
             ext_data=node_meta.ext_data,
         )
+        selected_subclass_hook = _reference_primary_method_signature(
+            selected_reference,
+            selected_reference.subclass_implementation_methods,
+            "the selected base-node subclass hook",
+        )
         depends_text = self._format_depends(node_meta.depends)
         ext_data_text = self._format_ext_data(node_meta.ext_data)
         inputs_format_text = self._format_inputs_format(node_meta.inputs_format)
@@ -291,16 +307,11 @@ class PromptNodeFileCoderBase(Coder):
         ext_data = node_meta.ext_data if isinstance(node_meta.ext_data, Mapping) else {}
         ext_type = str(ext_data.get("type", "none")).strip().lower()
         if ext_type in ("user_input", "skill") and inputs_format_text != "none":
-            handler_map = {
-                "user_input": ("user_input", "process_input"),
-                "skill": ("process_operation", "process_skill / run"),
-            }
-            _, handler_fn = handler_map.get(ext_type, (ext_type, "process_input"))
             user_prompt += (
                 "Input schema constraints (authoritative):\n"
                 f"- This node is ext_data.type='{ext_type}' with explicit inputs_format.\n"
                 f"- inputs_format: {inputs_format_text}\n"
-                f"- In {handler_fn}, parse/validate user_input against this schema and produce structured derived fields using the same keys when reasonable.\n\n"
+                f"- In {selected_subclass_hook}, parse/validate user_input against this schema and produce structured derived fields using the same keys when reasonable.\n\n"
             )
 
         if node_markdown_reference:
@@ -351,7 +362,7 @@ class PromptNodeFileCoderBase(Coder):
                     "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                     "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
                     "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
-                    "- In process_input/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                    f"- In {selected_subclass_hook}, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
                     "- First resolve required values from dependency_results/session_state; if still unresolved, use safe fallback handling and then validate/fail clearly when still missing.\n"
                     "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
                     f"{context_text}"
@@ -512,7 +523,7 @@ class PromptNodeFileCoderBase(Coder):
                 "\n\nDependency context from GraphContextBuilder (authoritative):\n"
                 "- Infer each dependency node's STEP_ID and available derived keys from this context.\n"
                 "- Prefer using the context node's derived key-values as the first-choice upstream fields.\n"
-                "- In process_input/process_operation, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
+                "- In the selected subclass hook or inherited runtime path, extract upstream variables from dependency_results using only those dependency STEP_IDs and derived keys.\n"
                 "- Strict rule: node's get keys from derived must strictly come from dependency_context; do not access derived keys outside dependency_context.\n"
                 "- First resolve required values from dependency_results/session_state; if still unresolved, use safe fallback handling and then validate/fail clearly when still missing.\n"
                 "- Avoid guessed upstream field names; if a needed key is uncertain, use safe fallback handling without TODO markers.\n\n"
@@ -552,9 +563,11 @@ class PromptNodeFileCoderBase(Coder):
 @dataclass
 class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
     def get_node_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowOperationNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Generate a WorkflowOperationNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Implement business logic in process_operation(dependency_results, session_state) and return StepRunOutput.\n"
+            f"Implement business logic in {subclass_hook_text} and return StepRunOutput.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
             "When a required variable is absent in both dependency_results[step_id].derived and session_state, use safe fallback handling before returning explicit validation errors.\n"
@@ -565,9 +578,11 @@ class WorkflowOperationNodeCoder(PromptNodeFileCoderBase):
         )
 
     def get_feedback_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowOperationNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Preserve the WorkflowOperationNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_operation returning StepRunOutput).\n"
+            f"(STEP_ID/TITLE/PROMPT/DEPENDENCIES and {subclass_hook_text} returning StepRunOutput).\n"
         )
 
 
@@ -600,30 +615,41 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
         if isinstance(ext_data, Mapping):
             remote_desc = str(ext_data.get("remote_desc", "")).strip()
 
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowFileNode")
+        main_utility_text = _reference_method_signature_text(reference, reference.main_utility_methods)
+        step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
+
         if not remote_desc:
             return (
                 base_prompt
                 + "\n\nWorkflowFileNode generation rule (authoritative):\n"
                 + "- Do not implement any custom methods.\n"
-                + "- Rely on WorkflowFileNode base implementation for save_files/save_files_remote/build_step_output.\n"
+                + "- The selected WorkflowFileNode base reference exposes no decorator-marked subclass implementation hook.\n"
+                + f"- Rely on the inherited main utility {main_utility_text} and StepRunOutput contract {step_output_text}.\n"
                 + "- Only define required class constants (STEP_ID, TITLE, PROMPT, DEPENDENCIES).\n"
             )
 
         return (
             base_prompt
             + "\n\nWorkflowFileNode remote persistence rule (authoritative):\n"
-            + "- ext_data.remote_desc is provided; implement save_files_remote(files, session_state) based on it.\n"
+            + "- ext_data.remote_desc is provided; add only the smallest custom remote-persistence override truly required by it.\n"
             + f"- remote_desc: {remote_desc}\n"
+            + f"- Inherited main utility: {main_utility_text}\n"
+            + f"- Inherited StepRunOutput contract method: {step_output_text}\n"
             + "- Do not modify or override other base persistence/output methods unless strictly required by remote_desc.\n"
         )
 
     def get_node_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowFileNode")
+        main_utility_text = _reference_method_signature_text(reference, reference.main_utility_methods)
+        step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
         return (
             "Generate a WorkflowFileNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
-            "By default, do not implement any custom methods; rely on WorkflowFileNode base behavior.\n"
-            "Only when ext_data.remote_desc is present, implement save_files_remote(files, session_state) according to remote_desc.\n"
-            "saved_files contains uploaded files already persisted by WorkflowFileNode save_files/save_files_remote, including original fileName(fileName) and saved location(path).\n"
+            "By default, do not implement any custom methods; the selected WorkflowFileNode base reference exposes no decorator-marked subclass hook for this node kind.\n"
+            f"Rely on inherited main utility {main_utility_text} and StepRunOutput contract {step_output_text}.\n"
+            "Only when ext_data.remote_desc is present and truly requires custom remote persistence, add the smallest override needed for that behavior.\n"
+            "saved_files contains uploaded files already persisted by the inherited WorkflowFileNode storage path, including original fileName(fileName) and saved location(path).\n"
             "Keep card payload JSON-serializable and derived payload structured for downstream nodes.\n"
             "Ensure this node expects user file input and supports multiple uploaded files.\n\n"
         )
@@ -632,7 +658,7 @@ class WorkflowFileNodeCoder(PromptNodeFileCoderBase):
         return (
             "Preserve the WorkflowFileNode contract "
             "(STEP_ID/TITLE/PROMPT/DEPENDENCIES). "
-            "Default to no custom methods; only override save_files_remote(files, session_state) when remote storage behavior is explicitly required (e.g., ext_data.remote_desc).\n"
+            "Default to no custom methods; only add the smallest remote-persistence override when remote storage behavior is explicitly required (for example ext_data.remote_desc).\n"
         )
 
 
@@ -660,42 +686,56 @@ class SpatialTemporalContractNodeCoder(PromptNodeFileCoderBase):
             node_contract_text=node_contract_text,
         )
 
+        reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
+        step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
+
         return (
             base_prompt
             + "\n\nSpatialTemporalContractNode runtime contract (authoritative):\n"
             + "- Subclass SpatialTemporalContractNode.\n"
             + "- Define STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            + "- Keep implementation minimal: add only clone(self) -> self; rely on the base class for run/process_operation.\n"
-            + "- Do not implement process_input/process_operation unless the requirement explicitly demands custom contract-generation logic.\n"
+            + f"- Keep implementation minimal: add only clone(self) -> self; rely on the base class for run and inherited StepRunOutput contract {step_output_text}.\n"
+            + f"- Do not replace {step_output_text} unless the requirement explicitly demands custom contract-generation logic.\n"
+            + f"- If custom contract-generation behavior is required, prefer overriding {subclass_hook_text}, which upstream marks as the subclass-customization hook.\n"
             + "- Ensure the contract description comes from session_state['spatialTemporalContractDescription'] or an upstream dependency output/card.\n"
             + "- The base class returns StepRunOutput with derived keys such as spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n"
             + "- This node is non-interactive; do not introduce direct user input handling or inputs_format parsing.\n"
         )
 
     def get_node_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
+        step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Generate a SpatialTemporalContractNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
             "Keep implementation minimal: only imports, class constants, and clone(self) returning self.\n"
-            "Do NOT implement process_input, process_operation, run, or __init__ unless the requirement explicitly asks to customize the base contract-generation behavior.\n"
+            f"Do NOT replace inherited runtime methods such as {step_output_text}, run, or __init__ unless the requirement explicitly asks to customize the base contract-generation behavior.\n"
+            f"When customization is required, prefer overriding {subclass_hook_text} instead of replacing {step_output_text}.\n"
             "This node is non-interactive and should not parse direct user input or define inputs_format.\n"
             "Ensure upstream dependencies or session_state provide spatialTemporalContractDescription or equivalent descriptive text for the base class to consume.\n"
             "The inherited base implementation will resolve the description, call the configured model, and return StepRunOutput with derived keys including spatialTemporalContract, spatialTemporalContractJson, objectCount, relationCount, model, rawResponse, and optional usage.\n\n"
         )
 
     def get_feedback_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="SpatialTemporalContractNode")
+        step_output_text = _reference_method_signature_text(reference, reference.step_output_schema_methods)
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Preserve the SpatialTemporalContractNode contract "
             "(STEP_ID/TITLE/PROMPT/DEPENDENCIES plus clone returning self). "
-            "Keep run/process_operation inherited from the base class unless feedback explicitly requires a custom override.\n"
+            f"Keep run and {step_output_text} inherited from the base class unless feedback explicitly requires a custom {subclass_hook_text} override.\n"
         )
 
 
 @dataclass
 class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
     def get_node_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowStepNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Generate a WorkflowStepNode subclass with STEP_ID, TITLE, PROMPT, and DEPENDENCIES.\n"
-            "Implement business logic in process_input(user_input, dependency_results, session_state) and return StepRunOutput.\n"
+            f"Implement business logic in {subclass_hook_text} and return StepRunOutput.\n"
             "If node metadata includes inputs_format, parse/validate user_input according to that schema (field names + primitive types).\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
             "Read upstream values from dependency_results[step_id].derived and persist cross-step values in session_state.\n"
@@ -706,9 +746,11 @@ class WorkflowStepNodeCoder(PromptNodeFileCoderBase):
         )
 
     def get_feedback_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowStepNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Preserve the WorkflowStepNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES and process_input returning StepRunOutput).\n"
+            f"(STEP_ID/TITLE/PROMPT/DEPENDENCIES and {subclass_hook_text} returning StepRunOutput).\n"
         )
 
 
@@ -764,6 +806,8 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         skill_name = self._extract_skill_name(node_meta)
         skill_markdown = self._read_skill_markdown(skills_root, skill_name)
         skill_using, skill_examples = self._extract_skill_sections(skill_markdown)
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowSkillNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
 
         skill_context_lines = [
             "",
@@ -798,8 +842,8 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
                 "- Subclass WorkflowSkillNode.",
                 "- Set SKILL_DIR to the exact skill directory path shown above.",
                 "- Set SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md') so the base class parses the skill doc on init.",
-                "- Implement process_operation(user_input, dependency_results, session_state) -> StepRunOutput.",
-                "- In process_operation, invoke the skill using the pattern described in the ## Using section; use self.skill_using and self.skill_examples for inline reference if needed.",
+                f"- Implement {subclass_hook_text} -> StepRunOutput.",
+                f"- In {subclass_hook_text}, invoke the skill using the pattern described in the ## Using section; use self.skill_using and self.skill_examples for inline reference if needed.",
                 "- Use user_input when present; keep robust fallback behavior if user_input is empty.",
                 "- Read upstream values from dependency_results[step_id].derived as needed.",
                 "- Do not hardcode skill logic that contradicts skill.md ## Using; follow it exactly.",
@@ -810,12 +854,14 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         return base_prompt + "\n" + "\n".join(skill_context_lines)
 
     def get_node_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowSkillNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Generate a WorkflowSkillNode subclass with STEP_ID, TITLE, PROMPT, DEPENDENCIES, SKILL_DIR, and SKILL_MD_PATH.\n"
             "Set SKILL_DIR to the absolute path of the chosen skill directory.\n"
             "Set SKILL_MD_PATH = str(Path(SKILL_DIR) / 'skill.md') — the base class reads and parses it on __init__.\n"
             "After __init__, self.skill_description, self.skill_using, self.skill_examples are available as strings parsed from skill.md.\n"
-            "Implement skill invocation in process_operation(user_input, dependency_results, session_state) and return StepRunOutput.\n"
+            f"Implement skill invocation in {subclass_hook_text} and return StepRunOutput.\n"
             "Use user_input when meaningful for the skill behavior; tolerate empty user_input when the step does not require it.\n"
             "Invoke the skill according to the ## Using section of skill.md; do not invent an invocation pattern.\n"
             "Keep implementation minimal: only imports, constants, and methods required by this node contract.\n"
@@ -827,7 +873,9 @@ class WorkflowSkillNodeCoder(PromptNodeFileCoderBase):
         )
 
     def get_feedback_contract_text(self) -> str:
+        reference = resolve_workflow_node_reference(meta_node_kind="WorkflowSkillNode")
+        subclass_hook_text = _reference_method_signature_text(reference, reference.subclass_implementation_methods)
         return (
             "Preserve the WorkflowSkillNode contract "
-            "(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SKILL_DIR/SKILL_MD_PATH and process_operation returning StepRunOutput).\n"
+            f"(STEP_ID/TITLE/PROMPT/DEPENDENCIES/SKILL_DIR/SKILL_MD_PATH and {subclass_hook_text} returning StepRunOutput).\n"
         )

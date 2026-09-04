@@ -71,9 +71,11 @@ def test_node_context_omits_legacy_service_metadata(tmp_path) -> None:
 		1,
 	)
 
-	assert "derived node kind: operation" in context
+	assert "- meta_node_kind: WorkflowOperationNode" in context
 	assert "recommended base class: WorkflowOperationNode" in context
-	assert "primary functions: process_operation" in context
+	assert "main utility methods: process_operation(dependency_results, session_state)" in context
+	assert "StepRunOutput schema methods: process_operation(dependency_results, session_state)" in context
+	assert "subclass implementation hooks: process_operation(dependency_results, session_state)" in context
 	assert "service_name" not in context
 	assert "- services:" not in context
 
@@ -95,8 +97,9 @@ def test_node_context_recommends_spatial_temporal_contract_node(tmp_path) -> Non
 	)
 
 	assert "recommended base class: SpatialTemporalContractNode" in context
-	assert "derived node kind: spatial_temporal_contract" in context
-	assert "primary functions: clone" in context
+	assert "- meta_node_kind: SpatialTemporalContractNode" in context
+	assert "StepRunOutput schema methods: process_operation(dependency_results, session_state)" in context
+	assert "subclass implementation hooks: _generate_contract(request_payload, session_state)" in context
 
 
 def test_amend_graph_node_from_files_updates_graph_and_regenerates_node_plan(tmp_path) -> None:

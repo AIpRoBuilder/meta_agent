@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
 import inspect
-from importlib import import_module
+import textwrap
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib import import_module
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -15,6 +18,9 @@ class WorkflowNodeReference:
 	input_required: bool
 	recommended_ext_data_type: str
 	planner_hooks: tuple[str, ...]
+	main_utility_methods: tuple[str, ...]
+	subclass_implementation_methods: tuple[str, ...]
+	step_output_schema_methods: tuple[str, ...]
 	summary: str
 	step_meta: dict[str, Any]
 	supports_inputs_format: bool
@@ -69,6 +75,14 @@ def _workflow_nodes_module() -> Any:
 		) from exc
 
 
+@lru_cache(maxsize=1)
+def _workflow_tools_module() -> Any | None:
+	try:
+		return import_module("ag_ui_workflow.tools")
+	except Exception:
+		return None
+
+
 def _base_node_classes() -> tuple[type, ...]:
 	workflow_nodes = _workflow_nodes_module()
 	result: list[type] = []
@@ -108,28 +122,336 @@ def _supports_inputs_format(meta_node_kind: str) -> bool:
 	return bool(_traits_for_meta_node_kind(meta_node_kind)["supports_inputs_format"])
 
 
-def _planner_hooks(base_class: type, meta_node_kind: str) -> tuple[str, ...]:
-	available_methods = {
-		name
-		for name, value in inspect.getmembers(base_class, predicate=callable)
-		if not name.startswith("__")
+def _unwrap_descriptor(value: Any) -> Any:
+	if isinstance(value, (classmethod, staticmethod)):
+		return value.__func__
+	return value
+
+
+def _workflow_marker_attr_name(const_name: str, default: str) -> str:
+	workflow_tools = _workflow_tools_module()
+	if workflow_tools is None:
+		return default
+	value = getattr(workflow_tools, const_name, "")
+	text = str(value).strip()
+	return text or default
+
+
+def _decorator_name(decorator: ast.AST) -> str:
+	if isinstance(decorator, ast.Name):
+		return decorator.id
+	if isinstance(decorator, ast.Attribute):
+		return decorator.attr
+	if isinstance(decorator, ast.Call):
+		return _decorator_name(decorator.func)
+	return ""
+
+
+@lru_cache(maxsize=None)
+def _class_method_defs_from_ast(
+	base_class: type,
+) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
+	source_path = inspect.getsourcefile(base_class) or inspect.getfile(base_class)
+	if not source_path:
+		return ()
+	try:
+		source = Path(source_path).read_text(encoding="utf-8")
+		tree = ast.parse(source)
+	except Exception:
+		return ()
+
+	class_name = base_class.__name__
+	class_def = next(
+		(
+			node
+			for node in ast.walk(tree)
+			if isinstance(node, ast.ClassDef) and node.name == class_name
+		),
+		None,
+	)
+	if class_def is None:
+		return ()
+
+	return tuple(
+		stmt
+		for stmt in class_def.body
+		if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+	)
+
+
+def _format_function_signature_from_ast(function_def: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+	arguments = function_def.args
+	parameter_names: list[str] = []
+
+	positional = [*arguments.posonlyargs, *arguments.args]
+	if positional and positional[0].arg in {"self", "cls"}:
+		positional = positional[1:]
+	parameter_names.extend(argument.arg for argument in positional)
+
+	if arguments.vararg is not None:
+		parameter_names.append(f"*{arguments.vararg.arg}")
+	elif arguments.kwonlyargs:
+		parameter_names.append("*")
+
+	parameter_names.extend(argument.arg for argument in arguments.kwonlyargs)
+
+	if arguments.kwarg is not None:
+		parameter_names.append(f"**{arguments.kwarg.arg}")
+
+	return f"{function_def.name}({', '.join(parameter_names)})"
+
+
+@lru_cache(maxsize=None)
+def _class_method_signature_map_from_ast(base_class: type) -> dict[str, str]:
+	return {
+		function_def.name: _format_function_signature_from_ast(function_def)
+		for function_def in _class_method_defs_from_ast(base_class)
 	}
-	if meta_node_kind == "WorkflowStepNode" and "process_input" in available_methods:
-		return ("process_input",)
-	if meta_node_kind == "SpatialTemporalContractNode":
-		if "clone" in available_methods:
-			return ("clone",)
-		if "process_operation" in available_methods:
-			return ("process_operation",)
-		return tuple()
-	if meta_node_kind in {"WorkflowOperationNode", "WorkflowSkillNode"} and "process_operation" in available_methods:
-		return ("process_operation",)
-	if meta_node_kind == "WorkflowFileNode":
-		if "save_files_remote" in available_methods:
-			return ("save_files_remote",)
-		if "build_step_output" in available_methods:
-			return ("build_step_output",)
-	return tuple()
+
+
+def _marked_method_names_from_ast(base_class: type, decorator_name: str) -> tuple[str, ...]:
+	result: list[str] = []
+	seen: set[str] = set()
+	for function_def in _class_method_defs_from_ast(base_class):
+		if not any(_decorator_name(decorator) == decorator_name for decorator in function_def.decorator_list):
+			continue
+		if function_def.name in seen:
+			continue
+		result.append(function_def.name)
+		seen.add(function_def.name)
+	return tuple(result)
+
+
+def _marked_method_names_from_attr(base_class: type, marker_attr: str) -> tuple[str, ...]:
+	result: list[str] = []
+	seen: set[str] = set()
+	for owner in base_class.__mro__:
+		for value in owner.__dict__.values():
+			func = _unwrap_descriptor(value)
+			marker = getattr(func, marker_attr, None)
+			if not isinstance(marker, str):
+				continue
+			method_name = marker.strip()
+			if not method_name or method_name in seen:
+				continue
+			result.append(method_name)
+			seen.add(method_name)
+	return tuple(result)
+
+
+def _format_signature_from_callable(method_name: str, method_obj: Any) -> str:
+	try:
+		signature = inspect.signature(method_obj)
+	except Exception:
+		return method_name
+
+	parameter_names: list[str] = []
+	inserted_kwonly_separator = False
+	has_vararg = False
+	for index, parameter in enumerate(signature.parameters.values()):
+		if index == 0 and parameter.name in {"self", "cls"}:
+			continue
+		if parameter.kind in (
+			inspect.Parameter.POSITIONAL_ONLY,
+			inspect.Parameter.POSITIONAL_OR_KEYWORD,
+		):
+			parameter_names.append(parameter.name)
+			continue
+		if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+			parameter_names.append(f"*{parameter.name}")
+			has_vararg = True
+			continue
+		if parameter.kind == inspect.Parameter.KEYWORD_ONLY:
+			if not has_vararg and not inserted_kwonly_separator:
+				parameter_names.append("*")
+				inserted_kwonly_separator = True
+			parameter_names.append(parameter.name)
+			continue
+		if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+			parameter_names.append(f"**{parameter.name}")
+
+	return f"{method_name}({', '.join(parameter_names)})"
+
+
+def render_workflow_method_signatures(
+	base_class: type,
+	method_names: tuple[str, ...] | list[str],
+) -> tuple[str, ...]:
+	signature_map = _class_method_signature_map_from_ast(base_class)
+	rendered: list[str] = []
+	seen: set[str] = set()
+	for method_name in method_names:
+		normalized_name = str(method_name).strip()
+		if not normalized_name:
+			continue
+		signature_text = signature_map.get(normalized_name)
+		if signature_text is None:
+			method_obj = getattr(base_class, normalized_name, None)
+			signature_text = _format_signature_from_callable(normalized_name, method_obj)
+		if signature_text in seen:
+			continue
+		rendered.append(signature_text)
+		seen.add(signature_text)
+	return tuple(rendered)
+
+
+def _main_utility_methods(base_class: type) -> tuple[str, ...]:
+	from_ast = _marked_method_names_from_ast(base_class, "node_main_utility")
+	if from_ast:
+		return from_ast
+	workflow_tools = _workflow_tools_module()
+	getter = getattr(workflow_tools, "get_node_main_utility_signature", None) if workflow_tools else None
+	if callable(getter):
+		try:
+			method_name = getter(base_class)
+		except Exception:
+			method_name = None
+		if isinstance(method_name, str) and method_name.strip():
+			return (method_name.strip(),)
+	return _marked_method_names_from_attr(
+		base_class,
+		_workflow_marker_attr_name(
+			"NODE_MAIN_UTILITY_SIGNATURE_ATTR",
+			"__ag_ui_node_main_utility_signature__",
+		),
+	)
+
+
+def _subclass_implementation_methods(base_class: type) -> tuple[str, ...]:
+	from_ast = _marked_method_names_from_ast(base_class, "node_subclass_implementation")
+	if from_ast:
+		return from_ast
+	workflow_tools = _workflow_tools_module()
+	getter = getattr(workflow_tools, "get_node_subclass_implementation_signatures", None) if workflow_tools else None
+	if callable(getter):
+		try:
+			method_names = getter(base_class)
+		except Exception:
+			method_names = None
+		if isinstance(method_names, (list, tuple)):
+			normalized = tuple(
+				str(name).strip()
+				for name in method_names
+				if isinstance(name, str) and str(name).strip()
+			)
+			if normalized:
+				return normalized
+	return _marked_method_names_from_attr(
+		base_class,
+		_workflow_marker_attr_name(
+			"NODE_SUBCLASS_IMPLEMENTATION_SIGNATURE_ATTR",
+			"__ag_ui_node_subclass_implementation_signature__",
+		),
+	)
+
+
+def _is_step_run_output_call(value: ast.AST | None) -> bool:
+	if not isinstance(value, ast.Call):
+		return False
+	func = value.func
+	return (
+		isinstance(func, ast.Name) and func.id == "StepRunOutput"
+	) or (
+		isinstance(func, ast.Attribute) and func.attr == "StepRunOutput"
+	)
+
+
+def _method_returns_step_run_output(method_obj: Any) -> bool:
+	try:
+		signature = inspect.signature(method_obj)
+	except Exception:
+		signature = None
+	if signature is not None:
+		annotation = signature.return_annotation
+		if annotation is not inspect.Signature.empty:
+			annotation_text = getattr(annotation, "__name__", str(annotation))
+			if "StepRunOutput" in annotation_text:
+				return True
+
+	try:
+		source = textwrap.dedent(inspect.getsource(method_obj))
+		tree = ast.parse(source)
+	except Exception:
+		return False
+
+	function_def = next(
+		(
+			node
+			for node in tree.body
+			if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+		),
+		None,
+	)
+	if function_def is None:
+		return False
+
+	step_output_bindings: set[str] = set()
+	for node in ast.walk(function_def):
+		if isinstance(node, ast.Assign) and _is_step_run_output_call(node.value):
+			for target in node.targets:
+				if isinstance(target, ast.Name):
+					step_output_bindings.add(target.id)
+			continue
+		if (
+			isinstance(node, ast.AnnAssign)
+			and isinstance(node.target, ast.Name)
+			and _is_step_run_output_call(node.value)
+		):
+			step_output_bindings.add(node.target.id)
+			continue
+		if not isinstance(node, ast.Return):
+			continue
+		if _is_step_run_output_call(node.value):
+			return True
+		if isinstance(node.value, ast.Name) and node.value.id in step_output_bindings:
+			return True
+	return False
+
+
+def _class_defined_method_objects(base_class: type) -> tuple[tuple[str, Any], ...]:
+	result: list[tuple[str, Any]] = []
+	for name, value in base_class.__dict__.items():
+		if name.startswith("__"):
+			continue
+		func = _unwrap_descriptor(value)
+		if callable(func):
+			result.append((name, func))
+	return tuple(result)
+
+
+def _step_output_schema_methods(
+	base_class: type,
+	main_utility_methods: tuple[str, ...],
+	subclass_implementation_methods: tuple[str, ...],
+) -> tuple[str, ...]:
+	result: list[str] = []
+	seen: set[str] = set()
+
+	def _append_if_step_output(method_name: str) -> None:
+		if not method_name or method_name in seen:
+			return
+		method_obj = getattr(base_class, method_name, None)
+		if method_obj is None or not _method_returns_step_run_output(method_obj):
+			return
+		result.append(method_name)
+		seen.add(method_name)
+
+	for method_name in main_utility_methods:
+		_append_if_step_output(method_name)
+	if result:
+		return tuple(result)
+
+	for method_name in subclass_implementation_methods:
+		_append_if_step_output(method_name)
+	if result:
+		return tuple(result)
+
+	for method_name, method_obj in _class_defined_method_objects(base_class):
+		if method_name in seen or not _method_returns_step_run_output(method_obj):
+			continue
+		result.append(method_name)
+		seen.add(method_name)
+	return tuple(result)
 
 
 def _summary_from_step_meta(step_meta: Mapping[str, Any]) -> str:
@@ -154,6 +476,13 @@ def workflow_node_references() -> tuple[WorkflowNodeReference, ...]:
 		step_meta = dict(base_class.step_meta())
 		meta_node_kind = _step_meta_node_kind(base_class, step_meta)
 		traits = _traits_for_meta_node_kind(meta_node_kind)
+		main_utility_methods = _main_utility_methods(base_class)
+		subclass_implementation_methods = _subclass_implementation_methods(base_class)
+		step_output_schema_methods = _step_output_schema_methods(
+			base_class,
+			main_utility_methods,
+			subclass_implementation_methods,
+		)
 		references.append(
 			WorkflowNodeReference(
 				base_class=base_class,
@@ -161,7 +490,10 @@ def workflow_node_references() -> tuple[WorkflowNodeReference, ...]:
 				capability_category=str(traits["capability_category"]),
 				input_required=bool(step_meta.get("inputRequired", False)),
 				recommended_ext_data_type=_recommended_ext_data_type(meta_node_kind),
-				planner_hooks=_planner_hooks(base_class, meta_node_kind),
+				planner_hooks=subclass_implementation_methods,
+				main_utility_methods=main_utility_methods,
+				subclass_implementation_methods=subclass_implementation_methods,
+				step_output_schema_methods=step_output_schema_methods,
 				summary=_summary_from_step_meta(step_meta),
 				step_meta=step_meta,
 				supports_inputs_format=_supports_inputs_format(meta_node_kind),
@@ -228,9 +560,11 @@ def render_workflow_step_meta_catalog() -> str:
 			f"- capability category: {reference.capability_category}",
 			f"- recommended ext_data.type: {reference.recommended_ext_data_type}",
 			f"- inputRequired: {str(reference.input_required).lower()}",
+			f"- supports inputs_format: {str(reference.supports_inputs_format).lower()}",
+			f"- decorator-marked main utility methods: {', '.join(reference.main_utility_methods) if reference.main_utility_methods else 'none'}",
+			f"- StepRunOutput card/derived contract methods: {', '.join(reference.step_output_schema_methods) if reference.step_output_schema_methods else 'none'}",
+			f"- decorator-marked subclass implementation hooks: {', '.join(reference.subclass_implementation_methods) if reference.subclass_implementation_methods else 'none'}",
 		]
-		if reference.planner_hooks:
-			parts.append(f"- primary subclass hooks: {', '.join(reference.planner_hooks)}")
 		parts.extend(
 			[
 				"- step_meta reference:",
@@ -253,7 +587,9 @@ def render_workflow_node_reference(reference: WorkflowNodeReference) -> str:
 			f"- recommended ext_data.type: {reference.recommended_ext_data_type}",
 			f"- inputRequired: {str(reference.input_required).lower()}",
 			f"- supports inputs_format: {str(reference.supports_inputs_format).lower()}",
-			f"- primary subclass hooks: {', '.join(reference.planner_hooks) if reference.planner_hooks else 'none'}",
+			f"- decorator-marked main utility methods: {', '.join(reference.main_utility_methods) if reference.main_utility_methods else 'none'}",
+			f"- StepRunOutput card/derived contract methods: {', '.join(reference.step_output_schema_methods) if reference.step_output_schema_methods else 'none'}",
+			f"- decorator-marked subclass implementation hooks: {', '.join(reference.subclass_implementation_methods) if reference.subclass_implementation_methods else 'none'}",
 			f"- structure: {str(step_meta.get('structure', '')).strip() or 'n/a'}",
 			f"- function: {str(step_meta.get('function', '')).strip() or 'n/a'}",
 			f"- implementationGuide: {str(step_meta.get('implementationGuide', '')).strip() or 'n/a'}",

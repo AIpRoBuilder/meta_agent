@@ -6,6 +6,7 @@ from pydaograph import CStatus, GElement, GPipeline
 
 from meta_agent._paths import bootstrap_package_root
 from meta_agent.tools.workflow_node_reference import (
+	render_workflow_method_signatures,
 	render_workflow_step_meta_catalog,
 	resolve_workflow_node_reference,
 	workflow_node_references,
@@ -15,6 +16,10 @@ from meta_agent.tools.workflow_node_reference import (
 ROOT_DIR = bootstrap_package_root(__file__)
 
 from meta_agent.llm_client.coder import Coder, MAX_TOKENS, append_instruction_block
+
+
+def _method_list_text(method_signatures: list[str]) -> str:
+	return ", ".join(method_signatures) if method_signatures else "none"
 
 
 class _NodePlanElement(GElement):
@@ -261,6 +266,15 @@ class NodePlanner:
 			meta_node_kind=node.get("meta_node_kind") or node.get("metaNodeKind") if isinstance(node, dict) else None,
 			ext_data=ext_data,
 		)
+		main_utility_signatures = list(
+			render_workflow_method_signatures(reference.base_class, reference.main_utility_methods)
+		)
+		step_output_schema_signatures = list(
+			render_workflow_method_signatures(reference.base_class, reference.step_output_schema_methods)
+		)
+		subclass_implementation_signatures = list(
+			render_workflow_method_signatures(reference.base_class, reference.subclass_implementation_methods)
+		)
 		ext_type = reference.recommended_ext_data_type
 		if isinstance(ext_data, dict):
 			ext_type = str(ext_data.get("type", "")).strip().lower() or ext_type
@@ -272,12 +286,15 @@ class NodePlanner:
 
 		note = reference.summary
 		if reference.meta_node_kind == "WorkflowSkillNode" and skill_name:
+			primary_hook = subclass_implementation_signatures[0] if subclass_implementation_signatures else "the selected base-node subclass hook"
 			note = (
-				f"Skill node wrapping skill '{skill_name}': set SKILL_DIR / SKILL_MD_PATH and implement process_operation around the parsed skill.md guidance."
+				f"Skill node wrapping skill '{skill_name}': set SKILL_DIR / SKILL_MD_PATH and implement {primary_hook} around the parsed skill.md guidance."
 			)
 		elif reference.meta_node_kind == "SpatialTemporalContractNode":
+			step_output_hook = step_output_schema_signatures[0] if step_output_schema_signatures else "the inherited StepRunOutput contract method"
+			primary_hook = subclass_implementation_signatures[0] if subclass_implementation_signatures else "the selected base-node subclass hook"
 			note = (
-				"Concrete spatial-temporal contract node: define class constants and a trivial clone method, then inherit the base process_operation(...) logic."
+				f"Concrete spatial-temporal contract node: define class constants and clone(self), inherit the base {step_output_hook} StepRunOutput contract by default, and only customize {primary_hook} when the default model invocation must change."
 			)
 
 		return {
@@ -285,7 +302,12 @@ class NodePlanner:
 			"metaNodeKind": reference.meta_node_kind,
 			"capabilityCategory": reference.capability_category,
 			"baseClass": reference.meta_node_kind,
-			"primaryFunctions": list(reference.planner_hooks),
+			"mainUtilityMethods": list(reference.main_utility_methods),
+			"mainUtilitySignatures": main_utility_signatures,
+			"stepOutputSchemaMethods": list(reference.step_output_schema_methods),
+			"stepOutputSchemaSignatures": step_output_schema_signatures,
+			"subclassImplementationMethods": list(reference.subclass_implementation_methods),
+			"subclassImplementationSignatures": subclass_implementation_signatures,
 			"note": note,
 		}
 
@@ -334,7 +356,9 @@ class NodePlanner:
 				[
 					f"- capability category: {profile['capabilityCategory']}",
 					f"- recommended base class: {profile['baseClass']}",
-					f"- primary functions: {', '.join(profile['primaryFunctions'])}",
+					f"- main utility methods: {_method_list_text(profile['mainUtilitySignatures'])}",
+					f"- StepRunOutput schema methods: {_method_list_text(profile['stepOutputSchemaSignatures'])}",
+					f"- subclass implementation hooks: {_method_list_text(profile['subclassImplementationSignatures'])}",
 					f"- note: {profile['note']}",
 					"",
 				]
@@ -385,7 +409,9 @@ class NodePlanner:
 			[
 				f"- capability category: {profile['capabilityCategory']}",
 				f"- recommended base class: {profile['baseClass']}",
-				f"- primary functions: {', '.join(profile['primaryFunctions'])}",
+				f"- main utility methods: {_method_list_text(profile['mainUtilitySignatures'])}",
+				f"- StepRunOutput schema methods: {_method_list_text(profile['stepOutputSchemaSignatures'])}",
+				f"- subclass implementation hooks: {_method_list_text(profile['subclassImplementationSignatures'])}",
 				f"- note: {profile['note']}",
 			]
 		)

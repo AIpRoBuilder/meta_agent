@@ -7,6 +7,8 @@ import textwrap
 import uuid
 from typing import Any, Mapping
 
+from meta_agent.tools.workflow_node_reference import workflow_node_references
+
 # NOTE: ag_ui_workflow.nodes imports are done lazily inside functions below to
 # avoid circular imports (nodes.py imports parse_skill_md / extract_skill_commands
 # from this module).
@@ -322,13 +324,35 @@ def check_registered_class_imports(root_path: str, target_file_path: str) -> lis
 	return sorted(list(missing))
 
 
-_WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
+
+_LEGACY_WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] = {
 	"WorkflowStepNode": ("process_input",),
 	"WorkflowFileNode": ("build_step_output",),
 	"WorkflowOperationNode": ("process_operation",),
 	"WorkflowSkillNode": ("process_operation",),
 	"SpatialTemporalContractNode": ("process_operation",),
 }
+
+_WORKFLOW_BASE_CLASS_TO_METHODS: dict[str, tuple[str, ...]] | None = None
+
+
+def _load_workflow_base_class_to_methods() -> dict[str, tuple[str, ...]]:
+	try:
+		mapping = {
+			reference.meta_node_kind: reference.step_output_schema_methods
+			for reference in workflow_node_references()
+			if reference.step_output_schema_methods
+		}
+	except Exception:
+		return dict(_LEGACY_WORKFLOW_BASE_CLASS_TO_METHODS)
+	return mapping or dict(_LEGACY_WORKFLOW_BASE_CLASS_TO_METHODS)
+
+
+def _get_workflow_base_class_to_methods() -> dict[str, tuple[str, ...]]:
+	global _WORKFLOW_BASE_CLASS_TO_METHODS
+	if _WORKFLOW_BASE_CLASS_TO_METHODS is None:
+		_WORKFLOW_BASE_CLASS_TO_METHODS = _load_workflow_base_class_to_methods()
+	return _WORKFLOW_BASE_CLASS_TO_METHODS
 
 
 def _get_workflow_base_class_objects() -> dict[str, type]:
@@ -577,19 +601,21 @@ def compile_node_file_and_get_step_output_card_schema(node_file_path: str) -> di
 	except Exception:
 		return None
 
+	workflow_base_methods = _get_workflow_base_class_to_methods()
+
 	for node in tree.body:
 		if not isinstance(node, ast.ClassDef):
 			continue
 
 		base_names = {_base_name(base) for base in node.bases}
 		base_names.discard(None)
-		workflow_bases = [base for base in base_names if base in _WORKFLOW_BASE_CLASS_TO_METHODS]
+		workflow_bases = [base for base in base_names if base in workflow_base_methods]
 		if not workflow_bases:
 			continue
 
 		method_candidates: list[str] = []
 		for workflow_base in workflow_bases:
-			for method_name in _WORKFLOW_BASE_CLASS_TO_METHODS[workflow_base]:
+			for method_name in workflow_base_methods[workflow_base]:
 				if method_name not in method_candidates:
 					method_candidates.append(method_name)
 
@@ -606,8 +632,6 @@ def compile_node_file_and_get_step_output_card_schema(node_file_path: str) -> di
 				}
 
 			for workflow_base in workflow_bases:
-				if workflow_base != "SpatialTemporalContractNode":
-					continue
 				fallback_card = _get_workflow_base_method_card_fallbacks().get(workflow_base, {}).get(method_name)
 				if fallback_card is None:
 					continue
@@ -680,7 +704,7 @@ def collect_session_state_keys_from_node_file(node_file_path: str, node_class_na
 def _load_workflow_base_method_derived_fallbacks() -> dict[str, dict[str, set[str]]]:
 	fallbacks: dict[str, dict[str, set[str]]] = {}
 	_WORKFLOW_BASE_CLASS_OBJECTS = _get_workflow_base_class_objects()
-	for base_name, method_names in _WORKFLOW_BASE_CLASS_TO_METHODS.items():
+	for base_name, method_names in _get_workflow_base_class_to_methods().items():
 		base_cls = _WORKFLOW_BASE_CLASS_OBJECTS.get(base_name)
 		if base_cls is None:
 			continue
@@ -700,7 +724,7 @@ def _load_workflow_base_method_derived_fallbacks() -> dict[str, dict[str, set[st
 def _load_workflow_base_method_card_fallbacks() -> dict[str, dict[str, dict[str, Any] | None]]:
 	fallbacks: dict[str, dict[str, dict[str, Any] | None]] = {}
 	_WORKFLOW_BASE_CLASS_OBJECTS = _get_workflow_base_class_objects()
-	for base_name, method_names in _WORKFLOW_BASE_CLASS_TO_METHODS.items():
+	for base_name, method_names in _get_workflow_base_class_to_methods().items():
 		base_cls = _WORKFLOW_BASE_CLASS_OBJECTS.get(base_name)
 		if base_cls is None:
 			continue
@@ -751,13 +775,14 @@ def compile_node_file_and_get_derived_keys(node_file_path: str) -> list[str]:
 		return []
 
 	all_keys: set[str] = set()
+	workflow_base_methods = _get_workflow_base_class_to_methods()
 
 	for node in tree.body:
 		if not isinstance(node, ast.ClassDef):
 			continue
 
-		if node.name in _WORKFLOW_BASE_CLASS_TO_METHODS:
-			for method_name in _WORKFLOW_BASE_CLASS_TO_METHODS[node.name]:
+		if node.name in workflow_base_methods:
+			for method_name in workflow_base_methods[node.name]:
 				method = _find_method(node, method_name)
 				if method is None:
 					continue
@@ -767,13 +792,13 @@ def compile_node_file_and_get_derived_keys(node_file_path: str) -> list[str]:
 		base_names = {_base_name(base) for base in node.bases}
 		base_names.discard(None)
 
-		workflow_bases = [base for base in base_names if base in _WORKFLOW_BASE_CLASS_TO_METHODS]
+		workflow_bases = [base for base in base_names if base in workflow_base_methods]
 		if not workflow_bases:
 			continue
 
 		method_candidates: set[str] = set()
 		for workflow_base in workflow_bases:
-			method_candidates.update(_WORKFLOW_BASE_CLASS_TO_METHODS[workflow_base])
+			method_candidates.update(workflow_base_methods[workflow_base])
 
 		for method_name in method_candidates:
 			method = _find_method(node, method_name)
