@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import meta_agent.agent_builder as agent_builder_module
 from meta_agent.agent_builder import AgentBuilder
@@ -34,6 +35,25 @@ def test_builder_progress_logs_to_runtime_file(monkeypatch, tmp_path):
     log_text = log_path.read_text(encoding="utf-8")
     assert "Pipeline started. Total steps: 3" in log_text
     assert "Initializing" in log_text
+
+
+def test_builder_session_splits_artifact_and_runtime_state(monkeypatch, tmp_path):
+    builder = _make_builder(monkeypatch, tmp_path)
+
+    process = object()
+    builder.graph_plan_path = str(tmp_path / "workflow.json")
+    builder.node_docs_dir = str(tmp_path / "node_docs")
+    builder.log_path = str(tmp_path / "runtime.log")
+    builder.backend_server_process = process
+    builder.dynamic_graph_cache["node_plans"] = {"NodeA": "NodeA.md"}
+    builder.dynamic_graph_cache["server_runtime"] = {"pid": 99}
+
+    assert builder.artifact_state.graph_plan_path == str(tmp_path / "workflow.json")
+    assert builder.artifact_state.node_docs_dir == str(tmp_path / "node_docs")
+    assert builder.runtime_state.log_path == str(tmp_path / "runtime.log")
+    assert builder.runtime_state.backend_server_process is process
+    assert builder.artifact_state.dynamic_graph_cache["node_plans"] == {"NodeA": "NodeA.md"}
+    assert builder.runtime_state.dynamic_graph_cache["server_runtime"] == {"pid": 99}
 
 
 def _write_graph(graph_path: Path, nodes: list[dict]) -> None:
@@ -422,3 +442,31 @@ def test_rerun_server_validates_artifacts_and_restarts_processes(monkeypatch, tm
     assert spawned[0].command == ["/usr/bin/python3.10", str(main_path)]
     assert spawned[0].cwd == str(tmp_path)
     assert runtime["artifacts"]["backend_nodes"] == {"ExistingNode": str(tmp_path / "ExistingNode.py")}
+
+
+def test_test_main_entrypoint_uses_selected_python_command(monkeypatch, tmp_path):
+    builder = _make_builder(monkeypatch, tmp_path)
+
+    main_path = tmp_path / "main.py"
+    main_path.write_text("print('main')\n", encoding="utf-8")
+
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(agent_builder_module, "select_python_command", lambda: "/custom/python")
+
+    def fake_run(command, cwd=None, capture_output=None, text=None, timeout=None):
+        observed["command"] = command
+        observed["cwd"] = cwd
+        observed["capture_output"] = capture_output
+        observed["text"] = text
+        observed["timeout"] = timeout
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(agent_builder_module.subprocess, "run", fake_run)
+
+    assert builder.test_main_entrypoint(str(main_path), log_filename="runtime_test_log.txt") is True
+    assert observed["command"] == ["/custom/python", str(main_path)]
+    assert observed["cwd"] == str(tmp_path)
+    assert observed["capture_output"] is True
+    assert observed["text"] is True
+    assert observed["timeout"] == 60
